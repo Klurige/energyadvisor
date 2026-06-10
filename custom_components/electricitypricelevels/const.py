@@ -7,6 +7,16 @@ import logging
 DOMAIN = "electricitypricelevels"
 LOGGER = logging.getLogger(__package__)
 
+# Development configuration — imported from dev_config.py (gitignored).
+# If the file is missing, dev features are disabled with safe defaults.
+try:
+    from .dev_config import DEV_DEFAULTS, DEV_DEFAULTS_ENABLED, HA_URL, HA_TOKEN  # noqa: F401
+except ImportError:
+    DEV_DEFAULTS_ENABLED = False
+    DEV_DEFAULTS: dict = {}  # type: ignore[no-redef]
+    HA_URL = ""
+    HA_TOKEN = ""
+
 CONF_NORDPOOL_PRICES_SENSOR = "nordpool_prices_sensor"
 CONF_LOW_THRESHOLD = "low_threshold"
 CONF_HIGH_THRESHOLD = "high_threshold"

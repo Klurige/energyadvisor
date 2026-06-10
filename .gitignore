@@ -13,6 +13,9 @@ __pycache__
 coverage.xml
 .ruff_cache
 
+# Development config (credentials, dev flags)
+custom_components/electricitypricelevels/dev_config.py
+scripts/ha_history.json
 
 # Home Assistant configuration
 config/*

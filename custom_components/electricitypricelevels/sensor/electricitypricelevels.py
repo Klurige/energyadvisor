@@ -164,10 +164,10 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         elif not self._unit and new_unit:
             self._unit = new_unit
 
-        if self._currency and self._unit:
-            self._unit_of_measurement = f"{self._currency}/{self._unit}"
-        elif self._currency:
-            self._unit_of_measurement = self._currency
+        # Always display in kWh regardless of what Nordpool sensor reports,
+        # since user-configured fees are all per kWh.
+        if self._currency:
+            self._unit_of_measurement = f"{self._currency}/kWh"
 
         # Update price_divisor based on prices_in_cents attribute
         prices_in_cents = state.attributes.get("prices_in_cents")
@@ -277,9 +277,8 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         including spot price, cost, credit, unit, currency, price level, rank,
         thresholds, and the full list of rates.
 
-        The 'rates' attribute is excluded from the recorder to prevent exceeding
-        Home Assistant's 16KB state attribute database size limit, while remaining
-        available in the UI and state machine.
+        Rates are formatted compactly (local-time ISO strings without timezone,
+        3-decimal cost/credit, single-char level) to minimise websocket payload.
         """
         return {
             "spot_price": self._spot_price,
@@ -291,19 +290,36 @@ class ElectricityPriceLevelsSensor(SensorEntity):
             "rank": self._rank,
             "low_threshold": self._low_threshold,
             "high_threshold": self._high_threshold,
-            "rates": self._rates,
+            "rates": self._format_rates_compact(),
         }
+
+    def _format_rates_compact(self) -> list[dict]:
+        """Format rates list compactly for state attributes."""
+        _LEVEL_SHORT = {"Low": "L", "Medium": "M", "High": "H"}
+        compact = []
+        for r in self._rates:
+            start = r.get("start")
+            if start is None:
+                continue
+            compact.append({
+                "from": start.strftime("%Y-%m-%dT%H:%M"),
+                "cost": round(r.get("cost", 0), 3),
+                "credit": round(r.get("credit", 0), 3),
+                "level": _LEVEL_SHORT.get(r.get("level", ""), "?"),
+                "rank": r.get("rank", "N/A"),
+            })
+        return compact
 
     @property
     def unit_of_measurement(self):
         """
         Return the unit of measurement of the sensor.
 
-        Combines the currency and unit (e.g., "EUR/kWh").
-        Returns the base unit_of_measurement if currency or unit is not set.
+        Always returns currency/kWh since all fee calculations are per kWh
+        and raw Nordpool prices are normalised to kWh internally.
         """
-        if self._currency and self._unit:
-            return f"{self._currency}/{self._unit}"
+        if self._currency:
+            return f"{self._currency}/kWh"
         return self._unit_of_measurement
 
     @property
@@ -435,17 +451,14 @@ class ElectricityPriceLevelsSensor(SensorEntity):
                 _LOGGER.info(f"Updated currency from coordinator data: {self._currency} -> {new_currency}")
                 self._currency = new_currency
 
-            # Fallback: hardcode unit to kWh (Nord Pool always provides per-kWh)
+            # Fallback: default to kWh if the Nordpool sensor hasn't reported yet
             if not self._unit:
                 self._unit = "kWh"
 
-            # Build unit_of_measurement string
-            if self._currency and self._unit:
-                self._unit_of_measurement = f"{self._currency}/{self._unit}"
-            elif self._currency:
-                self._unit_of_measurement = self._currency
-            elif self._unit:
-                self._unit_of_measurement = self._unit
+            # Build unit_of_measurement string — always currency/kWh since all fees
+            # are configured per kWh and we normalise raw prices accordingly.
+            if self._currency:
+                self._unit_of_measurement = f"{self._currency}/kWh"
 
             self._rates = []
             raw_price_entries = nordpool_data.get("raw", [])
@@ -466,10 +479,12 @@ class ElectricityPriceLevelsSensor(SensorEntity):
                     raw_price = entry_data["price"]
 
                     if raw_price is not None:
-                        # Nord Pool's get_prices_for_date service always returns
-                        # prices in the native unit (currency/MWh). Convert to
-                        # currency/kWh regardless of what the HA sensor entity
-                        # reports (HA auto-converts the sensor display unit).
+                        # get_prices_for_date always returns prices in currency/MWh,
+                        # regardless of the Nordpool sensor's display unit_of_measurement
+                        # (which HA auto-converts to kWh for display). Divide by 1000
+                        # to normalise to currency/kWh for all internal calculations.
+                        # prices_in_cents (price_divisor=100) is a separate, orthogonal
+                        # concern handled by self._price_divisor.
                         price_kwh = raw_price / 1000.0 / self._price_divisor
 
                         _LOGGER.debug(f"Processing entry: start={start_local}, end={end_local}, raw_price={raw_price}, price_kwh={price_kwh}, unit={self._unit}, divisor={self._price_divisor}")

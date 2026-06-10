@@ -87,5 +87,10 @@
       "name": "Get price levels",
       "description": "Get the price levels for today and tomorrow as a string, one char per entry."
     }
+  },
+  "device_info": {
+    "device_name": "Electricity Price Levels",
+    "manufacturer": "Electricity Price Levels",
+    "model": "Electricity Price Levels"
   }
 }

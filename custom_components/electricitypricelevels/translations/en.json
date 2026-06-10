@@ -81,5 +81,10 @@
         "name": "Compact levels"
       }
     }
+  },
+  "device_info": {
+    "device_name": "Electricity Price Levels",
+    "manufacturer": "Electricity Price Levels",
+    "model": "Electricity Price Levels"
   }
 }

@@ -195,8 +195,8 @@ def test_calculate_levels_fill_unknown_false(hass):
     mock_state = MagicMock()
     mock_state.attributes = {
         "rates": [
-            {"start": datetime(2023,1,1,0,0), "end": datetime(2023,1,1,0,30), "cost": 1},
-            {"start": datetime(2023,1,1,0,30), "end": datetime(2023,1,1,1,0), "cost": 3},
+            {"from": "2023-01-01T00:00", "cost": 1},
+            {"from": "2023-01-01T00:30", "cost": 3},
         ],
         "low_threshold": 1.5,
         "high_threshold": 2.5,
@@ -212,8 +212,8 @@ def test_calculate_levels_fill_unknown_true(hass):
     mock_state = MagicMock()
     mock_state.attributes = {
         "rates": [
-            {"start": datetime(2023,1,1,0,0), "end": datetime(2023,1,1,0,30), "cost": 1},
-            {"start": datetime(2023,1,1,0,30), "end": datetime(2023,1,1,1,0), "cost": 3},
+            {"from": "2023-01-01T00:00", "cost": 1},
+            {"from": "2023-01-01T00:30", "cost": 3},
         ],
         "low_threshold": 1.5,
         "high_threshold": 2.5,

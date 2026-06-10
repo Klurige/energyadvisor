@@ -377,22 +377,26 @@ def test_icon_property(sensor_instance, level, expected_icon):
 
 def test_unit_of_measurement_property(sensor_instance):
     """Test the unit_of_measurement property under different conditions."""
-    # Normal case
+    # Normal case: currency + kWh unit
     sensor_instance._currency = "EUR"
     sensor_instance._unit = "kWh"
     assert sensor_instance.unit_of_measurement == "EUR/kWh"
 
-    # Missing currency
+    # Nordpool reports MWh, but we always display kWh (normalised internally)
+    sensor_instance._currency = "EUR"
+    sensor_instance._unit = "MWh"
+    assert sensor_instance.unit_of_measurement == "EUR/kWh"
+
+    # Missing currency — fall back to stored unit_of_measurement string
     sensor_instance._currency = None
     sensor_instance._unit = "kWh"
     sensor_instance._unit_of_measurement = "default/kWh"
     assert sensor_instance.unit_of_measurement == "default/kWh"
 
-    # Missing unit
+    # Currency known but unit unknown — still return currency/kWh
     sensor_instance._currency = "SEK"
     sensor_instance._unit = None
-    sensor_instance._unit_of_measurement = "default/SEK"
-    assert sensor_instance.unit_of_measurement == "default/SEK"
+    assert sensor_instance.unit_of_measurement == "SEK/kWh"
 
 @pytest.mark.asyncio
 async def test_update_with_no_current_rate_data(sensor_instance, mock_hass):

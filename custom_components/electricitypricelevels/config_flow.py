@@ -37,6 +37,8 @@ from .const import (
     CONF_GRID_ENERGY_TAX,
     CONF_ELECTRICITY_VAT,
     CONF_EXCLUDE_FROM_RECORDING,
+    DEV_DEFAULTS,
+    DEV_DEFAULTS_ENABLED,
     DOMAIN,
     parse_unit_of_measurement,
 )
@@ -47,6 +49,11 @@ _LOGGER = logging.getLogger(__name__)
 def _parse_unit_of_measurement(unit_str: str) -> tuple[str | None, str | None]:
     """Delegate to shared implementation in const.py."""
     return parse_unit_of_measurement(unit_str)
+
+
+def _dev_default(key: str):
+    """Return the dev default for key when DEV_DEFAULTS_ENABLED, else None."""
+    return DEV_DEFAULTS.get(key) if DEV_DEFAULTS_ENABLED else None
 
 
 async def _validate_nordpool_prices_sensor(hass: HomeAssistant, entity_id: str) -> tuple[bool, dict | None]:
@@ -123,7 +130,11 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
-                vol.Required(CONF_NORDPOOL_PRICES_SENSOR, default=user_input.get(CONF_NORDPOOL_PRICES_SENSOR) if user_input else vol.UNDEFINED): EntitySelector(
+                vol.Required(CONF_NORDPOOL_PRICES_SENSOR, default=(
+                    user_input.get(CONF_NORDPOOL_PRICES_SENSOR)
+                    if user_input
+                    else (_dev_default(CONF_NORDPOOL_PRICES_SENSOR) or vol.UNDEFINED)
+                )): EntitySelector(
                     EntitySelectorConfig(
                         domain=SENSOR_DOMAIN,
                     )
@@ -147,10 +158,10 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
 
         # Pre-fill form with existing data if any (e.g., when returning from a later step or error)
         supplier_note = self.data.get(CONF_SUPPLIER_NOTE)
-        supplier_fixed_fee = self.data.get(CONF_SUPPLIER_FIXED_FEE)
-        supplier_variable_fee = self.data.get(CONF_SUPPLIER_VARIABLE_FEE)
-        supplier_fixed_credit = self.data.get(CONF_SUPPLIER_FIXED_CREDIT)
-        supplier_variable_credit = self.data.get(CONF_SUPPLIER_VARIABLE_CREDIT)
+        supplier_fixed_fee = self.data.get(CONF_SUPPLIER_FIXED_FEE) if self.data.get(CONF_SUPPLIER_FIXED_FEE) is not None else _dev_default(CONF_SUPPLIER_FIXED_FEE)
+        supplier_variable_fee = self.data.get(CONF_SUPPLIER_VARIABLE_FEE) if self.data.get(CONF_SUPPLIER_VARIABLE_FEE) is not None else _dev_default(CONF_SUPPLIER_VARIABLE_FEE)
+        supplier_fixed_credit = self.data.get(CONF_SUPPLIER_FIXED_CREDIT) if self.data.get(CONF_SUPPLIER_FIXED_CREDIT) is not None else _dev_default(CONF_SUPPLIER_FIXED_CREDIT)
+        supplier_variable_credit = self.data.get(CONF_SUPPLIER_VARIABLE_CREDIT) if self.data.get(CONF_SUPPLIER_VARIABLE_CREDIT) is not None else _dev_default(CONF_SUPPLIER_VARIABLE_CREDIT)
 
         return self.async_show_form(
             step_id="supplier_fees_and_credits",
@@ -178,10 +189,10 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
             return await self.async_step_taxes_and_vat()
 
         grid_note = self.data.get(CONF_GRID_NOTE)
-        grid_fixed_fee = self.data.get(CONF_GRID_FIXED_FEE)
-        grid_variable_fee = self.data.get(CONF_GRID_VARIABLE_FEE)
-        grid_fixed_credit = self.data.get(CONF_GRID_FIXED_CREDIT)
-        grid_variable_credit = self.data.get(CONF_GRID_VARIABLE_CREDIT)
+        grid_fixed_fee = self.data.get(CONF_GRID_FIXED_FEE) if self.data.get(CONF_GRID_FIXED_FEE) is not None else _dev_default(CONF_GRID_FIXED_FEE)
+        grid_variable_fee = self.data.get(CONF_GRID_VARIABLE_FEE) if self.data.get(CONF_GRID_VARIABLE_FEE) is not None else _dev_default(CONF_GRID_VARIABLE_FEE)
+        grid_fixed_credit = self.data.get(CONF_GRID_FIXED_CREDIT) if self.data.get(CONF_GRID_FIXED_CREDIT) is not None else _dev_default(CONF_GRID_FIXED_CREDIT)
+        grid_variable_credit = self.data.get(CONF_GRID_VARIABLE_CREDIT) if self.data.get(CONF_GRID_VARIABLE_CREDIT) is not None else _dev_default(CONF_GRID_VARIABLE_CREDIT)
 
         return self.async_show_form(
             step_id="grid_fees_and_credits",
@@ -205,8 +216,8 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
             self.data[CONF_ELECTRICITY_VAT] = user_input.get(CONF_ELECTRICITY_VAT)
             return await self.async_step_thresholds()
 
-        grid_energy_tax = self.data.get(CONF_GRID_ENERGY_TAX)
-        electricity_vat = self.data.get(CONF_ELECTRICITY_VAT)
+        grid_energy_tax = self.data.get(CONF_GRID_ENERGY_TAX) if self.data.get(CONF_GRID_ENERGY_TAX) is not None else _dev_default(CONF_GRID_ENERGY_TAX)
+        electricity_vat = self.data.get(CONF_ELECTRICITY_VAT) if self.data.get(CONF_ELECTRICITY_VAT) is not None else _dev_default(CONF_ELECTRICITY_VAT)
 
         return self.async_show_form(
             step_id="taxes_and_vat",
@@ -260,8 +271,8 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
                     }
                 )
 
-        low_threshold_val = self.data.get(CONF_LOW_THRESHOLD)
-        high_threshold_val = self.data.get(CONF_HIGH_THRESHOLD)
+        low_threshold_val = self.data.get(CONF_LOW_THRESHOLD) if self.data.get(CONF_LOW_THRESHOLD) is not None else _dev_default(CONF_LOW_THRESHOLD)
+        high_threshold_val = self.data.get(CONF_HIGH_THRESHOLD) if self.data.get(CONF_HIGH_THRESHOLD) is not None else _dev_default(CONF_HIGH_THRESHOLD)
 
         return self.async_show_form(
             step_id="thresholds",

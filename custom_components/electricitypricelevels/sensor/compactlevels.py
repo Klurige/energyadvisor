@@ -194,21 +194,29 @@ def calculate_levels(hass, requested_length = 0, fill_unknown: bool = False):
             low_threshold = state.attributes.get("low_threshold", None)
             high_threshold = state.attributes.get("high_threshold", None)
             if rates and low_threshold is not None and high_threshold is not None:
+                # Determine slot length from the first two entries (or default 60 min)
                 if requested_length == 0:
-                    rate_start = rates[0].get("start", "")
-                    rate_end = rates[0].get("end", "")
-                    level_length = math.ceil((rate_end - rate_start).total_seconds() / 60)
+                    if len(rates) >= 2:
+                        t0 = datetime.fromisoformat(rates[0]["from"])
+                        t1 = datetime.fromisoformat(rates[1]["from"])
+                        level_length = max(1, int((t1 - t0).total_seconds() / 60))
+                    else:
+                        level_length = 60
                 else:
                     level_length = requested_length
                 levels = []
-                for rate in rates:
-                    rate_start = rate.get("start", "")
-                    rate_end = rate.get("end", "")
+                for idx, rate in enumerate(rates):
                     rate_cost = rate.get("cost", 0)
-                    if rate_start and rate_end:
-                        rate_length = math.ceil((rate_end - rate_start).total_seconds() / 60)
-                        for i in range(0, rate_length):
-                            levels.append(rate_cost)
+                    # Determine slot duration from consecutive entries
+                    if idx + 1 < len(rates):
+                        t_start = datetime.fromisoformat(rate["from"])
+                        t_end = datetime.fromisoformat(rates[idx + 1]["from"])
+                        rate_length = max(1, int((t_end - t_start).total_seconds() / 60))
+                    else:
+                        # Last entry: assume same duration as previous
+                        rate_length = level_length
+                    for i in range(0, rate_length):
+                        levels.append(rate_cost)
                 _LOGGER.debug(f"Levels found: {len(levels)}")
                 if level_length > 0:
                     for i in range(0, len(levels), level_length):
