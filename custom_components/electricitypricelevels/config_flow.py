@@ -37,6 +37,9 @@ from .const import (
     CONF_GRID_ENERGY_TAX,
     CONF_ELECTRICITY_VAT,
     CONF_EXCLUDE_FROM_RECORDING,
+    CONF_FORECAST_ENTITY,
+    CONF_POWER_ENTITY,
+    CONF_FORECAST_TOMORROW_ENTITY,
     DEV_DEFAULTS,
     DEV_DEFAULTS_ENABLED,
     DOMAIN,
@@ -54,6 +57,33 @@ def _parse_unit_of_measurement(unit_str: str) -> tuple[str | None, str | None]:
 def _dev_default(key: str):
     """Return the dev default for key when DEV_DEFAULTS_ENABLED, else None."""
     return DEV_DEFAULTS.get(key) if DEV_DEFAULTS_ENABLED else None
+
+
+def _validate_solar_forecast_entities(
+    hass: HomeAssistant,
+    forecast_entity: str | None,
+    power_entity: str | None,
+    tomorrow_entity: str | None,
+) -> dict[str, str]:
+    """Validate the optional solar forecast entity configuration."""
+    errors: dict[str, str] = {}
+
+    if bool(forecast_entity) != bool(power_entity):
+        if not forecast_entity:
+            errors[CONF_FORECAST_ENTITY] = "solar_entity_required"
+        else:
+            errors[CONF_POWER_ENTITY] = "solar_entity_required"
+        return errors
+
+    for key, entity_id in (
+        (CONF_FORECAST_ENTITY, forecast_entity),
+        (CONF_POWER_ENTITY, power_entity),
+        (CONF_FORECAST_TOMORROW_ENTITY, tomorrow_entity),
+    ):
+        if entity_id and hass.states.get(entity_id) is None:
+            errors[key] = "entity_not_found"
+
+    return errors
 
 
 async def _validate_nordpool_prices_sensor(hass: HomeAssistant, entity_id: str) -> tuple[bool, dict | None]:
@@ -242,12 +272,46 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
             else:
                 self.data[CONF_LOW_THRESHOLD] = low_threshold
                 self.data[CONF_HIGH_THRESHOLD] = high_threshold
-                # All data collected, create the entry
-                # Options will be managed by the options flow
+                return await self.async_step_solar_forecast()
+
+        low_threshold_val = self.data.get(CONF_LOW_THRESHOLD) if self.data.get(CONF_LOW_THRESHOLD) is not None else _dev_default(CONF_LOW_THRESHOLD)
+        high_threshold_val = self.data.get(CONF_HIGH_THRESHOLD) if self.data.get(CONF_HIGH_THRESHOLD) is not None else _dev_default(CONF_HIGH_THRESHOLD)
+
+        return self.async_show_form(
+            step_id="thresholds",
+            data_schema=vol.Schema({
+                vol.Optional(CONF_LOW_THRESHOLD, default=low_threshold_val if low_threshold_val is not None else vol.UNDEFINED, description={"suffix": unit_of_measurement}): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                vol.Optional(CONF_HIGH_THRESHOLD, default=high_threshold_val if high_threshold_val is not None else vol.UNDEFINED, description={"suffix": unit_of_measurement}): vol.All(vol.Coerce(float), vol.Range(min=0)),
+            }),
+            errors=errors
+        )
+
+    async def async_step_solar_forecast(
+            self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            forecast_entity = user_input.get(CONF_FORECAST_ENTITY)
+            power_entity = user_input.get(CONF_POWER_ENTITY)
+            tomorrow_entity = user_input.get(CONF_FORECAST_TOMORROW_ENTITY)
+
+            errors.update(
+                _validate_solar_forecast_entities(
+                    self.hass,
+                    forecast_entity,
+                    power_entity,
+                    tomorrow_entity,
+                )
+            )
+
+            if not errors:
+                self.data[CONF_FORECAST_ENTITY] = forecast_entity or None
+                self.data[CONF_POWER_ENTITY] = power_entity or None
+                self.data[CONF_FORECAST_TOMORROW_ENTITY] = tomorrow_entity or None
                 return self.async_create_entry(
-                    title="ElectricityPriceLevel", # Or a more dynamic title if desired
+                    title="ElectricityPriceLevel",
                     data=self.data,
-                    options={ # Initialize options with data from main flow
+                    options={
                         CONF_NORDPOOL_PRICES_SENSOR: self.data[CONF_NORDPOOL_PRICES_SENSOR],
                         "unit_of_measurement": self.data.get("unit_of_measurement", ""),
                         "currency": self.data.get("currency", ""),
@@ -268,19 +332,24 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
                         CONF_LOW_THRESHOLD: self.data.get(CONF_LOW_THRESHOLD),
                         CONF_HIGH_THRESHOLD: self.data.get(CONF_HIGH_THRESHOLD),
                         CONF_EXCLUDE_FROM_RECORDING: True,
+                        CONF_FORECAST_ENTITY: self.data.get(CONF_FORECAST_ENTITY),
+                        CONF_POWER_ENTITY: self.data.get(CONF_POWER_ENTITY),
+                        CONF_FORECAST_TOMORROW_ENTITY: self.data.get(CONF_FORECAST_TOMORROW_ENTITY),
                     }
                 )
 
-        low_threshold_val = self.data.get(CONF_LOW_THRESHOLD) if self.data.get(CONF_LOW_THRESHOLD) is not None else _dev_default(CONF_LOW_THRESHOLD)
-        high_threshold_val = self.data.get(CONF_HIGH_THRESHOLD) if self.data.get(CONF_HIGH_THRESHOLD) is not None else _dev_default(CONF_HIGH_THRESHOLD)
+        forecast_entity_val = self.data.get(CONF_FORECAST_ENTITY) or _dev_default(CONF_FORECAST_ENTITY)
+        power_entity_val = self.data.get(CONF_POWER_ENTITY) or _dev_default(CONF_POWER_ENTITY)
+        tomorrow_entity_val = self.data.get(CONF_FORECAST_TOMORROW_ENTITY) or _dev_default(CONF_FORECAST_TOMORROW_ENTITY)
 
         return self.async_show_form(
-            step_id="thresholds",
+            step_id="solar_forecast",
             data_schema=vol.Schema({
-                vol.Optional(CONF_LOW_THRESHOLD, default=low_threshold_val if low_threshold_val is not None else vol.UNDEFINED, description={"suffix": unit_of_measurement}): vol.All(vol.Coerce(float), vol.Range(min=0)),
-                vol.Optional(CONF_HIGH_THRESHOLD, default=high_threshold_val if high_threshold_val is not None else vol.UNDEFINED, description={"suffix": unit_of_measurement}): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                vol.Optional(CONF_FORECAST_ENTITY, description={"suggested_value": forecast_entity_val}): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+                vol.Optional(CONF_POWER_ENTITY, description={"suggested_value": power_entity_val}): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+                vol.Optional(CONF_FORECAST_TOMORROW_ENTITY, description={"suggested_value": tomorrow_entity_val}): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
             }),
-            errors=errors
+            errors=errors,
         )
 
 
@@ -322,6 +391,16 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
                     errors["base"] = "low_threshold_higher_than_high_threshold"
 
                 if not errors:
+                    errors.update(
+                        _validate_solar_forecast_entities(
+                            self.hass,
+                            user_input.get(CONF_FORECAST_ENTITY),
+                            user_input.get(CONF_POWER_ENTITY),
+                            user_input.get(CONF_FORECAST_TOMORROW_ENTITY),
+                        )
+                    )
+
+                if not errors:
                     # All validations passed, create/update the options entry
                     self.current_options.update(user_input)
                     # Ensure unit_of_measurement, currency, and energy_unit are updated if sensor changed
@@ -330,6 +409,9 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
                         self.current_options["currency"] = sensor_attributes.get("currency", "")
                         self.current_options["energy_unit"] = sensor_attributes.get("energy_unit", "")
                         self.current_options["price_divisor"] = sensor_attributes.get("price_divisor", 100)
+                    # Normalise optional solar forecast entity fields (empty = None)
+                    for key in (CONF_FORECAST_ENTITY, CONF_POWER_ENTITY, CONF_FORECAST_TOMORROW_ENTITY):
+                        self.current_options[key] = user_input.get(key) or None
                     return self.async_create_entry(title="", data=self.current_options)
 
         # Populate schema with current/suggested values
@@ -413,9 +495,17 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
                 default=self.current_options.get(CONF_ELECTRICITY_VAT)
             ): vol.All(vol.Coerce(float), vol.Range(min=0)),
             vol.Optional(
-                CONF_EXCLUDE_FROM_RECORDING,
-                default=self.current_options.get(CONF_EXCLUDE_FROM_RECORDING, True)
-            ): cv.boolean,
+                CONF_FORECAST_ENTITY,
+                description={"suggested_value": self.current_options.get(CONF_FORECAST_ENTITY)}
+            ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+            vol.Optional(
+                CONF_POWER_ENTITY,
+                description={"suggested_value": self.current_options.get(CONF_POWER_ENTITY)}
+            ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+            vol.Optional(
+                CONF_FORECAST_TOMORROW_ENTITY,
+                description={"suggested_value": self.current_options.get(CONF_FORECAST_TOMORROW_ENTITY)}
+            ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
         }
 
         return self.async_show_form(

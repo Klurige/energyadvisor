@@ -11,13 +11,14 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 ## Features
 - Uses electricity prices provided by the Home Assistant NordPool integration.
 - Categorizes prices into levels (e.g., low, medium, high).
-- Provides two sensors for use in automations and dashboards.
+- Provides two price sensors plus an optional refined solar forecast sensor.
 - Supports multiple languages (English, Swedish).
 - Easy configuration via the Home Assistant UI.
   - Adds support for extra fees and taxes from your grid and supplier.
   - Allows for setting thresholds for low and high prices.
   - Adds support for credits when exporting electricity.
 - Provides a ranking system for prices to help identify the best times to use electricity.
+- Can refine a solar production forecast using your inverter's measured output.
 ## Prerequisites
 - Home Assistant (2025.0 or newer recommended)
 - [NordPool integration](https://www.home-assistant.io/integrations/nordpool/) installed and configured in Home Assistant. This integration supplies the electricity prices that this component depends on.
@@ -46,7 +47,7 @@ Or use the direct link:
 3. Add the integration via the Home Assistant UI.
 
 ## Configuration
-This integration is configured through the Home Assistant UI. During setup you select the Nord Pool prices sensor to use, then configure optional fees, credits, taxes, thresholds, and recorder behavior.
+This integration is configured through the Home Assistant UI. During setup you select the Nord Pool prices sensor to use, then configure optional fees, credits, taxes, thresholds, recorder behavior, and optional solar forecast sources.
 
 There are many extra fees and taxes that can be added to the price. Suppliers and grid owners can have many different types of fees, which may vary by region or contract. You can specify the details of these fees in the `supplier_note` and `grid_note` fields, and add up the actual amounts in the corresponding fee fields. This allows you to document and sum up all relevant charges for your specific situation in the configuration.
 
@@ -71,17 +72,22 @@ called differently for other grids and suppliers.
 | `grid_energy_tax`          | Grid energy tax              | 0.45          |
 | `electricity_vat`          | Electricity VAT              | 0.25          |
 | `exclude_from_recording`   | Exclude integration sensors from recorder/history | `true` |
+| `forecast_entity`          | Optional solar forecast sensor for today | `sensor.home_energy_production_today` |
+| `power_entity`             | Optional inverter actual power sensor in watts | `sensor.inverter_active_power` |
+| `forecast_tomorrow_entity` | Optional solar forecast sensor for tomorrow | `sensor.home_energy_production_tomorrow` |
 
 When `exclude_from_recording` is `true` (default), Home Assistant recorder/history excludes:
 - `sensor.electricitypricelevels`
 - `sensor.compactlevels`
+- `sensor.solarforecast` when the solar forecast feature is configured
 
-In addition, the `rates` attribute on `sensor.electricitypricelevels` is excluded from recorder attribute storage to avoid oversized state attributes.
+In addition, the `rates` attribute on `sensor.electricitypricelevels` and the `forecasts` attribute on `sensor.solarforecast` are excluded from recorder attribute storage to avoid oversized state attributes.
 
 ## Usage
-- The integration adds two sensors and one service. The default entity ids for the first config entry are `sensor.electricitypricelevels` and `sensor.compactlevels`. Additional config entries receive numeric suffixes such as `sensor.electricitypricelevels_2`.
+- The integration adds two price sensors, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.electricitypricelevels`, `sensor.compactlevels`, and `sensor.solarforecast` when solar forecast is enabled. Additional config entries receive numeric suffixes such as `sensor.electricitypricelevels_2`.
   - `sensor.electricitypricelevels` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.compactlevels` provides a compact level string intended for integrations such as Level Indicator Clock.
+  - `sensor.solarforecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and inverter power sensors.
   - `electricitypricelevels.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).
 
@@ -119,6 +125,23 @@ The integration also provides `sensor.compactlevels`, which exposes electricity 
    * `U` for Unknown (if no price is available for that period)
 
    Typically, there is one hour of data for history and twelve hours for future, but that is not guaranteed.
+
+### `sensor.solarforecast`
+- **Description:** Optional refined solar production forecast learned from the difference between your forecast source and the inverter's measured output.
+- **Default Entity ID:** `sensor.solarforecast` for the first config entry.
+- **State:** Corrected power estimate in `kW` for the current 15-minute slot.
+- **Attributes:**
+  - `forecasts`: 192 entries covering today and tomorrow in 15-minute steps, each with:
+   - `end`: Slot end time in local time (`YYYY-MM-DDTHH:MM`).
+   - `pow`: Corrected forecast power in `kW`.
+   - `raw`: Uncorrected source forecast power in `kW`.
+  - `energy_today_kwh`: Corrected energy estimate for today.
+  - `energy_tomorrow_kwh`: Corrected energy estimate for tomorrow.
+  - `total_samples`: Number of learned `(forecast, actual)` samples stored.
+  - `data_since`: Oldest learned sample date.
+  - `intraday_scaling`: Real-time scaling factor applied to today's remaining forecast.
+
+See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast description, correction model, and database behavior.
 
 ### `electricitypricelevels.get_levels`
 - **Description:** The price levels for today and tomorrow as a string with one char per time period. Main purpose is to provide data for the Level Indicator Clock (https://github.com/Klurige/LevelIndicatorClock)

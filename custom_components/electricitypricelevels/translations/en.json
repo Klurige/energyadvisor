@@ -40,11 +40,21 @@
           "low_threshold": "Lower threshold.",
           "high_threshold": "Upper threshold."
         }
+      },
+      "solar_forecast": {
+        "description": "Configure the solar forecast sensors for bias-corrected solar production estimates. Leave empty to skip solar forecast.",
+        "data": {
+          "forecast_entity": "Solar forecast sensor (today)",
+          "power_entity": "Inverter actual power sensor (W)",
+          "forecast_tomorrow_entity": "Solar forecast sensor (tomorrow) – optional"
+        }
       }
     },
     "error": {
       "invalid_sensor": "The selected sensor is not available or not valid.",
-      "low_threshold_higher_than_high_threshold": "The lower threshold must be less than the upper threshold."
+      "low_threshold_higher_than_high_threshold": "The lower threshold must be less than the upper threshold.",
+      "entity_not_found": "Entity not found – check the entity ID and try again.",
+      "solar_entity_required": "Both forecast sensor and power sensor must be provided together."
     }
   },
   "options": {
@@ -67,7 +77,9 @@
           "grid_variable_credit": "Grid credit in percentage",
           "grid_energy_tax": "Energy tax per unit",
           "electricity_vat": "Electricity VAT in percentage",
-          "exclude_from_recording": "Do not record in Home Assistant history"
+          "forecast_entity": "Solar forecast sensor (today)",
+          "power_entity": "Inverter actual power sensor (W)",
+          "forecast_tomorrow_entity": "Solar forecast sensor (tomorrow) – optional"
         }
       }
     }
@@ -79,6 +91,9 @@
       },
       "compactlevels": {
         "name": "Compact levels"
+      },
+      "solarforecast": {
+        "name": "Solar Forecast (Refined)"
       }
     }
   },

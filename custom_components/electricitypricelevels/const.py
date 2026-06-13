@@ -34,6 +34,19 @@ CONF_GRID_ENERGY_TAX = "grid_energy_tax"
 CONF_ELECTRICITY_VAT = "electricity_vat"
 CONF_EXCLUDE_FROM_RECORDING = "exclude_from_recording"
 
+# Solar forecast configuration
+CONF_FORECAST_ENTITY = "forecast_entity"
+CONF_POWER_ENTITY = "power_entity"
+CONF_FORECAST_TOMORROW_ENTITY = "forecast_tomorrow_entity"
+
+# Solar forecast sensor attributes
+ATTR_FORECASTS = "forecasts"
+ATTR_TOTAL_SAMPLES = "total_samples"
+ATTR_DATA_SINCE = "data_since"
+ATTR_ENERGY_TODAY_KWH = "energy_today_kwh"
+ATTR_ENERGY_TOMORROW_KWH = "energy_tomorrow_kwh"
+ATTR_INTRADAY_SCALING = "intraday_scaling"
+
 
 def parse_unit_of_measurement(unit_str: str) -> tuple[str | None, str | None]:
     """

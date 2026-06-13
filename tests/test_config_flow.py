@@ -11,14 +11,28 @@ from custom_components.electricitypricelevels.config_flow import (
     _validate_nordpool_prices_sensor,
 )
 from custom_components.electricitypricelevels.const import (
-    CONF_EXCLUDE_FROM_RECORDING,
+    CONF_FORECAST_ENTITY,
+    CONF_FORECAST_TOMORROW_ENTITY,
     CONF_HIGH_THRESHOLD,
     CONF_LOW_THRESHOLD,
     CONF_NORDPOOL_PRICES_SENSOR,
+    CONF_POWER_ENTITY,
 )
 
 
+def _make_state(
+    state_value: str = "1.23",
+    attributes: dict | None = None,
+) -> MagicMock:
+    """Build a simple Home Assistant state mock."""
+    state = MagicMock()
+    state.state = state_value
+    state.attributes = attributes or {}
+    return state
+
+
 # --- Tests for _parse_unit_of_measurement ---
+
 
 @pytest.mark.parametrize(
     "unit_str, expected",
@@ -57,6 +71,7 @@ def test_parse_unit_of_measurement(unit_str, expected):
 
 
 # --- Tests for _validate_nordpool_prices_sensor ---
+
 
 @pytest.mark.asyncio
 async def test_validate_nordpool_prices_sensor_valid():
@@ -130,9 +145,10 @@ async def test_validate_nordpool_prices_sensor_defaults():
 
 # --- Original tests ---
 
+
 @pytest.mark.asyncio
-async def test_options_flow_default_exclude_from_recording_true() -> None:
-    """Test options flow defaults exclude_from_recording to true."""
+async def test_options_flow_contains_solar_forecast_fields() -> None:
+    """Test options flow includes solar forecast entity fields."""
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
@@ -144,11 +160,11 @@ async def test_options_flow_default_exclude_from_recording_true() -> None:
 
     result = await handler.async_step_init()
     schema = result["data_schema"].schema
-    exclude_key = next(
-        key for key in schema if getattr(key, "schema", None) == CONF_EXCLUDE_FROM_RECORDING
-    )
+    schema_keys = [getattr(k, "schema", k) for k in schema]
 
-    assert exclude_key.default() is True
+    assert CONF_FORECAST_ENTITY in schema_keys
+    assert CONF_POWER_ENTITY in schema_keys
+    assert CONF_FORECAST_TOMORROW_ENTITY in schema_keys
 
 
 @pytest.mark.asyncio
@@ -174,7 +190,6 @@ async def test_options_flow_threshold_validation_error() -> None:
             CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
             CONF_LOW_THRESHOLD: 2.0,
             CONF_HIGH_THRESHOLD: 1.0,
-            CONF_EXCLUDE_FROM_RECORDING: True,
         }
     )
 
@@ -183,8 +198,8 @@ async def test_options_flow_threshold_validation_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_main_flow_entry_options_include_exclude_from_recording_true() -> None:
-    """Test initial entry options include exclude_from_recording true."""
+async def test_main_flow_thresholds_proceeds_to_solar_forecast() -> None:
+    """Test thresholds step proceeds to solar_forecast step."""
     handler = ElectricityPriceLevelFlowHandler()
     handler.hass = MagicMock()
     handler.data = {
@@ -198,7 +213,97 @@ async def test_main_flow_entry_options_include_exclude_from_recording_true() -> 
         }
     )
 
-    assert result["type"] == "create_entry"
-    assert result["options"][CONF_EXCLUDE_FROM_RECORDING] is True
+    assert result["type"] == "form"
+    assert result["step_id"] == "solar_forecast"
 
 
+@pytest.mark.asyncio
+async def test_main_flow_solar_forecast_rejects_missing_tomorrow_entity() -> None:
+    """Test solar step validates the optional tomorrow forecast entity."""
+    handler = ElectricityPriceLevelFlowHandler()
+    handler.data = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
+
+    hass = MagicMock()
+    hass.states.get.side_effect = lambda entity_id: {
+        "sensor.solar_today": _make_state("500", {"watts": {}}),
+        "sensor.inverter_power": _make_state("1500"),
+    }.get(entity_id)
+    handler.hass = hass
+
+    result = await handler.async_step_solar_forecast(
+        {
+            CONF_FORECAST_ENTITY: "sensor.solar_today",
+            CONF_POWER_ENTITY: "sensor.inverter_power",
+            CONF_FORECAST_TOMORROW_ENTITY: "sensor.solar_tomorrow",
+        }
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"][CONF_FORECAST_TOMORROW_ENTITY] == "entity_not_found"
+
+
+@pytest.mark.asyncio
+async def test_options_flow_requires_solar_power_pair() -> None:
+    """Test options flow requires forecast and power entities together."""
+    config_entry = MagicMock()
+    config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
+
+    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler._config_entry = config_entry
+
+    hass = MagicMock()
+    hass.states.get.side_effect = lambda entity_id: {
+        "sensor.nordpool_prices": _make_state(
+            attributes={
+                "unit_of_measurement": "EUR/kWh",
+                "currency": "EUR",
+            }
+        ),
+        "sensor.solar_today": _make_state("500"),
+    }.get(entity_id)
+    handler.hass = hass
+
+    result = await handler.async_step_init(
+        {
+            CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
+            CONF_FORECAST_ENTITY: "sensor.solar_today",
+        }
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"][CONF_POWER_ENTITY] == "solar_entity_required"
+
+
+@pytest.mark.asyncio
+async def test_options_flow_rejects_missing_tomorrow_entity() -> None:
+    """Test options flow validates the optional tomorrow forecast entity."""
+    config_entry = MagicMock()
+    config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
+
+    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler._config_entry = config_entry
+
+    hass = MagicMock()
+    hass.states.get.side_effect = lambda entity_id: {
+        "sensor.nordpool_prices": _make_state(
+            attributes={
+                "unit_of_measurement": "EUR/kWh",
+                "currency": "EUR",
+            }
+        ),
+        "sensor.solar_today": _make_state("500"),
+        "sensor.inverter_power": _make_state("1500"),
+    }.get(entity_id)
+    handler.hass = hass
+
+    result = await handler.async_step_init(
+        {
+            CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
+            CONF_FORECAST_ENTITY: "sensor.solar_today",
+            CONF_POWER_ENTITY: "sensor.inverter_power",
+            CONF_FORECAST_TOMORROW_ENTITY: "sensor.solar_tomorrow",
+        }
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"][CONF_FORECAST_TOMORROW_ENTITY] == "entity_not_found"

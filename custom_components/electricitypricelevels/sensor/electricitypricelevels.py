@@ -358,6 +358,11 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         return self._state
 
     @property
+    def current_credit(self) -> float:
+        """Return the current export credit for the active slot."""
+        return self._credit
+
+    @property
     def extra_state_attributes(self):
         """
         Return the extra state attributes of the sensor.

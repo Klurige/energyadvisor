@@ -40,11 +40,21 @@
           "low_threshold": "Nedre gränsvärde.",
           "high_threshold": "Övre gränsvärde."
         }
+      },
+      "solar_forecast": {
+        "description": "Konfigurera solprognosenheterna för att få biasjusterade solproduktionsprognoser. Lämna tomt för att hoppa över solprognosen.",
+        "data": {
+          "forecast_entity": "Solprognosenhet (idag)",
+          "power_entity": "Växelriktarens effektsensor (W)",
+          "forecast_tomorrow_entity": "Solprognosenhet (imorgon) – valfritt"
+        }
       }
     },
     "error": {
       "invalid_sensor": "Den valda sensorn är inte tillgänglig eller giltig.",
-      "low_threshold_higher_than_high_threshold": "Det nedre gränsvärdet måste vara lägre än det övre gränsvärdet."
+      "low_threshold_higher_than_high_threshold": "Det nedre gränsvärdet måste vara lägre än det övre gränsvärdet.",
+      "entity_not_found": "Enheten hittades inte – kontrollera enhets-ID och försök igen.",
+      "solar_entity_required": "Både prognosenhet och effektenhet måste anges tillsammans."
     }
   },
   "options": {
@@ -67,7 +77,9 @@
           "grid_variable_credit": "Elnätsintäkt i procent",
           "grid_energy_tax": "Energiskatt per enhet",
           "electricity_vat": "Elmoms i procent",
-          "exclude_from_recording": "Spara inte i Home Assistant historik"
+          "forecast_entity": "Solprognos-sensor (idag)",
+          "power_entity": "Växelriktarens effektsensor (W)",
+          "forecast_tomorrow_entity": "Solprognos-sensor (imorgon) – valfri"
         }
       }
     }
@@ -79,6 +91,9 @@
       },
       "compactlevels": {
         "name": "Kompakta nivåer"
+      },
+      "solarforecast": {
+        "name": "Solprognos (justerad)"
       }
     }
   },
