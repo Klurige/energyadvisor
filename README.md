@@ -11,7 +11,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 ## Features
 - Uses electricity prices provided by the Home Assistant NordPool integration.
 - Categorizes prices into levels (e.g., low, medium, high).
-- Provides two price sensors plus an optional refined solar forecast sensor.
+- Provides two price sensors plus a battery scheduling sensor and an optional refined solar forecast sensor.
 - Supports multiple languages (English, Swedish).
 - Easy configuration via the Home Assistant UI.
   - Adds support for extra fees and taxes from your grid and supplier.
@@ -19,6 +19,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
   - Adds support for credits when exporting electricity.
 - Provides a ranking system for prices to help identify the best times to use electricity.
 - Can refine a solar production forecast using your inverter's measured output.
+- Can suggest battery charge, discharge, and standby periods from the same price schedule.
 ## Prerequisites
 - Home Assistant (2025.0 or newer recommended)
 - [NordPool integration](https://www.home-assistant.io/integrations/nordpool/) installed and configured in Home Assistant. This integration supplies the electricity prices that this component depends on.
@@ -47,7 +48,7 @@ Or use the direct link:
 3. Add the integration via the Home Assistant UI.
 
 ## Configuration
-This integration is configured through the Home Assistant UI. During setup you select the Nord Pool prices sensor to use, then configure optional fees, credits, taxes, thresholds, recorder behavior, and optional solar forecast sources.
+This integration is configured through the Home Assistant UI. During setup you select the Nord Pool prices sensor to use, then configure optional fees, credits, taxes, thresholds, optional solar forecast sources, and optional battery scheduling values.
 
 There are many extra fees and taxes that can be added to the price. Suppliers and grid owners can have many different types of fees, which may vary by region or contract. You can specify the details of these fees in the `supplier_note` and `grid_note` fields, and add up the actual amounts in the corresponding fee fields. This allows you to document and sum up all relevant charges for your specific situation in the configuration.
 
@@ -75,18 +76,23 @@ called differently for other grids and suppliers.
 | `forecast_entity`          | Optional solar forecast sensor for today | `sensor.home_energy_production_today` |
 | `power_entity`             | Optional inverter actual power sensor in watts | `sensor.inverter_active_power` |
 | `forecast_tomorrow_entity` | Optional solar forecast sensor for tomorrow | `sensor.home_energy_production_tomorrow` |
+| `battery_capacity_kwh`     | Optional battery capacity; provide together with max charge power to override default timings | `10.0` |
+| `battery_max_charge_power_w` | Optional maximum battery charge power; provide together with capacity | `5000` |
+| `battery_degradation_cost` | Optional minimum spread required before cycling the battery | `0.7` |
 
 When `exclude_from_recording` is `true` (default), Home Assistant recorder/history excludes:
 - `sensor.electricitypricelevels`
 - `sensor.compactlevels`
+- `sensor.batterychargemode`
 - `sensor.solarforecast` when the solar forecast feature is configured
 
-In addition, the `rates` attribute on `sensor.electricitypricelevels` and the `forecasts` attribute on `sensor.solarforecast` are excluded from recorder attribute storage to avoid oversized state attributes.
+In addition, the `rates` attribute on `sensor.electricitypricelevels`, the `charge_entries` attribute on `sensor.batterychargemode`, and the `forecasts` attribute on `sensor.solarforecast` are excluded from recorder attribute storage to avoid oversized state attributes.
 
 ## Usage
-- The integration adds two price sensors, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.electricitypricelevels`, `sensor.compactlevels`, and `sensor.solarforecast` when solar forecast is enabled. Additional config entries receive numeric suffixes such as `sensor.electricitypricelevels_2`.
+- The integration adds two price sensors, one battery charge mode sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.electricitypricelevels`, `sensor.compactlevels`, `sensor.batterychargemode`, and `sensor.solarforecast` when the optional solar sensor is enabled. Additional config entries receive numeric suffixes such as `sensor.electricitypricelevels_2`.
   - `sensor.electricitypricelevels` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.compactlevels` provides a compact level string intended for integrations such as Level Indicator Clock.
+  - `sensor.batterychargemode` provides a schedule-based `charge`, `discharge`, or `standby` recommendation for a home battery.
   - `sensor.solarforecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and inverter power sensors.
   - `electricitypricelevels.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).
@@ -142,6 +148,18 @@ The integration also provides `sensor.compactlevels`, which exposes electricity 
   - `intraday_scaling`: Real-time scaling factor applied to today's remaining forecast.
 
 See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast description, correction model, and database behavior.
+
+### `sensor.batterychargemode`
+- **Description:** Optional battery schedule recommendation based on the price rates from the linked `sensor.electricitypricelevels` entry.
+- **Default Entity ID:** `sensor.batterychargemode` for the first config entry.
+- **State:** `charge`, `discharge`, or `standby`.
+- **Attributes:**
+  - `charge_entries`: Planned per-slot schedule with `start`, `end`, `mode`, and `cost`.
+  - `margin`: Minimum price spread required before cycling.
+  - `charging_time_minutes`: Charge duration used by the planner.
+  - `discharging_time_minutes`: Discharge duration used by the planner.
+
+See [docs/batterychargemode.md](docs/batterychargemode.md) for the battery scheduling rules and configuration details.
 
 ### `electricitypricelevels.get_levels`
 - **Description:** The price levels for today and tomorrow as a string with one char per time period. Main purpose is to provide data for the Level Indicator Clock (https://github.com/Klurige/LevelIndicatorClock)

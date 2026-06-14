@@ -384,8 +384,13 @@ class ElectricityPriceLevelsSensor(SensorEntity):
             "rank": self._rank,
             "low_threshold": self._low_threshold,
             "high_threshold": self._high_threshold,
-            "rates": self._format_rates_compact(),
+            "rates": self.compact_rates,
         }
+
+    @property
+    def compact_rates(self) -> list[dict]:
+        """Return the current rates in the compact attribute format."""
+        return self._format_rates_compact()
 
     def _format_rates_compact(self) -> list[dict]:
         """Format rates list compactly for state attributes."""

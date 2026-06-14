@@ -48,13 +48,22 @@
           "power_entity": "Inverter actual power sensor (W)",
           "forecast_tomorrow_entity": "Solar forecast sensor (tomorrow) – optional"
         }
+      },
+      "battery": {
+        "description": "Configure optional battery scheduling values. Leave battery capacity and max charge power empty to keep the default timings.",
+        "data": {
+          "battery_capacity_kwh": "Battery capacity",
+          "battery_max_charge_power_w": "Battery max charge power",
+          "battery_degradation_cost": "Battery degradation cost margin"
+        }
       }
     },
     "error": {
       "invalid_sensor": "The selected sensor is not available or not valid.",
       "low_threshold_higher_than_high_threshold": "The lower threshold must be less than the upper threshold.",
       "entity_not_found": "Entity not found – check the entity ID and try again.",
-      "solar_entity_required": "Both forecast sensor and power sensor must be provided together."
+      "solar_entity_required": "Both forecast sensor and power sensor must be provided together.",
+      "battery_setting_required": "Battery capacity and max charge power must be provided together."
     }
   },
   "options": {
@@ -79,7 +88,10 @@
           "electricity_vat": "Electricity VAT in percentage",
           "forecast_entity": "Solar forecast sensor (today)",
           "power_entity": "Inverter actual power sensor (W)",
-          "forecast_tomorrow_entity": "Solar forecast sensor (tomorrow) – optional"
+          "forecast_tomorrow_entity": "Solar forecast sensor (tomorrow) – optional",
+          "battery_capacity_kwh": "Battery capacity",
+          "battery_max_charge_power_w": "Battery max charge power",
+          "battery_degradation_cost": "Battery degradation cost margin"
         }
       }
     }
@@ -94,6 +106,14 @@
       },
       "solarforecast": {
         "name": "Solar Forecast (Refined)"
+      },
+      "batterychargemode": {
+        "name": "Battery charge mode",
+        "state": {
+          "standby": "Standby",
+          "charge": "Charge",
+          "discharge": "Discharge"
+        }
       }
     }
   },

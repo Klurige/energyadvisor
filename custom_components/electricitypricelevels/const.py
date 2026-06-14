@@ -39,6 +39,11 @@ CONF_FORECAST_ENTITY = "forecast_entity"
 CONF_POWER_ENTITY = "power_entity"
 CONF_FORECAST_TOMORROW_ENTITY = "forecast_tomorrow_entity"
 
+# Battery charge mode configuration
+CONF_BATTERY_CAPACITY_KWH = "battery_capacity_kwh"
+CONF_BATTERY_MAX_CHARGE_POWER_W = "battery_max_charge_power_w"
+CONF_BATTERY_DEGRADATION_COST = "battery_degradation_cost"
+
 # Solar forecast sensor attributes
 ATTR_FORECASTS = "forecasts"
 ATTR_TOTAL_SAMPLES = "total_samples"

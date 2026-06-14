@@ -19,6 +19,7 @@ from ..const import (
     DOMAIN,
 )
 from ..models import ElectricityPriceLevelsRuntimeData
+from .batterychargemodesensor import BatteryChargeModeSensor
 from ..solar_forecast_coordinator import SolarForecastCoordinator
 from .compactlevels import CompactLevelsSensor
 from .electricitypricelevels import ElectricityPriceLevelsSensor
@@ -87,7 +88,8 @@ async def async_setup_entry(
 
     levels_sensor = ElectricityPriceLevelsSensor(hass, entry, device_info)
     compact_levels_sensor = CompactLevelsSensor(hass, entry, device_info, levels_sensor)
-    entities = [levels_sensor, compact_levels_sensor]
+    battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, levels_sensor)
+    entities = [levels_sensor, compact_levels_sensor, battery_sensor]
 
     solar_coordinator: SolarForecastCoordinator | None = None
     solar_sensor: SolarForecastSensor | None = None
