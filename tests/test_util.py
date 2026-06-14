@@ -1,189 +1,110 @@
 """Tests for the util module."""
-import datetime
 
-from custom_components.electricitypricelevels.util import generate_level_pattern
+from __future__ import annotations
 
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-def test_generate_level_pattern_empty_rates():
-    """Test pattern generation with empty rates."""
-    # With None rates
-    pattern = generate_level_pattern(None)
-    expected_length = 36 * 60 // 12  # 36 hours in 12-minute increments
-    assert pattern == "U" * expected_length
-    assert len(pattern) == expected_length
+from custom_components.electricitypricelevels.util import (
+    build_levels_payload_from_rates,
+    infer_level_length_minutes,
+)
 
-    # With empty rates list
-    pattern = generate_level_pattern([])
-    assert pattern == "U" * expected_length
-    assert len(pattern) == expected_length
+UTC = ZoneInfo("UTC")
 
 
-def test_generate_level_pattern_single_level():
-    """Test pattern generation with single level."""
-    # Create rates for 36 hours with single level
-    start_time = datetime.datetime(2025, 8, 9, 10, 0, 0, tzinfo=datetime.timezone.utc)
-    end_time = start_time + datetime.timedelta(hours=36)
-
-    # Test with low level
-    rates_low = [{
-        "start": start_time,
-        "end": end_time,
-        "level": "Low"
-    }]
-    pattern_low = generate_level_pattern(rates_low)
-    expected_length = 36 * 60 // 12  # 36 hours in 12-minute increments
-    assert pattern_low == "L" * expected_length
-    assert len(pattern_low) == expected_length
-
-    # Test with medium level
-    rates_medium = [{
-        "start": start_time,
-        "end": end_time,
-        "level": "Medium"
-    }]
-    pattern_medium = generate_level_pattern(rates_medium)
-    assert pattern_medium == "M" * expected_length
-
-    # Test with high level
-    rates_high = [{
-        "start": start_time,
-        "end": end_time,
-        "level": "High"
-    }]
-    pattern_high = generate_level_pattern(rates_high)
-    assert pattern_high == "H" * expected_length
+def _rate(start: datetime, minutes: int, level: str) -> dict:
+    return {
+        "start": start,
+        "end": start + timedelta(minutes=minutes),
+        "level": level,
+    }
 
 
-def test_generate_level_pattern_mixed_levels():
-    """Test pattern generation with mixed levels."""
-    start_time = datetime.datetime(2025, 8, 9, 10, 0, 0, tzinfo=datetime.timezone.utc)
+def test_infer_level_length_minutes():
+    """Test native level length detection."""
+    start = datetime(2025, 8, 9, 0, 0, tzinfo=UTC)
+    rates = [_rate(start, 60, "Low")]
+    assert infer_level_length_minutes(rates) == 60
 
+
+def test_build_levels_payload_trims_unknown_tail_when_not_requested():
+    """Test trailing unknown slots are trimmed by default."""
+    start = datetime(2025, 8, 9, 0, 0, tzinfo=UTC)
     rates = [
-        # First 4 hours: Low
-        {
-            "start": start_time,
-            "end": start_time + datetime.timedelta(hours=4),
-            "level": "Low"
-        },
-        # Next 4 hours: Medium
-        {
-            "start": start_time + datetime.timedelta(hours=4),
-            "end": start_time + datetime.timedelta(hours=8),
-            "level": "Medium"
-        },
-        # Next 4 hours: High
-        {
-            "start": start_time + datetime.timedelta(hours=8),
-            "end": start_time + datetime.timedelta(hours=12),
-            "level": "High"
-        },
-        # Rest: Unknown (not covered)
+        _rate(start, 30, "Low"),
+        _rate(start + timedelta(minutes=30), 30, "High"),
     ]
 
-    pattern = generate_level_pattern(rates)
+    result = build_levels_payload_from_rates(
+        rates,
+        low_threshold=1.0,
+        high_threshold=2.0,
+        reference_time=datetime(2025, 8, 9, 12, 0, tzinfo=UTC),
+        requested_length=30,
+        fill_unknown=False,
+    )
 
-    # Expected pattern:
-    # 4 hours of Low = 4 * 60 / 12 = 20 L's
-    # 4 hours of Medium = 4 * 60 / 12 = 20 M's
-    # 4 hours of High = 4 * 60 / 12 = 20 H's
-    # Rest (24 hours) = 24 * 60 / 12 = 120 U's
-    expected_pattern = "L" * 20 + "M" * 20 + "H" * 20 + "U" * 120
-
-    assert pattern == expected_pattern
-    assert len(pattern) == 36 * 60 // 12
-
-
-def test_generate_level_pattern_with_string_dates():
-    """Test pattern generation with string dates instead of datetime objects."""
-    start_time = "2025-08-09T10:00:00Z"
-    end_time = "2025-08-09T14:00:00Z"  # 4 hours later
-
-    rates = [{
-        "start": start_time,
-        "end": end_time,
-        "level": "Low"
-    }]
-
-    pattern = generate_level_pattern(rates)
-
-    # First 4 hours should be Low, rest should be Unknown
-    expected_pattern = "L" * 20 + "U" * 160
-    assert pattern == expected_pattern
+    assert result["level_length"] == 30
+    assert result["levels"] == "LH"
 
 
-def test_generate_level_pattern_overlapping_rates():
-    """Test pattern generation with overlapping rates."""
-    start_time = datetime.datetime(2025, 8, 9, 10, 0, 0, tzinfo=datetime.timezone.utc)
-
+def test_build_levels_payload_fill_unknown_returns_two_days():
+    """Test fill_unknown keeps the full two-day window."""
+    start = datetime(2025, 8, 9, 0, 0, tzinfo=UTC)
     rates = [
-        # First 6 hours: Low
-        {
-            "start": start_time,
-            "end": start_time + datetime.timedelta(hours=6),
-            "level": "Low"
-        },
-        # 2-8 hours: Medium (overlaps with first)
-        {
-            "start": start_time + datetime.timedelta(hours=2),
-            "end": start_time + datetime.timedelta(hours=8),
-            "level": "Medium"
-        },
-        # 4-10 hours: High (overlaps with both)
-        {
-            "start": start_time + datetime.timedelta(hours=4),
-            "end": start_time + datetime.timedelta(hours=10),
-            "level": "High"
-        }
+        _rate(start, 30, "Low"),
+        _rate(start + timedelta(minutes=30), 30, "High"),
     ]
 
-    pattern = generate_level_pattern(rates)
+    result = build_levels_payload_from_rates(
+        rates,
+        low_threshold=1.0,
+        high_threshold=2.0,
+        reference_time=datetime(2025, 8, 9, 12, 0, tzinfo=UTC),
+        requested_length=30,
+        fill_unknown=True,
+    )
 
-    # Expected:
-    # 0-2h: Pure Low = 10 L's
-    # 2-4h: Low+Medium average = (1+2)/2 = 1.5 → rounds to M = 10 M's
-    # 4-6h: Low+Medium+High average = (1+2+3)/3 = 2 → rounds to M = 10 M's
-    # 6-8h: Medium+High average = (2+3)/2 = 2.5 → rounds to H = 10 H's
-    # 8-10h: Pure High = 10 H's
-    # 10-46h: Unknown = 26 hours = 130 U's
-    expected_pattern = "L" * 10 + "M" * 10 + "M" * 10 + "H" * 10 + "H" * 10 + "U" * 130
-
-    assert pattern == expected_pattern
+    assert result["levels"].startswith("LH")
+    assert len(result["levels"]) == 96
+    assert set(result["levels"][2:]) == {"U"}
 
 
-def test_generate_level_pattern_edge_cases():
-    """Test edge cases for pattern generation."""
-    start_time = datetime.datetime(2025, 8, 9, 10, 0, 0, tzinfo=datetime.timezone.utc)
+def test_build_levels_payload_is_aligned_to_current_day():
+    """Test tomorrow-only data preserves today's unknown prefix."""
+    tomorrow = datetime(2025, 8, 10, 0, 0, tzinfo=UTC)
+    rates = [_rate(tomorrow, 60, "Low")]
 
-    # Case 1: Level exactly between boundaries (average = 1.0 -> L, average = 2.0 -> M)
+    result = build_levels_payload_from_rates(
+        rates,
+        low_threshold=1.0,
+        high_threshold=2.0,
+        reference_time=datetime(2025, 8, 9, 12, 0, tzinfo=UTC),
+        requested_length=60,
+        fill_unknown=False,
+    )
+
+    assert result["levels"] == ("U" * 24) + "L"
+
+
+def test_build_levels_payload_aggregates_from_existing_levels():
+    """Test aggregation follows the main sensor's level decisions."""
+    start = datetime(2025, 8, 9, 0, 0, tzinfo=UTC)
     rates = [
-        {
-            "start": start_time,
-            "end": start_time + datetime.timedelta(hours=4),
-            "level": "Low"  # 1
-        },
-        {
-            "start": start_time,
-            "end": start_time + datetime.timedelta(hours=4),
-            "level": "Medium"  # 2
-        }
+        _rate(start, 60, "Low"),
+        _rate(start + timedelta(minutes=60), 60, "High"),
+        _rate(start + timedelta(minutes=120), 60, "Low"),
+        _rate(start + timedelta(minutes=180), 60, "Medium"),
     ]
-    pattern = generate_level_pattern(rates)
-    # Average = 1.5 -> M
-    assert pattern.startswith("M" * 20)
 
-    # Case 2: Unknown levels mixed with known levels
-    rates = [
-        {
-            "start": start_time,
-            "end": start_time + datetime.timedelta(hours=4),
-            "level": "Low"  # 1
-        },
-        {
-            "start": start_time,
-            "end": start_time + datetime.timedelta(hours=4),
-            "level": "Unknown"  # Should be ignored
-        }
-    ]
-    pattern = generate_level_pattern(rates)
-    # Only count the Low level
-    assert pattern.startswith("L" * 20)
+    result = build_levels_payload_from_rates(
+        rates,
+        low_threshold=1.0,
+        high_threshold=2.0,
+        reference_time=datetime(2025, 8, 9, 12, 0, tzinfo=UTC),
+        requested_length=120,
+        fill_unknown=False,
+    )
+
+    assert result["levels"] == "HM"

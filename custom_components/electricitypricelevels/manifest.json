@@ -5,7 +5,7 @@
   "config_flow": true,
   "dependencies": ["nordpool"],
   "documentation": "https://github.com/Klurige/electricitypricelevels",
-  "integration_type": "service",
+  "integration_type": "helper",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/Klurige/electricitypricelevels/issues",
   "requirements": [],

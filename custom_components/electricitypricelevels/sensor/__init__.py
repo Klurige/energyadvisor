@@ -3,35 +3,70 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta, date, datetime, time
-from typing import Callable, Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.translation import async_get_translations
+from homeassistant.loader import async_get_integration
 
-# Import your sensor classes
-from .electricitypricelevels import ElectricityPriceLevelsSensor
+from ..const import CONF_NORDPOOL_PRICES_SENSOR, DOMAIN
+from ..models import ElectricityPriceLevelsRuntimeData
 from .compactlevels import CompactLevelsSensor
+from .electricitypricelevels import ElectricityPriceLevelsSensor
 from .nordpool_coordinator import NordpoolDataCoordinator
 
-from ..const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 
+def _resolve_nordpool_config_entry_id(
+    hass: HomeAssistant, prices_sensor_entity_id: str
+) -> str | None:
+    """Resolve the Nord Pool config entry used by the selected prices sensor."""
+    entity_registry = er.async_get(hass)
+    entity_entry = entity_registry.async_get(prices_sensor_entity_id)
+    if entity_entry and entity_entry.config_entry_id:
+        return entity_entry.config_entry_id
+
+    nordpool_entries = hass.config_entries.async_entries("nordpool")
+    if len(nordpool_entries) == 1:
+        fallback_entry = nordpool_entries[0]
+        _LOGGER.warning(
+            "Could not resolve config entry for %s from the entity registry; "
+            "falling back to the only loaded Nord Pool entry %s.",
+            prices_sensor_entity_id,
+            fallback_entry.entry_id,
+        )
+        return fallback_entry.entry_id
+
+    _LOGGER.error(
+        "Could not resolve which Nord Pool config entry owns %s.",
+        prices_sensor_entity_id,
+    )
+    return None
+
+
 async def async_setup_entry(
-        hass: HomeAssistant,
-        entry: ConfigEntry,
-        async_add_entities: AddEntitiesCallback,
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     user_language = hass.config.language
-    translations = await async_get_translations(hass, user_language, "device_info", [DOMAIN])
-    device_name = translations.get(f"component.{DOMAIN}.device_info.device_name", "Untranslated device name")
-    manufacturer = translations.get(f"component.{DOMAIN}.device_info.manufacturer", "Untranslated manufacturer")
-    model = translations.get(f"component.{DOMAIN}.device_info.model", "Untranslated model")
+    translations = await async_get_translations(
+        hass, user_language, "device_info", [DOMAIN]
+    )
+    integration = await async_get_integration(hass, DOMAIN)
+    device_name = translations.get(
+        f"component.{DOMAIN}.device_info.device_name", "Untranslated device name"
+    )
+    manufacturer = translations.get(
+        f"component.{DOMAIN}.device_info.manufacturer", "Untranslated manufacturer"
+    )
+    model = translations.get(
+        f"component.{DOMAIN}.device_info.model", "Untranslated model"
+    )
 
     device_info = DeviceInfo(
         entry_type=DeviceEntryType.SERVICE,
@@ -39,30 +74,36 @@ async def async_setup_entry(
         name=device_name,
         manufacturer=manufacturer,
         model=model,
-        sw_version="1.0",
+        sw_version=str(integration.version) if integration.version else None,
         configuration_url=None,
     )
 
     levels_sensor = ElectricityPriceLevelsSensor(hass, entry, device_info)
-    compact_levels_sensor = CompactLevelsSensor(hass, entry, device_info)
+    compact_levels_sensor = CompactLevelsSensor(hass, entry, device_info, levels_sensor)
 
-    async_add_entities([levels_sensor, compact_levels_sensor], True)
-
-    nordpool_config_entry_id_to_use = None
-    for cfg_entry in hass.config_entries.async_entries("nordpool"):
-        nordpool_config_entry_id_to_use = cfg_entry.entry_id
-        _LOGGER.info(f"Using Nordpool config entry: {nordpool_config_entry_id_to_use} (Title: {cfg_entry.title})")
-        break
-
+    prices_sensor_entity_id = entry.options.get(CONF_NORDPOOL_PRICES_SENSOR, "")
+    nordpool_config_entry_id_to_use = _resolve_nordpool_config_entry_id(
+        hass, prices_sensor_entity_id
+    )
     if nordpool_config_entry_id_to_use is None:
-        _LOGGER.error("No Nordpool config entry found! Cannot schedule Nordpool calls.")
         return
 
-    # Create and start the coordinator
-    # Currency will be updated dynamically from the Nord Pool sensor
     currency_from_config = entry.options.get("currency", "") or None
-    _LOGGER.info(f"Creating coordinator with initial currency='{currency_from_config}' from entry.options")
-    coordinator = NordpoolDataCoordinator(hass, nordpool_config_entry_id_to_use, levels_sensor.async_update_data, currency_from_config)
+    coordinator = NordpoolDataCoordinator(
+        hass,
+        nordpool_config_entry_id_to_use,
+        levels_sensor.async_update_data,
+        currency_from_config,
+    )
+
+    runtime_data = ElectricityPriceLevelsRuntimeData(
+        levels_sensor=levels_sensor,
+        compact_sensor=compact_levels_sensor,
+        coordinator=coordinator,
+    )
+    entry.runtime_data = runtime_data
+
+    async_add_entities([levels_sensor, compact_levels_sensor], True)
     coordinator.start()
 
     @callback

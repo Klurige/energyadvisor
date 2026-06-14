@@ -10,11 +10,9 @@ area updates its price, or when new data is pushed to it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
-import json
 import datetime
-import math
-from typing import Callable
 
 from homeassistant.core import HomeAssistant, Event, State
 from homeassistant.config_entries import ConfigEntry
@@ -23,12 +21,10 @@ from homeassistant.util import dt as dt_util
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.components.sensor import (
-    DOMAIN as SENSOR_DOMAIN,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
 )
-from homeassistant.helpers.entity import EntityCategory
 
 from ..const import (
     CONF_NORDPOOL_PRICES_SENSOR,
@@ -47,7 +43,7 @@ from ..const import (
     CONF_EXCLUDE_FROM_RECORDING,
     parse_unit_of_measurement,
 )
-
+from ..util import build_levels_payload_from_rates, level_to_compact
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,10 +57,14 @@ class ElectricityPriceLevelsSensor(SensorEntity):
     and determines if the current price is 'Low', 'Medium', or 'High'
     based on user-defined thresholds.
     """
+
     entity_description: SensorEntityDescription
     _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"rates"})
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, device_info: DeviceInfo) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, device_info: DeviceInfo
+    ) -> None:
         """
         Initialize the ElectricityPriceLevel sensor.
 
@@ -75,7 +75,9 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         """
         self._entry = entry
 
-        self._nordpool_prices_sensor = entry.options.get(CONF_NORDPOOL_PRICES_SENSOR, "")
+        self._nordpool_prices_sensor = entry.options.get(
+            CONF_NORDPOOL_PRICES_SENSOR, ""
+        )
 
         # Initial currency/unit from config (may be empty for migrated entries)
         self._currency = entry.options.get("currency", "") or None
@@ -85,25 +87,43 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         self._price_divisor = price_divisor if price_divisor is not None else 1
 
         high_threshold = entry.options.get(CONF_HIGH_THRESHOLD)
-        self._high_threshold = high_threshold if high_threshold is not None else 1000000000.0
+        self._high_threshold = (
+            high_threshold if high_threshold is not None else 1000000000.0
+        )
         low_threshold = entry.options.get(CONF_LOW_THRESHOLD)
-        self._low_threshold = low_threshold if low_threshold is not None else -1000000000.0
+        self._low_threshold = (
+            low_threshold if low_threshold is not None else -1000000000.0
+        )
         supplier_fixed_fee = entry.options.get(CONF_SUPPLIER_FIXED_FEE)
-        self._supplier_fixed_fee = supplier_fixed_fee if supplier_fixed_fee is not None else 0.0
+        self._supplier_fixed_fee = (
+            supplier_fixed_fee if supplier_fixed_fee is not None else 0.0
+        )
         supplier_variable_fee = entry.options.get(CONF_SUPPLIER_VARIABLE_FEE)
-        self._supplier_variable_fee = supplier_variable_fee if supplier_variable_fee is not None else 0.0
+        self._supplier_variable_fee = (
+            supplier_variable_fee if supplier_variable_fee is not None else 0.0
+        )
         supplier_fixed_credit = entry.options.get(CONF_SUPPLIER_FIXED_CREDIT)
-        self._supplier_fixed_credit = supplier_fixed_credit if supplier_fixed_credit is not None else 0.0
+        self._supplier_fixed_credit = (
+            supplier_fixed_credit if supplier_fixed_credit is not None else 0.0
+        )
         supplier_variable_credit = entry.options.get(CONF_SUPPLIER_VARIABLE_CREDIT)
-        self._supplier_variable_credit = supplier_variable_credit if supplier_variable_credit is not None else 0.0
+        self._supplier_variable_credit = (
+            supplier_variable_credit if supplier_variable_credit is not None else 0.0
+        )
         grid_fixed_fee = entry.options.get(CONF_GRID_FIXED_FEE)
         self._grid_fixed_fee = grid_fixed_fee if grid_fixed_fee is not None else 0.0
         grid_variable_fee = entry.options.get(CONF_GRID_VARIABLE_FEE)
-        self._grid_variable_fee = grid_variable_fee if grid_variable_fee is not None else 0.0
+        self._grid_variable_fee = (
+            grid_variable_fee if grid_variable_fee is not None else 0.0
+        )
         grid_fixed_credit = entry.options.get(CONF_GRID_FIXED_CREDIT)
-        self._grid_fixed_credit = grid_fixed_credit if grid_fixed_credit is not None else 0.0
+        self._grid_fixed_credit = (
+            grid_fixed_credit if grid_fixed_credit is not None else 0.0
+        )
         grid_variable_credit = entry.options.get(CONF_GRID_VARIABLE_CREDIT)
-        self._grid_variable_credit = grid_variable_credit if grid_variable_credit is not None else 0.0
+        self._grid_variable_credit = (
+            grid_variable_credit if grid_variable_credit is not None else 0.0
+        )
         grid_energy_tax = entry.options.get(CONF_GRID_ENERGY_TAX)
         self._grid_energy_tax = grid_energy_tax if grid_energy_tax is not None else 0.0
         electricity_vat = entry.options.get(CONF_ELECTRICITY_VAT)
@@ -114,7 +134,7 @@ class ElectricityPriceLevelsSensor(SensorEntity):
             translation_key="electricitypricelevels",
         )
         self.entity_description = description
-        self.entity_id = f"{SENSOR_DOMAIN}.{description.key}"
+        self._attr_suggested_object_id = description.key
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
 
         self._state = 0.0
@@ -128,12 +148,60 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         self._rank = 0
 
         self._attr_device_info = device_info
-        self._attr_exclude_from_recording = entry.options.get(CONF_EXCLUDE_FROM_RECORDING, True)
+        self._attr_exclude_from_recording = entry.options.get(
+            CONF_EXCLUDE_FROM_RECORDING, True
+        )
 
         self._nordpool_trigger_entity_id = self._nordpool_prices_sensor
-        self._remove_nordpool_listener: Callable | None = None
+        self._update_listeners: list[Callable[[], None]] = []
 
-        _LOGGER.debug("ElectricityPriceLevelSensor initialized for prices sensor %s", self._nordpool_prices_sensor)
+        _LOGGER.debug(
+            "ElectricityPriceLevelSensor initialized for prices sensor %s",
+            self._nordpool_prices_sensor,
+        )
+
+    @property
+    def has_rates(self) -> bool:
+        """Return whether the sensor currently has rate data."""
+        return bool(self._rates)
+
+    def async_add_update_listener(
+        self, listener: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Register a callback that runs when rate data changes."""
+        self._update_listeners.append(listener)
+
+        def _remove_listener() -> None:
+            if listener in self._update_listeners:
+                self._update_listeners.remove(listener)
+
+        return _remove_listener
+
+    def _notify_update_listeners(self) -> None:
+        """Notify listeners that the rate data has changed."""
+        for listener in tuple(self._update_listeners):
+            try:
+                listener()
+            except Exception:
+                _LOGGER.exception("Error notifying electricity price listeners")
+
+    def build_levels_payload(
+        self,
+        requested_length: int = 0,
+        fill_unknown: bool = False,
+        reference_time: datetime.datetime | None = None,
+    ) -> dict[str, int | float | str | None]:
+        """Build the compact level payload from the internal rate data."""
+        local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        now_local = reference_time or datetime.datetime.now(local_tz)
+        return build_levels_payload_from_rates(
+            self._rates,
+            self._low_threshold,
+            self._high_threshold,
+            now_local,
+            requested_length=requested_length,
+            fill_unknown=fill_unknown,
+        )
 
     def _update_units_from_nordpool_sensor(self, state=None):
         """Read unit_of_measurement from the Nord Pool sensor and update currency/unit."""
@@ -153,13 +221,17 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         new_unit = parsed_unit or None
 
         if new_currency and new_currency != self._currency:
-            _LOGGER.info(f"Updated currency from Nord Pool sensor: {self._currency} -> {new_currency}")
+            _LOGGER.info(
+                f"Updated currency from Nord Pool sensor: {self._currency} -> {new_currency}"
+            )
             self._currency = new_currency
         elif not self._currency and new_currency:
             self._currency = new_currency
 
         if new_unit and new_unit != self._unit:
-            _LOGGER.info(f"Updated energy unit from Nord Pool sensor: {self._unit} -> {new_unit}")
+            _LOGGER.info(
+                f"Updated energy unit from Nord Pool sensor: {self._unit} -> {new_unit}"
+            )
             self._unit = new_unit
         elif not self._unit and new_unit:
             self._unit = new_unit
@@ -174,7 +246,9 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         if prices_in_cents is not None:
             new_divisor = 100 if prices_in_cents else 1
             if new_divisor != self._price_divisor:
-                _LOGGER.info(f"Updated price_divisor from Nord Pool sensor: {self._price_divisor} -> {new_divisor} (prices_in_cents={prices_in_cents})")
+                _LOGGER.info(
+                    f"Updated price_divisor from Nord Pool sensor: {self._price_divisor} -> {new_divisor} (prices_in_cents={prices_in_cents})"
+                )
                 self._price_divisor = new_divisor
 
     async def async_added_to_hass(self) -> None:
@@ -188,29 +262,44 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         """
         await super().async_added_to_hass()
 
-        _LOGGER.info(f"async_added_to_hass called. Nordpool trigger entity: {self._nordpool_trigger_entity_id}")
+        _LOGGER.info(
+            f"async_added_to_hass called. Nordpool trigger entity: {self._nordpool_trigger_entity_id}"
+        )
 
         if self._nordpool_trigger_entity_id:
             # Read currency/unit from Nord Pool sensor if available
-            initial_trigger_state = self.hass.states.get(self._nordpool_trigger_entity_id)
+            initial_trigger_state = self.hass.states.get(
+                self._nordpool_trigger_entity_id
+            )
             self._update_units_from_nordpool_sensor(initial_trigger_state)
 
             self.async_on_remove(
                 async_track_state_change_event(
-                    self.hass, [self._nordpool_trigger_entity_id], self._handle_nordpool_trigger_update
+                    self.hass,
+                    [self._nordpool_trigger_entity_id],
+                    self._handle_nordpool_trigger_update,
                 )
             )
             _LOGGER.info(f"Registered listener for {self._nordpool_trigger_entity_id}")
 
-            if initial_trigger_state and initial_trigger_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            if initial_trigger_state and initial_trigger_state.state not in (
+                STATE_UNAVAILABLE,
+                STATE_UNKNOWN,
+            ):
                 # Only refresh if we have rates data, otherwise wait for coordinator to send it
                 if self._rates:
-                    _LOGGER.info(f"Initial state of {self._nordpool_trigger_entity_id} is {initial_trigger_state.state}, triggering initial refresh.")
+                    _LOGGER.info(
+                        f"Initial state of {self._nordpool_trigger_entity_id} is {initial_trigger_state.state}, triggering initial refresh."
+                    )
                     await self._refresh_sensor_state()
                 else:
-                    _LOGGER.info(f"Initial state of {self._nordpool_trigger_entity_id} is {initial_trigger_state.state}, but no rates available yet. Waiting for coordinator data.")
+                    _LOGGER.info(
+                        f"Initial state of {self._nordpool_trigger_entity_id} is {initial_trigger_state.state}, but no rates available yet. Waiting for coordinator data."
+                    )
             elif not initial_trigger_state:
-                _LOGGER.info(f"Initial state for {self._nordpool_trigger_entity_id} not found. Waiting for coordinator data.")
+                _LOGGER.info(
+                    f"Initial state for {self._nordpool_trigger_entity_id} not found. Waiting for coordinator data."
+                )
 
     async def _handle_nordpool_trigger_update(self, event: Event) -> None:
         """
@@ -295,19 +384,20 @@ class ElectricityPriceLevelsSensor(SensorEntity):
 
     def _format_rates_compact(self) -> list[dict]:
         """Format rates list compactly for state attributes."""
-        _LEVEL_SHORT = {"Low": "L", "Medium": "M", "High": "H"}
         compact = []
         for r in self._rates:
             start = r.get("start")
             if start is None:
                 continue
-            compact.append({
-                "from": start.strftime("%Y-%m-%dT%H:%M"),
-                "cost": round(r.get("cost", 0), 3),
-                "credit": round(r.get("credit", 0), 3),
-                "level": _LEVEL_SHORT.get(r.get("level", ""), "?"),
-                "rank": r.get("rank", "N/A"),
-            })
+            compact.append(
+                {
+                    "from": start.strftime("%Y-%m-%dT%H:%M"),
+                    "cost": round(r.get("cost", 0), 3),
+                    "credit": round(r.get("credit", 0), 3),
+                    "level": level_to_compact(r.get("level")),
+                    "rank": r.get("rank", "N/A"),
+                }
+            )
         return compact
 
     @property
@@ -370,22 +460,47 @@ class ElectricityPriceLevelsSensor(SensorEntity):
 
                 # Purge old rates
                 original_rate_count = len(self._rates)
-                self._rates = [rate for rate in self._rates if rate["start"].date() >= today_local]
+                self._rates = [
+                    rate for rate in self._rates if rate["start"].date() >= today_local
+                ]
                 purged_count = original_rate_count - len(self._rates)
                 if purged_count > 0:
-                    _LOGGER.debug(f"Purged {purged_count} old entries from self._rates. Current count: {len(self._rates)}")
+                    _LOGGER.debug(
+                        f"Purged {purged_count} old entries from self._rates. Current count: {len(self._rates)}"
+                    )
 
-                _LOGGER.debug("Finding current rate for time: %s in timezone %s", now_local, local_tz_str)
+                _LOGGER.debug(
+                    "Finding current rate for time: %s in timezone %s",
+                    now_local,
+                    local_tz_str,
+                )
 
-                current_rate_details = next((rate for rate in self._rates if rate["start"] <= now_local < rate["end"]), None)
+                current_rate_details = next(
+                    (
+                        rate
+                        for rate in self._rates
+                        if rate["start"] <= now_local < rate["end"]
+                    ),
+                    None,
+                )
 
                 if current_rate_details:
-                    _LOGGER.debug("Current rate details found: %s", current_rate_details["start"])
+                    _LOGGER.debug(
+                        "Current rate details found: %s", current_rate_details["start"]
+                    )
                 else:
-                    _LOGGER.debug("No current rate details found for %s in self._rates (%s entries)", now_local, len(self._rates))
+                    _LOGGER.debug(
+                        "No current rate details found for %s in self._rates (%s entries)",
+                        now_local,
+                        len(self._rates),
+                    )
 
             except Exception as e:
-                _LOGGER.error("Error finding current rate during state update: %s", e, exc_info=True)
+                _LOGGER.error(
+                    "Error finding current rate during state update: %s",
+                    e,
+                    exc_info=True,
+                )
 
         if current_rate_details:
             self._spot_price = current_rate_details["spot_price"]
@@ -417,7 +532,9 @@ class ElectricityPriceLevelsSensor(SensorEntity):
                     f"Sensor state will be 'Unknown'."
                 )
             else:
-                _LOGGER.warning("No rates data available in self._rates. Sensor state will be 'Unknown'.")
+                _LOGGER.warning(
+                    "No rates data available in self._rates. Sensor state will be 'Unknown'."
+                )
             self._level = "Unknown"
             self._spot_price = 0.0
             self._cost = 0.0
@@ -440,7 +557,9 @@ class ElectricityPriceLevelsSensor(SensorEntity):
                            Expected keys include "currency" and "raw" (a list
                            of price entries).
         """
-        _LOGGER.info(f"async_update_data CALLED with data. Keys: {list(nordpool_data.keys() if nordpool_data else [])}, Raw entries: {len(nordpool_data.get('raw', [])) if nordpool_data else 0}")
+        _LOGGER.info(
+            f"async_update_data CALLED with data. Keys: {list(nordpool_data.keys() if nordpool_data else [])}, Raw entries: {len(nordpool_data.get('raw', [])) if nordpool_data else 0}"
+        )
         try:
             # Attempt to read units from the Nord Pool sensor attributes
             self._update_units_from_nordpool_sensor()
@@ -448,7 +567,9 @@ class ElectricityPriceLevelsSensor(SensorEntity):
             # Use currency from coordinator data (read from currency entity)
             new_currency = nordpool_data.get("currency")
             if new_currency and self._currency != new_currency:
-                _LOGGER.info(f"Updated currency from coordinator data: {self._currency} -> {new_currency}")
+                _LOGGER.info(
+                    f"Updated currency from coordinator data: {self._currency} -> {new_currency}"
+                )
                 self._currency = new_currency
 
             # Fallback: default to kWh if the Nordpool sensor hasn't reported yet
@@ -471,7 +592,9 @@ class ElectricityPriceLevelsSensor(SensorEntity):
                     start_local = dt_util.parse_datetime(entry_data["start"])
                     end_local = dt_util.parse_datetime(entry_data["end"])
                     if start_local is None or end_local is None:
-                        _LOGGER.warning(f"Skipping entry with unparseable datetime: start={entry_data.get('start')}, end={entry_data.get('end')}")
+                        _LOGGER.warning(
+                            f"Skipping entry with unparseable datetime: start={entry_data.get('start')}, end={entry_data.get('end')}"
+                        )
                         continue
                     start_local = start_local.astimezone(local_tz)
                     end_local = end_local.astimezone(local_tz)
@@ -487,12 +610,12 @@ class ElectricityPriceLevelsSensor(SensorEntity):
                         # concern handled by self._price_divisor.
                         price_kwh = raw_price / 1000.0 / self._price_divisor
 
-                        _LOGGER.debug(f"Processing entry: start={start_local}, end={end_local}, raw_price={raw_price}, price_kwh={price_kwh}, unit={self._unit}, divisor={self._price_divisor}")
-                        processed_for_ranking.append({
-                            "start": start_local,
-                            "end": end_local,
-                            "value": price_kwh
-                        })
+                        _LOGGER.debug(
+                            f"Processing entry: start={start_local}, end={end_local}, raw_price={raw_price}, price_kwh={price_kwh}, unit={self._unit}, divisor={self._price_divisor}"
+                        )
+                        processed_for_ranking.append(
+                            {"start": start_local, "end": end_local, "value": price_kwh}
+                        )
 
                 entries_by_day = {}
                 for entry in processed_for_ranking:
@@ -508,10 +631,17 @@ class ElectricityPriceLevelsSensor(SensorEntity):
 
                 self._rates.sort(key=lambda x: x["start"])
 
-            _LOGGER.info(f"Processed {len(self._rates)} rates into self._rates from {len(raw_price_entries)} raw entries")
+            _LOGGER.info(
+                f"Processed {len(self._rates)} rates into self._rates from {len(raw_price_entries)} raw entries"
+            )
 
         except Exception as e:
-            _LOGGER.error("Error processing Nordpool data structure: %s. Data: %s", e, nordpool_data, exc_info=True)
+            _LOGGER.error(
+                "Error processing Nordpool data structure: %s. Data: %s",
+                e,
+                nordpool_data,
+                exc_info=True,
+            )
             self._level = "Error Processing Data"
             self._cost = 0.0
             self._spot_price = 0.0
@@ -524,11 +654,13 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         if self.hass is not None:
             self.async_write_ha_state()
         else:
-            _LOGGER.warning("async_write_ha_state called but self.hass is None. Skipping state update.")
+            _LOGGER.warning(
+                "async_write_ha_state called but self.hass is None. Skipping state update."
+            )
         _LOGGER.info(
-            f"Sensor state updated via async_update_data: Cost={self._state} {self._currency}/{self._unit}, Level={self._level}, RawSpot={self._spot_price}, Rank={self._rank}/100"
+            f"Sensor state updated via async_update_data: Cost={self._state} {self._currency}/{self._unit}, Level={self._level}, RawSpot={self._spot_price}, Rank={self._rank}"
         )
-
+        self._notify_update_listeners()
 
     async def async_will_remove_from_hass(self) -> None:
         """
@@ -572,30 +704,43 @@ class ElectricityPriceLevelsSensor(SensorEntity):
             if num_entries_today == 0:
                 pass
             else:
-                rank_index = next(i for i, ranked_entry in enumerate(daily_ranked_list) if ranked_entry["start"] == start_local and ranked_entry["value"] == spot_price_kwh_main_unit)
+                rank_index = next(
+                    i
+                    for i, ranked_entry in enumerate(daily_ranked_list)
+                    if ranked_entry["start"] == start_local
+                    and ranked_entry["value"] == spot_price_kwh_main_unit
+                )
 
                 if num_entries_today == 1:
                     rank_value = 0
                 else:
-                    entry_length = 1440 /num_entries_today
-                    rank_value = rank_index * entry_length
+                    entry_length = 1440 / num_entries_today
+                    rank_value = int(rank_index * entry_length)
         except StopIteration:
-            _LOGGER.warning(f"Could not determine rank for entry starting at {start_local} with value {spot_price_kwh_main_unit}. Appending with rank 'N/A'.")
+            _LOGGER.warning(
+                f"Could not determine rank for entry starting at {start_local} with value {spot_price_kwh_main_unit}. Appending with rank 'N/A'."
+            )
         except Exception as e:
-            _LOGGER.error(f"Error determining rank for {start_local}: {e}", exc_info=True)
+            _LOGGER.error(
+                f"Error determining rank for {start_local}: {e}", exc_info=True
+            )
             rank_value = "N/A"
 
-        self._rates.append({
-            "start": start_local,
-            "end": end_local,
-            "spot_price": spot_price_kwh_main_unit,
-            "cost": cost,
-            "credit": credit,
-            "level": level,
-            "rank": rank_value
-        })
+        self._rates.append(
+            {
+                "start": start_local,
+                "end": end_local,
+                "spot_price": spot_price_kwh_main_unit,
+                "cost": cost,
+                "credit": credit,
+                "level": level,
+                "rank": rank_value,
+            }
+        )
 
-    def calculate_cost_and_credit(self, spot_price_main_unit_kwh: float) -> tuple[float, float]:
+    def calculate_cost_and_credit(
+        self, spot_price_main_unit_kwh: float
+    ) -> tuple[float, float]:
         """
         Calculate the total cost and credit per kWh based on the spot price and configured fees.
 
@@ -623,17 +768,19 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         electricity_vat_pct = float(self._electricity_vat) / 100
 
         cost_before_vat = (
-            spot_price_main_unit_kwh * (1 + supplier_variable_fee_pct + grid_variable_fee_pct) +
-            supplier_fixed_fee +
-            grid_fixed_fee +
-            grid_energy_tax
+            spot_price_main_unit_kwh
+            * (1 + supplier_variable_fee_pct + grid_variable_fee_pct)
+            + supplier_fixed_fee
+            + grid_fixed_fee
+            + grid_energy_tax
         )
         cost = cost_before_vat * (1 + electricity_vat_pct)
 
         credit = (
-            spot_price_main_unit_kwh * (1 + supplier_variable_credit_pct + grid_variable_credit_pct) +
-            supplier_fixed_credit +
-            grid_fixed_credit
+            spot_price_main_unit_kwh
+            * (1 + supplier_variable_credit_pct + grid_variable_credit_pct)
+            + supplier_fixed_credit
+            + grid_fixed_credit
         )
         return round(cost, 5), round(credit, 5)
 
@@ -654,7 +801,9 @@ class ElectricityPriceLevelsSensor(SensorEntity):
         low = float(self._low_threshold)
         high = float(self._high_threshold)
 
-        _LOGGER.debug(f"Calculating level for cost: {cost_val}, low: {low}, high: {high}")
+        _LOGGER.debug(
+            f"Calculating level for cost: {cost_val}, low: {low}, high: {high}"
+        )
         if cost_val < low:
             return "Low"
         if cost_val > high:

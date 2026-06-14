@@ -80,11 +80,15 @@ Level is `"Unknown"` until the first rate is loaded (startup / no matching slot)
 Each price slot is ranked within its calendar day (00:00–23:59 local).
 Slot duration follows whatever Nordpool provides — the code makes no assumption.
 
-The day's slots are sorted cheapest-first; the cheapest slot gets rank **0**,
-the most expensive gets rank **1440**. Intermediate slots receive proportional
-values: `rank = rank_index × (1440 / slots_per_day)`.
+The day's slots are sorted cheapest-first; the cheapest slot gets rank **0**.
+Intermediate slots receive proportional values:
+`rank = rank_index × (1440 / slots_per_day)`.
 
-The scale 0–1440 represents minutes in a day. It can be used to find the cheapest or most expensives time periods. For example running the water heater the four cheapest hours of the day should turn it on if rank is below 239 and off is 240 or higher.
+The scale represents minutes in a day. For 24 hourly prices, ranks are
+`0, 60, 120, ..., 1380`. For 96 quarter-hour prices, ranks are
+`0, 15, 30, ..., 1425`. It can be used to find the cheapest time periods.
+For example, running the water heater the four cheapest hours of the day
+should turn it on if rank is below 240 and off if rank is 240 or higher.
 
 ---
 
@@ -94,7 +98,7 @@ The scale 0–1440 represents minutes in a day. It can be used to find the cheap
 
 | Property | Value |
 |----------|-------|
-| State | Current cost (float, 5 d.p., e.g. `1.87845`) in `{currency}/{unit}` |
+| State | Current cost (float, 5 d.p., e.g. `1.87845`) in `{currency}/kWh` |
 | Device class | `monetary` |
 | Icon | `mdi:arrow-expand-down` (Low) / `mdi:arrow-expand-vertical` (Medium) / `mdi:arrow-expand-up` (High) |
 
@@ -108,7 +112,7 @@ The scale 0–1440 represents minutes in a day. It can be used to find the cheap
 | `unit` | Energy unit, e.g. `kWh` |
 | `currency` | Currency, e.g. `SEK` |
 | `level` | `Low`, `Medium`, `High`, or `Unknown` |
-| `rank` | 0–1440 rank within the day (0 = cheapest) |
+| `rank` | Minute-scaled rank within the day (0 = cheapest) |
 | `low_threshold` | Configured low threshold |
 | `high_threshold` | Configured high threshold |
 | `rates` | Compact list of all known upcoming slots (see format below) |
@@ -126,7 +130,7 @@ The scale 0–1440 represents minutes in a day. It can be used to find the cheap
 - `from` — slot start in **local time**, no timezone suffix, ISO 8601
 - `cost` / `credit` — 3 decimal places
 - `level` — single character: `L` (Low), `M` (Medium), `H` (High), `?` (unknown)
-- `rank` — integer 0–1440
+- `rank` — minute-scaled slot rank
 - Old rates (before today) are purged each time the sensor state is updated
 - Tomorrow's rates appear when Nordpool publishes them (~14:00 CET)
 
@@ -142,7 +146,7 @@ Consumed by LevelIndicatorClock and the `electricitypricelevels.get_levels` serv
 | State | Integer — minutes since midnight |
 | Attribute `compact` | `{minutes}:{level_length}:{past_1h_levels}:{future_12h_levels}` |
 
-Reads `sensor.electricitypricelevels.attributes.rates` to build level strings.
+Reads the main sensor's internal rate data directly to build level strings.
 Updates automatically at the end of each price slot. Level characters: `L`, `M`, `H`, `U` (unknown).
 
 ---
@@ -150,6 +154,8 @@ Updates automatically at the end of each price slot. Level characters: `L`, `M`,
 ### Service: `electricitypricelevels.get_levels`
 
 Returns a dict with level string and slot length, used by LevelIndicatorClock.
+When multiple Electricity Price Levels entries are loaded, pass the desired
+`entity_id`.
 
 ---
 
@@ -163,14 +169,14 @@ NordpoolDataCoordinator  ←──  nordpool.get_prices_for_date (HA service cal
 ElectricityPriceLevelsSensor
   • parse entries: spot price → cost/credit via calculate_cost_and_credit()
   • classify: calculate_level(cost)
-  • rank: sort each day's entries by price, assign 0–1440
+  • rank: sort each day's entries by price, assign minute-scaled rank
   • store in self._rates (internal dicts with datetime objects)
   • expose via _format_rates_compact() → attributes.rates (serialisable)
         │
-        │  state_changed event on sensor.electricitypricelevels
+        │  direct in-memory callback when rate data changes
         ▼
 CompactLevelsSensor
-  • reads rates, builds level string
+  • reads the main sensor's internal rates, builds level string
   • schedules periodic update at slot boundaries
 ```
 

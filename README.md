@@ -79,10 +79,10 @@ When `exclude_from_recording` is `true` (default), Home Assistant recorder/histo
 In addition, the `rates` attribute on `sensor.electricitypricelevels` is excluded from recorder attribute storage to avoid oversized state attributes.
 
 ## Usage
-- The integration adds two sensors and one service: `sensor.electricitypricelevels`, `sensor.compactlevels`, and `electricitypricelevels.get_levels`.
+- The integration adds two sensors and one service. The default entity ids for the first config entry are `sensor.electricitypricelevels` and `sensor.compactlevels`. Additional config entries receive numeric suffixes such as `sensor.electricitypricelevels_2`.
   - `sensor.electricitypricelevels` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.compactlevels` provides a compact level string intended for integrations such as Level Indicator Clock.
-  - `electricitypricelevels.get_levels` provides a string containing one character for each price level. ( Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
+  - `electricitypricelevels.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).
 
 ### `sensor.electricitypricelevels`
@@ -98,13 +98,11 @@ In addition, the `rates` attribute on `sensor.electricitypricelevels` is exclude
   - `rank`: The current rank of the price compared to other prices for the current day. See the [Ranking](#ranking) section for details.
   - `low_threshold`: The threshold cost for low prices.
   - `high_threshold`: The threshold cost for high prices.
-  - `rates`: A list of today's (and possibly tomorrow's) prices, each with:
-    - `start`: The start time of the price period.
-    - `end`: The end time of the price period. 1us before the next period starts.
-    - `spot_price`: The raw price from the NordPool sensor for the period.
+  - `rates`: A compact list of today's (and possibly tomorrow's) prices, each with:
+    - `from`: The start time of the price period in local time (`YYYY-MM-DDTHH:MM`).
     - `cost`: The total cost for the period, including all fees and taxes.
     - `credit`: The total credit for the period, if applicable.
-    - `level`: The price level for the period.
+    - `level`: The price level for the period as `L`, `M`, `H`, or `U`.
     - `rank`: The rank of the price for the period compared to other prices for the current day.
 - **Update Frequency:** Updated when new Nord Pool data is processed and when the selected Nord Pool source sensor changes state.
 
@@ -118,32 +116,31 @@ The integration also provides `sensor.compactlevels`, which exposes electricity 
     * `L` for Low
     * `M` for Medium
     * `H` for High
-    * `U` for Unknown (if no price is available for that period)
-    * `E` for internal error.
+   * `U` for Unknown (if no price is available for that period)
 
-    Typically, there is one hour of data for history and twelve hours for future, but that is not guaranteed.
+   Typically, there is one hour of data for history and twelve hours for future, but that is not guaranteed.
 
 ### `electricitypricelevels.get_levels`
 - **Description:** The price levels for today and tomorrow as a string with one char per time period. Main purpose is to provide data for the Level Indicator Clock (https://github.com/Klurige/LevelIndicatorClock)
 - **Input parameters:**
-  - `level_length`: The length of each level in minutes. Default `0` means the same length as the Nord Pool price periods.
+ - `entity_id`: Optional `sensor.electricitypricelevels` entity id. Required when multiple Electricity Price Levels entries are loaded.
+ - `level_length`: The length of each level in minutes. Default `0` means the same length as the Nord Pool price periods.
 - **Output:**
-  - `level_length`: The length of each level in minutes.
-  - `levels`: A string representing the current price level pattern, where each character corresponds to a price level for today and tomorrow. Each character represents a `level_length` slot in minutes, with:
-    - `L` for Low
-    - `M` for Medium
-    - `H` for High
-    - `U` for Unknown (if no price is available for that period)
-    - `E` for internal error.
-  - `low_threshold`: The threshold cost for low prices.
-  - `high_threshold`: The threshold cost for high prices.
-  
-The level for a time period is determined by checking the `cost` attribute of the price for that period against the configured thresholds. The whole time period must be below a threshold to get that level.
+ - `level_length`: The length of each level in minutes.
+ - `levels`: A string representing the current price level pattern, where each character corresponds to a price level for today and tomorrow. Each character represents a `level_length` slot in minutes, with:
+   - `L` for Low
+   - `M` for Medium
+   - `H` for High
+   - `U` for Unknown (if no price is available for that period)
+ - `low_threshold`: The threshold cost for low prices.
+ - `high_threshold`: The threshold cost for high prices.
+
+The service and the compact sensor use the main sensor's internal rate data directly, so they follow the same threshold decisions as `sensor.electricitypricelevels` without recomputing from rounded state attributes.
 
 ## Ranking
-The `sensor.electricitypricelevels` sensor provides a `rank` attribute that indicates the current price's rank compared to other prices for the current day. The rank is expressed in minutes, starting at 0. A full day is 1440 minutes (0-1439).
-- `0` is the lowest price minute for the day.
-- `1439` is the highest price minute for the day.
+The `sensor.electricitypricelevels` sensor provides a `rank` attribute that indicates the current price's rank compared to other prices for the current day. The rank is expressed on a minute scale across a 1440-minute day.
+- `0` is the lowest-price slot for the day.
+- The highest rank is the start minute of the most expensive slot. For 24 hourly prices this is `1380`, and for 96 quarter-hour prices this is `1425`.
 
 For example, to find the three cheapest hours of the day, look for ranks between 0 and 179. (3 hours × 60 minutes = 180 minutes, so ranks 0–179).
 Note that this will find non-consecutive time slots.

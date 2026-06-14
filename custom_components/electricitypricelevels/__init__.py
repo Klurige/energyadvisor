@@ -5,8 +5,10 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from .services import async_setup_services
+
 from .const import DOMAIN, LOGGER
+from .models import ElectricityPriceLevelsRuntimeData
+from .services import async_setup_services
 
 PLATFORMS = [Platform.SENSOR]
 
@@ -48,14 +50,15 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry
-) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up ElectricityPriceLevel from a config entry."""
-
+    hass.data.setdefault(DOMAIN, {})
     async_setup_services(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    runtime_data = getattr(entry, "runtime_data", None)
+    if isinstance(runtime_data, ElectricityPriceLevelsRuntimeData):
+        hass.data[DOMAIN][entry.entry_id] = runtime_data
 
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 
@@ -68,11 +71,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Remove services when last entry is unloaded
     if result:
-        remaining = [
-            e for e in hass.config_entries.async_entries(DOMAIN)
-            if e.entry_id != entry.entry_id
-        ]
-        if not remaining:
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        if not hass.data.get(DOMAIN):
             hass.services.async_remove(DOMAIN, "get_levels")
 
     return result

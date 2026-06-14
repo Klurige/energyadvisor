@@ -1,67 +1,104 @@
+"""Shared helpers for the electricitypricelevels integration."""
+
 from __future__ import annotations
 
-import datetime
-import logging
-from homeassistant.util import dt as dt_util
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta
+from typing import Any
 
-_LOGGER = logging.getLogger(__name__)
+LEVEL_TO_COMPACT = {
+    "Low": "L",
+    "Medium": "M",
+    "High": "H",
+    "Unknown": "U",
+}
 
 
-def generate_level_pattern(rates):
-    pattern = ""
-    step_in_minutes = 12
-    pattern_length_in_hours = 36
-    if rates is None or len(rates) == 0:
-        return "U" * (pattern_length_in_hours * 60 // step_in_minutes)
-    start_time = rates[0]["start"]
-    if isinstance(start_time, str):
-        start_time = dt_util.parse_datetime(start_time)
+def level_to_compact(level: str | None) -> str:
+    """Translate a human-readable level into its compact representation."""
+    return LEVEL_TO_COMPACT.get(level or "", "U")
 
-    end_time = start_time + datetime.timedelta(hours=pattern_length_in_hours)
 
-    current_start = start_time
-    current_end = current_start + datetime.timedelta(minutes=step_in_minutes,microseconds=-1)
+def infer_level_length_minutes(rates: Sequence[Mapping[str, Any]]) -> int:
+    """Infer the native slot length from the first valid rate entry."""
+    for rate in rates:
+        start = rate.get("start")
+        end = rate.get("end")
+        if isinstance(start, datetime) and isinstance(end, datetime) and end > start:
+            return max(1, int((end - start).total_seconds() / 60))
+    return 0
 
-    while current_end <= end_time:
-        level = "U"
-        # For every minute in time slot (current_start, current_end) find the level for corresponding rate.
-        # Summarise the levels: Low -> 1, Medium -> 2, High -> 3 and also count the number of levels. Disregard Unknown.
-        # Finally calculate the average level and set level accordingly.
-        # The average should be rounded up to the nearest integer and translated back to low, medium or high.
-        level_sum = 0
-        level_count = 0
-        for rate in rates:
-            rate_start = rate["start"]
-            if isinstance(rate_start, str):
-                rate_start = datetime.datetime.fromisoformat(rate_start)
-            rate_end = rate["end"]
-            if isinstance(rate_end, str):
-                rate_end = datetime.datetime.fromisoformat(rate_end)
 
-            if current_start >= rate_start and current_end <= rate_end:
-                if rate["level"] == "Low":
-                    level_sum += 1
-                    level_count += 1
-                elif rate["level"] == "Medium":
-                    level_sum += 2
-                    level_count += 1
-                elif rate["level"] == "High":
-                    level_sum += 3
-                    level_count += 1
+def _chunk_to_level(chunk: Sequence[str]) -> str:
+    """Collapse minute-level data into one compact level."""
+    if not chunk or any(level == "U" for level in chunk):
+        return "U"
+    if all(level == "L" for level in chunk):
+        return "L"
+    if all(level in {"L", "M"} for level in chunk):
+        return "M"
+    return "H"
 
-        if level_count > 0:
-            average_level = level_sum / level_count
-            if average_level > 2:
-                level = "H"
-            elif average_level > 1:
-                level = "M"
-            else:
-                level = "L"
 
-        pattern += level
+def build_levels_payload_from_rates(
+    rates: Sequence[Mapping[str, Any]],
+    low_threshold: float | None,
+    high_threshold: float | None,
+    reference_time: datetime,
+    requested_length: int = 0,
+    fill_unknown: bool = False,
+) -> dict[str, int | float | str | None]:
+    """Build a compact two-day level string from internal rate data."""
+    level_length = requested_length or infer_level_length_minutes(rates)
+    if level_length <= 0:
+        return {
+            "level_length": 0,
+            "levels": "",
+            "low_threshold": low_threshold,
+            "high_threshold": high_threshold,
+        }
 
-        current_start += datetime.timedelta(minutes=step_in_minutes)
-        current_end += datetime.timedelta(minutes=step_in_minutes)
+    day_start = reference_time.replace(hour=0, minute=0, second=0, microsecond=0)
+    range_end = day_start + timedelta(days=2)
+    total_minutes = max(0, int((range_end - day_start).total_seconds() / 60))
+    minute_levels = ["U"] * total_minutes
 
-    _LOGGER.debug("Pattern: %s", pattern)
-    return pattern
+    for rate in sorted(rates, key=lambda item: item["start"]):
+        start = rate.get("start")
+        end = rate.get("end")
+        if (
+            not isinstance(start, datetime)
+            or not isinstance(end, datetime)
+            or end <= start
+        ):
+            continue
+
+        overlap_start = max(start, day_start)
+        overlap_end = min(end, range_end)
+        if overlap_end <= overlap_start:
+            continue
+
+        start_index = max(0, int((overlap_start - day_start).total_seconds() // 60))
+        end_index = min(
+            total_minutes, int((overlap_end - day_start).total_seconds() // 60)
+        )
+        if end_index <= start_index:
+            continue
+
+        minute_levels[start_index:end_index] = [level_to_compact(rate.get("level"))] * (
+            end_index - start_index
+        )
+
+    levels = "".join(
+        _chunk_to_level(minute_levels[index : index + level_length])
+        for index in range(0, total_minutes, level_length)
+    )
+    if not fill_unknown:
+        levels = levels.rstrip("U")
+
+    return {
+        "level_length": level_length,
+        "levels": levels,
+        "low_threshold": low_threshold,
+        "high_threshold": high_threshold,
+    }

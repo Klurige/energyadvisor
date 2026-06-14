@@ -1,6 +1,11 @@
 get_levels:
     description: Get electricity price levels for today and tomorrow.
     fields:
+        entity_id:
+            selector:
+                entity:
+                    domain: sensor
+            description: Electricity Price Levels sensor entity id. Required when multiple entries are loaded.
         level_length:
             selector:
                 number:
