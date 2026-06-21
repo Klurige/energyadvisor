@@ -82,21 +82,25 @@ agent or computer restarts.
 
 ## Verifiable baby steps
 
+Where a live rollout is useful, the step includes an explicit **Deploy**
+substep. Here, **Deploy** means releasing to the live Home Assistant system.
+
 1. [x] Create this roadmap file.
    - **Done when:** this file exists in `docs/` and becomes the source of truth for progress notes.
 
-2. [ ] Lock current battery behavior with tests.
+2. [x] Lock current battery behavior with tests.
    - **Deliverable:** add or tighten tests that pin the current price-only battery logic.
    - **Verify:** existing battery behavior remains unchanged before new features begin.
    - **Note:** `test_battery_charge_mode_sensor.py` already covers the core algorithm well.
-     Focus new tests on edge cases: flat price curves (no charge/discharge expected), only
-     today's prices available (no tomorrow data), and DST transition days.
+     Added edge-case coverage for flat price curves (no charge/discharge expected), only
+     today's prices available (no tomorrow data), and a spring DST transition day.
 
 3. [ ] Add config plumbing for the new inputs.
    - **Deliverable:** add constants, config-flow fields, option-flow fields, and translations for the new entities and parameters.
    - **Verify:** the new inputs can be configured from the UI and survive reloads.
    - **Prerequisite:** resolve the naming inconsistency noted above before writing any code.
    - **Mode naming note:** add `maxuse` and `sell` to the `batterychargemode` state translations in `strings.json` and both translation files no later than step 15. If localized shadow-mode output is wanted earlier, expose `proposed_mode` as a dedicated diagnostic sensor instead of a plain attribute.
+   - **Deploy:** not by itself; bundle this with step 4 and step 5 for the first live release.
 
 4. [ ] Make the battery sensor explain itself.
    - **Deliverable:** add attributes such as `reason`, `next_mode_change`, `reserved_kwh`, `required_load_kwh`, and `charge_source`.
@@ -104,10 +108,12 @@ agent or computer restarts.
    - **Note:** design these attributes to describe the *chosen mode* rather than internals of the
      current price-only algorithm, so they remain meaningful when the new mode is promoted in
      step 15 without requiring a rewrite.
+   - **Deploy:** prepare for live release, but release together with step 5 as **R1**.
 
 5. [ ] Add real battery constraints.
    - **Deliverable:** use SoC, reserve floor, and efficiency to block impossible actions.
    - **Verify:** low SoC cannot produce `discharge` or `sell`; full battery cannot produce `charge`.
+   - **Deploy:** **Yes — R1.** Release step 3 + step 4 + step 5 together to the live system. Then observe that the new attributes are useful and that SoC only blocks impossible states.
 
 6. [ ] Introduce the new mode set in shadow mode.
    - **Deliverable:** compute `standby`, `charge`, `maxuse`, `discharge`, and `sell` as a `proposed_mode` attribute while the main state still uses the current logic.
@@ -115,30 +121,37 @@ agent or computer restarts.
    - **Note:** after releasing to the live system, let it soak for at least several days on real
      price and solar data before continuing to step 7. The shadow period is the primary
      quality gate before promotion.
+   - **Deploy:** **Yes — R2.** Release this step to the live system and start the first shadow-mode soak period.
 
 7. [ ] Replace fixed battery duration with required-energy math.
    - **Deliverable:** stop assuming a fixed discharge length and instead compute required energy until the next useful solar window.
    - **Verify:** the same price curve yields different reserve decisions in summer-like and winter-like scenarios.
+   - **Deploy:** not yet; keep in development until step 12 so the advisory planner can be released as a coherent whole.
 
 8. [ ] Add a simple household load model.
    - **Deliverable:** start with `household_base_load_w`, then allow temperature to adjust the expected load upward in winter.
    - **Verify:** winter test scenarios reserve more battery energy than summer scenarios.
+   - **Deploy:** not yet; hold for the step 12 advisory-planner release.
 
 9. [ ] Add an advisory water-heater planner.
    - **Deliverable:** compute the cheapest feasible water-heater refill plan, using 4 hours only as the worst-case cap and preferring solar-surplus slots when practical.
    - **Verify:** worst-case scenarios still receive the equivalent of 4 heater hours, while lighter-demand scenarios can schedule less.
+   - **Deploy:** not yet; hold for the step 12 advisory-planner release.
 
 10. [ ] Add the shower reset rule for the water heater.
    - **Deliverable:** when bathroom humidity reaches `100%`, reset the current hot-water cycle; then use the water-heater power trace only to measure actual recovery after the event and to detect when reheating is complete.
    - **Verify:** after a simulated shower trigger, the planner starts from the conservative need and then shortens or closes the refill requirement if observed heater recovery ends early.
+   - **Deploy:** not yet; hold for the step 12 advisory-planner release.
 
 11. [ ] Add advisory sunny-only planners for the pool pump and dehumidifier.
    - **Deliverable:** schedule both loads only in slots with sufficient solar surplus or clearly positive solar economics.
    - **Verify:** their schedules remain empty in non-sunny test scenarios.
+   - **Deploy:** not yet; hold for the step 12 advisory-planner release.
 
 12. [ ] Make the battery planner reserve energy for planned loads.
    - **Deliverable:** the battery planner must consider water-heater demand, expected base load, and sunny-only loads before allowing `discharge` or `sell`.
    - **Verify:** the planner does not sell battery energy that is needed later the same night or before the next solar window.
+   - **Deploy:** **Yes — R3.** Release steps 7–12 together so the full advisory planner runs live in shadow mode, then start the second soak period.
 
 13. [ ] Add historical learning.
    - **Deliverable:** learn expected base load from hour, weekday/weekend, season, and temperature; learn solar-surplus confidence from forecast versus actual production. `battery_charge_power_entity` feeds the charge/discharge learning here.
@@ -148,16 +161,19 @@ agent or computer restarts.
      offline without a live HA connection. Sanitize the fixtures before committing them so no
      secrets or unnecessarily detailed household traces end up in the repository. This is a
      **dev/offline step** — no live release needed.
+   - **Deploy:** no — development/offline only.
 
 14. [ ] Add backtesting and scenario comparison.
    - **Deliverable:** replay known days and compare old planner versus new planner on cost/profit and rule compliance.
    - **Verify:** lower net cost or higher net profit without breaking hard constraints.
    - **Note:** uses the same pre-fetched fixtures from step 13. Dev/offline only — no live release
      needed. Completion of this step is the confidence gate before step 15.
+   - **Deploy:** no — development/offline only.
 
 15. [ ] Promote the proposed mode to the main sensor state.
    - **Deliverable:** once shadow mode and backtests are good enough, publish the new mode set as the real battery state. Update `docs/batterychargemode.md` to document the new mode set and decision logic.
    - **Verify:** scenario tests, regression tests, and documentation all match the new behavior.
+   - **Deploy:** **Yes — R4.** Release this only after the shadow-mode soak periods and offline backtesting both look safe.
 
 ## Release gates
 

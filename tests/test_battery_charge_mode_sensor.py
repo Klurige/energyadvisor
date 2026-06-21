@@ -3,6 +3,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -273,6 +274,38 @@ class TestComputeChargeModes:
         result = compute_charge_modes(rates, 0.7, 160, 240)
         assert len(result) == 12
         assert all(e["mode"] == "standby" for e in result)
+
+    def test_spring_dst_day_keeps_all_slots_and_positive_durations(self):
+        stockholm = ZoneInfo("Europe/Stockholm")
+        hours = [0, 1] + list(range(3, 24))  # 02:00 is skipped on spring-forward day
+        rates = [
+            {
+                "from": f"2024-03-31T{hour:02d}:00",
+                "cost": 1.0 if i < 3 else 4.0,
+            }
+            for i, hour in enumerate(hours)
+        ]
+
+        with patch(
+            "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.get_default_time_zone",
+            return_value=stockholm,
+        ):
+            result = compute_charge_modes(rates, 0.7, 160, 240)
+
+        mode_map = {entry["start"].strftime("%H:%M"): entry["mode"] for entry in result}
+        assert len(result) == 23
+        assert all(entry["end"] > entry["start"] for entry in result)
+        assert result[1]["start"].strftime("%Y-%m-%dT%H:%M") == "2024-03-31T01:00"
+        assert result[1]["end"].strftime("%Y-%m-%dT%H:%M") == "2024-03-31T03:00"
+        # Current compact-rate parsing preserves the local 01:00→03:00 wall-clock
+        # gap as a two-hour slot on spring-forward days.
+        assert result[1]["end"] - result[1]["start"] == timedelta(hours=2)
+        assert result[-1]["end"].strftime("%Y-%m-%dT%H:%M") == "2024-04-01T00:00"
+        assert mode_map["00:00"] == "charge"
+        assert mode_map["01:00"] == "charge"
+        assert mode_map["03:00"] == "charge"
+        assert mode_map["04:00"] == "discharge"
+        assert mode_map["23:00"] == "discharge"
 
     def test_cheap_before_expensive_produces_charge_then_discharge(self):
         # hours 0-2: 1.0 (cheap → should charge)
@@ -560,6 +593,48 @@ def test_recompute_populates_charge_entries(sensor, source_sensor):
     ):
         sensor._recompute()
     assert len(sensor._charge_entries) == 12
+
+
+def test_recompute_with_flat_prices_keeps_sensor_in_standby(sensor, source_sensor):
+    source_sensor.compact_rates = make_rates([2.0] * 24)
+    with patch(
+        "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.now",
+        return_value=datetime(2024, 1, 1, 12, 30, tzinfo=UTC),
+    ), patch(
+        "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.get_time_zone",
+        return_value=UTC,
+    ), patch(
+        "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.get_default_time_zone",
+        return_value=UTC,
+    ):
+        next_update = sensor._recompute()
+
+    assert len(sensor._charge_entries) == 24
+    assert all(entry["mode"] == "standby" for entry in sensor._charge_entries)
+    assert sensor._mode == "standby"
+    assert next_update == 1801
+
+
+def test_recompute_handles_today_only_rates_without_tomorrow_data(sensor, source_sensor):
+    source_sensor.compact_rates = make_rates([1.0] * 3 + [4.0] * 21)
+    with patch(
+        "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.now",
+        return_value=datetime(2024, 1, 1, 23, 30, tzinfo=UTC),
+    ), patch(
+        "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.get_time_zone",
+        return_value=UTC,
+    ), patch(
+        "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.get_default_time_zone",
+        return_value=UTC,
+    ):
+        next_update = sensor._recompute()
+
+    assert len(sensor._charge_entries) == 24
+    assert sensor._charge_entries[-1]["start"] == datetime(2024, 1, 1, 23, 0, tzinfo=UTC)
+    assert sensor._charge_entries[-1]["end"] == datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
+    assert sensor._charge_entries[-1]["mode"] == "discharge"
+    assert sensor._mode == "discharge"
+    assert next_update == 1801
 
 
 def test_update_current_mode_standby_when_no_entries(sensor):
