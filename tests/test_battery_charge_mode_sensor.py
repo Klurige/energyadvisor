@@ -536,9 +536,17 @@ def test_extra_state_attributes_structure(sensor):
     assert "margin" in attrs
     assert "charging_time_minutes" in attrs
     assert "discharging_time_minutes" in attrs
+    assert "reason" in attrs
+    assert "next_mode_change" in attrs
+    assert "reserved_kwh" in attrs
+    assert "required_load_kwh" in attrs
+    assert "charge_source" in attrs
     assert attrs["margin"] == MARGIN
     assert attrs["charging_time_minutes"] == CHARGING_TIME_MINUTES
     assert attrs["discharging_time_minutes"] == DISCHARGING_TIME_MINUTES
+    assert attrs["reserved_kwh"] == 0.0
+    assert attrs["required_load_kwh"] == 0.0
+    assert attrs["charge_source"] is None
 
 
 def test_extra_state_attributes_serialises_datetimes_to_strings(sensor):
@@ -553,10 +561,89 @@ def test_extra_state_attributes_serialises_datetimes_to_strings(sensor):
     ]
     sensor._rebuild_cached_attributes()
     entry = sensor.extra_state_attributes["charge_entries"][0]
-    assert isinstance(entry["start"], str)
-    assert isinstance(entry["end"], str)
+    assert set(entry) == {"from", "mode", "cost"}
+    assert isinstance(entry["from"], str)
+    assert entry["from"] == "2024-01-01T00:00"
     assert entry["mode"] == "discharge"
     assert entry["cost"] == 3.0
+
+
+def test_update_current_mode_sets_charge_explainability(sensor):
+    base = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    sensor._charge_entries = [
+        {
+            "start": base,
+            "end": base + timedelta(hours=1),
+            "mode": "charge",
+            "cost": 1.0,
+        },
+        {
+            "start": base + timedelta(hours=1),
+            "end": base + timedelta(hours=2),
+            "mode": "charge",
+            "cost": 1.1,
+        },
+        {
+            "start": base + timedelta(hours=2),
+            "end": base + timedelta(hours=3),
+            "mode": "discharge",
+            "cost": 4.0,
+        },
+    ]
+
+    with patch(
+        "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.now",
+        return_value=base + timedelta(minutes=30),
+    ), patch(
+        "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.get_time_zone",
+        return_value=UTC,
+    ):
+        sensor._update_current_mode()
+
+    attrs = sensor.extra_state_attributes
+    assert sensor.state == "charge"
+    assert attrs["reason"] == (
+        "Charging is scheduled in a low-price window ahead of higher-price periods."
+    )
+    assert attrs["next_mode_change"] == "2024-01-01T02:00"
+    assert attrs["charge_source"] == "grid"
+    assert attrs["reserved_kwh"] == 0.0
+    assert attrs["required_load_kwh"] == 0.0
+
+
+def test_update_current_mode_sets_standby_explainability_when_all_slots_are_standby(sensor):
+    base = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    sensor._charge_entries = [
+        {
+            "start": base,
+            "end": base + timedelta(hours=1),
+            "mode": "standby",
+            "cost": 2.0,
+        },
+        {
+            "start": base + timedelta(hours=1),
+            "end": base + timedelta(hours=2),
+            "mode": "standby",
+            "cost": 2.0,
+        },
+    ]
+
+    with patch(
+        "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.now",
+        return_value=base + timedelta(minutes=30),
+    ), patch(
+        "custom_components.electricitypricelevels.sensor.batterychargemodesensor.dt_util.get_time_zone",
+        return_value=UTC,
+    ):
+        sensor._update_current_mode()
+
+    attrs = sensor.extra_state_attributes
+    assert sensor.state == "standby"
+    assert attrs["reason"] == (
+        "No profitable battery cycle is scheduled in the available price horizon."
+    )
+    assert attrs["next_mode_change"] is None
+    assert attrs["charge_source"] is None
 
 
 async def test_refresh_from_source_writes_when_attributes_change_but_mode_stays_same(
@@ -567,7 +654,7 @@ async def test_refresh_from_source_writes_when_attributes_change_but_mode_stays_
     sensor.async_write_ha_state = MagicMock()
 
     def _fake_recompute():
-        sensor._cached_attributes = {"charge_entries": [{"start": "2024-01-01T00:00"}]}
+        sensor._cached_attributes = {"charge_entries": [{"from": "2024-01-01T00:00"}]}
         return 60
 
     with patch.object(sensor, "_recompute", side_effect=_fake_recompute):
@@ -584,6 +671,10 @@ async def test_refresh_from_source_writes_when_attributes_change_but_mode_stays_
 def test_recompute_returns_60_when_no_rates(sensor, source_sensor):
     source_sensor.compact_rates = []
     assert sensor._recompute() == 60
+    assert sensor._mode == "standby"
+    assert sensor.extra_state_attributes["reason"] == "Waiting for electricity price data."
+    assert sensor.extra_state_attributes["next_mode_change"] is None
+    assert sensor.extra_state_attributes["charge_source"] is None
 
 
 def test_recompute_populates_charge_entries(sensor, source_sensor):

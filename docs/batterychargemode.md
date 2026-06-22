@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Determines whether a home battery should be **charging**, **discharging**, or in **standby** based on the electricity price schedule from the linked `sensor.electricitypricelevels` entity for the same config entry. The goal is to charge during cheap slots and discharge during expensive slots within each 12-hour window, while requiring a minimum price spread to prevent unnecessary cycling that would accelerate battery degradation.
+Determines whether a home battery should be **charging**, **discharging**, or in **standby** based on the electricity price schedule from the linked price sensor in the same config entry. The goal is to charge during cheap slots and discharge during expensive slots within each 12-hour window, while requiring a minimum price spread to prevent unnecessary cycling that would accelerate battery degradation.
 
 ---
 
@@ -41,9 +41,9 @@ mode algorithm yet.
 
 ## Output sensor
 
-**Default entity ID:** `sensor.batterychargemode` for the first config entry.
+**Default entity ID:** `sensor.electricity_price_levels_battery_charge_mode` for the first config entry.
 Additional entries receive the usual Home Assistant numeric suffixes, such as
-`sensor.batterychargemode_2`.
+`sensor.electricity_price_levels_battery_charge_mode_2`.
 
 ### State
 
@@ -55,10 +55,15 @@ Icon changes dynamically: `mdi:battery-charging` / `mdi:battery-arrow-down-outli
 
 | Attribute | Type | Description |
 |---|---|---|
-| `charge_entries` | list[dict] | Full schedule — one dict per price slot with `start`, `end`, `mode`, `cost` |
+| `charge_entries` | list[dict] | Full schedule — one dict per price slot with local `from`, `mode`, and `cost` (`YYYY-MM-DDTHH:MM`) |
 | `margin` | float | Configured or default degradation cost margin |
 | `charging_time_minutes` | int | Computed or default charging duration |
 | `discharging_time_minutes` | int | Computed or default discharging duration |
+| `reason` | str | Human-readable explanation for the currently chosen mode |
+| `next_mode_change` | str \| null | Local time string (`YYYY-MM-DDTHH:MM`) for the next expected mode change |
+| `reserved_kwh` | float | Battery energy currently reserved for future needs; `0.0` until step 5/6 adds reserve logic |
+| `required_load_kwh` | float | Load-backed energy target for the current plan; `0.0` until later load-aware steps |
+| `charge_source` | str \| null | `grid` while the current mode is `charge`, otherwise `null` |
 
 When `exclude_from_recording` is enabled for the integration, the whole sensor
 is excluded from recorder/history. Even when recorder is enabled for the
@@ -69,7 +74,7 @@ attribute storage.
 
 ## Algorithm
 
-The schedule is recomputed whenever `sensor.electricitypricelevels` changes (i.e. when new Nordpool prices arrive). It processes the price list in **12-hour windows** sliding from midnight:
+The schedule is recomputed whenever the linked price sensor changes (i.e. when new Nordpool prices arrive). It processes the price list in **12-hour windows** sliding from midnight:
 
 1. **Find discharge peaks** (`_find_local_peaks`): locate the most expensive slots in each window. The global price maximum defines the peak; slots around it are widened to fill `discharging_time_minutes` of total discharge. If the peak–valley spread is below `margin`, the window is skipped entirely.
 2. **Find charge valleys** (`_find_local_valleys`): for each discharge block, look back up to 8 hours and pick the cheapest slots that cover `charging_time_minutes`.

@@ -46,6 +46,24 @@ _DEFAULT_DISCHARGING_TIME_MINUTES = (
     240  # Expected battery discharge duration, in minutes.
 )
 
+_WAITING_FOR_RATES_REASON = "Waiting for electricity price data."
+_OUTSIDE_HORIZON_REASON = "Current time is outside the available battery schedule horizon."
+_BETWEEN_WINDOWS_REASON = "Current slot is outside the scheduled charge and discharge windows."
+_NO_PROFITABLE_CYCLE_REASON = (
+    "No profitable battery cycle is scheduled in the available price horizon."
+)
+_CHARGE_REASON = (
+    "Charging is scheduled in a low-price window ahead of higher-price periods."
+)
+_DISCHARGE_REASON = (
+    "Discharging is scheduled in a high-price window after earlier lower-price periods."
+)
+
+
+def _format_compact_local_datetime(value: datetime) -> str:
+    """Format a datetime like the other helper sensor attributes."""
+    return value.strftime("%Y-%m-%dT%H:%M")
+
 
 # ---------------------------------------------------------------------------
 # Algorithm (translated from JavaScript)
@@ -402,7 +420,6 @@ class BatteryChargeModeSensor(SensorEntity):
         if not rates:
             self._last_rates_hash = None
             self._charge_entries = []
-            self._rebuild_cached_attributes()
             return self._update_current_mode()
 
         # Skip full recomputation if rates haven't changed.
@@ -415,9 +432,70 @@ class BatteryChargeModeSensor(SensorEntity):
                 self._charging_time_minutes,
                 self._discharging_time_minutes,
             )
-            self._rebuild_cached_attributes()
 
         return self._update_current_mode()
+
+    def _find_current_entry(
+        self, now: datetime
+    ) -> tuple[int | None, dict | None]:
+        """Return the index and entry covering the current time, if any."""
+        for index, entry in enumerate(self._charge_entries):
+            if entry["start"] <= now < entry["end"]:
+                return index, entry
+        return None, None
+
+    def _next_mode_change(
+        self,
+        now: datetime | None,
+        current_index: int | None,
+        current_entry: dict | None,
+    ) -> datetime | None:
+        """Return when the current mode block is expected to change."""
+        if not self._charge_entries:
+            return None
+
+        if current_entry is None:
+            if now is None:
+                return None
+            future_entry = next((e for e in self._charge_entries if e["start"] > now), None)
+            return future_entry["start"] if future_entry else None
+
+        block_end = current_entry["end"]
+        current_mode = current_entry["mode"]
+        if current_index is None:
+            current_index = self._charge_entries.index(current_entry)
+
+        for entry in self._charge_entries[current_index + 1 :]:
+            if entry["mode"] != current_mode:
+                return entry["start"]
+            block_end = entry["end"]
+
+        if current_mode != "standby":
+            return block_end
+        return None
+
+    def _reason_for_current_mode(
+        self,
+        now: datetime | None,
+        current_entry: dict | None,
+    ) -> str:
+        """Return a human-readable explanation for the chosen mode."""
+        if not self._charge_entries:
+            return _WAITING_FOR_RATES_REASON
+
+        if current_entry is None:
+            if now is not None and now >= self._charge_entries[-1]["end"]:
+                return _OUTSIDE_HORIZON_REASON
+            return _BETWEEN_WINDOWS_REASON
+
+        if current_entry["mode"] == "charge":
+            return _CHARGE_REASON
+        if current_entry["mode"] == "discharge":
+            return _DISCHARGE_REASON
+
+        if any(entry["mode"] != "standby" for entry in self._charge_entries):
+            return _BETWEEN_WINDOWS_REASON
+        return _NO_PROFITABLE_CYCLE_REASON
 
     def _update_current_mode(self) -> int:
         """Update _mode from charge_entries for the current time.
@@ -426,20 +504,21 @@ class BatteryChargeModeSensor(SensorEntity):
         """
         if not self._charge_entries:
             self._mode = "standby"
+            self._rebuild_cached_attributes()
             return 60
 
         local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
         now = dt_util.now().astimezone(local_tz)
+        current_index, current = self._find_current_entry(now)
 
-        current = next(
-            (e for e in self._charge_entries if e["start"] <= now < e["end"]), None
-        )
         if current:
             self._mode = current["mode"]
+            self._rebuild_cached_attributes(now, current_index, current)
             seconds_left = max(1, int((current["end"] - now).total_seconds()))
             return seconds_left + 1  # +1 to safely land inside the next slot.
 
         self._mode = "standby"
+        self._rebuild_cached_attributes(now)
         return 60
 
     async def _periodic_update(self) -> None:
@@ -463,13 +542,24 @@ class BatteryChargeModeSensor(SensorEntity):
             return "mdi:battery-arrow-down-outline"
         return "mdi:battery-outline"
 
-    def _rebuild_cached_attributes(self) -> None:
-        """Pre-build the attributes dict so the property just returns a reference."""
+    def _rebuild_cached_attributes(
+        self,
+        now: datetime | None = None,
+        current_index: int | None = None,
+        current_entry: dict | None = None,
+    ) -> None:
+        """Pre-build sensor attributes, including current-mode explainability."""
+        if now is None and self.hass is not None:
+            local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
+            now = dt_util.now().astimezone(local_tz)
+        if current_entry is None and now is not None:
+            current_index, current_entry = self._find_current_entry(now)
+
+        next_mode_change = self._next_mode_change(now, current_index, current_entry)
         self._cached_attributes = {
             "charge_entries": [
                 {
-                    "start": e["start"].isoformat(),
-                    "end": e["end"].isoformat(),
+                    "from": _format_compact_local_datetime(e["start"]),
                     "mode": e["mode"],
                     "cost": e["cost"],
                 }
@@ -478,6 +568,15 @@ class BatteryChargeModeSensor(SensorEntity):
             "margin": self._margin,
             "charging_time_minutes": self._charging_time_minutes,
             "discharging_time_minutes": self._discharging_time_minutes,
+            "reason": self._reason_for_current_mode(now, current_entry),
+            "next_mode_change": (
+                _format_compact_local_datetime(next_mode_change)
+                if next_mode_change is not None
+                else None
+            ),
+            "reserved_kwh": 0.0,
+            "required_load_kwh": 0.0,
+            "charge_source": "grid" if self._mode == "charge" else None,
         }
 
     @property

@@ -104,12 +104,15 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
    - **Done:** added config/options storage, validation, and translated labels for the agreed optimizer inputs; documented that they are stored now but not yet used by the runtime planner.
    - **Deploy:** not by itself; bundle this with step 4 and step 5 for the first live release.
 
-4. [ ] Make the battery sensor explain itself.
+4. [x] Make the battery sensor explain itself.
    - **Deliverable:** add attributes such as `reason`, `next_mode_change`, `reserved_kwh`, `required_load_kwh`, and `charge_source`.
    - **Verify:** every mode decision can be understood from sensor attributes without reading logs.
    - **Note:** design these attributes to describe the *chosen mode* rather than internals of the
      current price-only algorithm, so they remain meaningful when the new mode is promoted in
      step 15 without requiring a rewrite.
+   - **Done:** the battery helper now exposes human-readable `reason`, block-based `next_mode_change`,
+     zeroed `reserved_kwh` / `required_load_kwh` placeholders for future reserve/load logic, and
+     `charge_source` for current charging periods.
    - **Deploy:** prepare for live release, but release together with step 5 as **R1**.
 
 5. [ ] Add real battery constraints.

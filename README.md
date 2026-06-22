@@ -162,13 +162,18 @@ See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast d
 
 ### `sensor.batterychargemode`
 - **Description:** Optional battery schedule recommendation based on the price rates from the linked `sensor.electricitypricelevels` entry.
-- **Default Entity ID:** `sensor.batterychargemode` for the first config entry.
+- **Default Entity ID:** `sensor.electricity_price_levels_battery_charge_mode` for the first config entry.
 - **State:** `charge`, `discharge`, or `standby`.
 - **Attributes:**
-  - `charge_entries`: Planned per-slot schedule with `start`, `end`, `mode`, and `cost`.
+  - `charge_entries`: Planned per-slot schedule with local `from`, `mode`, and `cost` (`YYYY-MM-DDTHH:MM`).
   - `margin`: Minimum price spread required before cycling.
   - `charging_time_minutes`: Charge duration used by the planner.
   - `discharging_time_minutes`: Discharge duration used by the planner.
+  - `reason`: Human-readable explanation for the current recommendation.
+  - `next_mode_change`: Local time string (`YYYY-MM-DDTHH:MM`) for the next expected mode change.
+  - `reserved_kwh`: Reserved battery energy, currently `0.0` until reserve logic is introduced.
+  - `required_load_kwh`: Load-backed energy target, currently `0.0` until later load-aware steps.
+  - `charge_source`: `grid` while charging, otherwise `null`.
 
 See [docs/batterychargemode.md](docs/batterychargemode.md) for the battery scheduling rules and configuration details.
 
