@@ -9,7 +9,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.translation import async_get_translations
 from homeassistant.loader import async_get_integration
 
 from ..const import (
@@ -61,27 +60,14 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    user_language = hass.config.language
-    translations = await async_get_translations(
-        hass, user_language, "device_info", [DOMAIN]
-    )
     integration = await async_get_integration(hass, DOMAIN)
-    device_name = translations.get(
-        f"component.{DOMAIN}.device_info.device_name", "Untranslated device name"
-    )
-    manufacturer = translations.get(
-        f"component.{DOMAIN}.device_info.manufacturer", "Untranslated manufacturer"
-    )
-    model = translations.get(
-        f"component.{DOMAIN}.device_info.model", "Untranslated model"
-    )
 
     device_info = DeviceInfo(
         entry_type=DeviceEntryType.SERVICE,
         identifiers={(DOMAIN, entry.entry_id)},
-        name=device_name,
-        manufacturer=manufacturer,
-        model=model,
+        name="Energy Advisor",
+        manufacturer="Energy Advisor",
+        model="Energy Advisor",
         sw_version=str(integration.version) if integration.version else None,
         configuration_url=None,
     )
