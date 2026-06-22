@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 
-from .const import DOMAIN, LOGGER
+from .const import DOMAIN, LOGGER, PREFERRED_SENSOR_ENTITY_IDS, build_sensor_unique_id
 from .models import ElectricityPriceLevelsRuntimeData
 from .services import async_setup_services
 
@@ -50,10 +51,71 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+def _registry_entry_sensor_key(entity_entry: er.RegistryEntry) -> str | None:
+    """Resolve the known sensor key for an entity-registry entry."""
+    if entity_entry.translation_key in PREFERRED_SENSOR_ENTITY_IDS:
+        return entity_entry.translation_key
+
+    _, _, suffix = entity_entry.unique_id.rpartition("_")
+    if suffix in PREFERRED_SENSOR_ENTITY_IDS:
+        return suffix
+
+    return None
+
+
+async def _async_migrate_entity_registry(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> None:
+    """Align entity IDs with the preferred names and stabilize unique IDs."""
+    registry = er.async_get(hass)
+
+    @callback
+    def _update_entry(entity_entry: er.RegistryEntry) -> dict[str, str] | None:
+        sensor_key = _registry_entry_sensor_key(entity_entry)
+        if sensor_key is None:
+            return None
+
+        updates: dict[str, str] = {}
+
+        new_unique_id = build_sensor_unique_id(entry, sensor_key)
+        if entity_entry.unique_id != new_unique_id:
+            updates["new_unique_id"] = new_unique_id
+
+        preferred_entity_id = PREFERRED_SENSOR_ENTITY_IDS[sensor_key]
+        entity_id_owner = registry.async_get(preferred_entity_id)
+        if entity_entry.entity_id != preferred_entity_id:
+            if entity_id_owner is None or entity_id_owner.id == entity_entry.id:
+                updates["new_entity_id"] = preferred_entity_id
+            else:
+                LOGGER.warning(
+                    "Keeping %s because preferred entity ID %s is already used by %s.",
+                    entity_entry.entity_id,
+                    preferred_entity_id,
+                    entity_id_owner.entity_id,
+                )
+
+        return updates or None
+
+    for entity_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        updates = _update_entry(entity_entry)
+        if not updates:
+            continue
+
+        new_entity_id = updates.get("new_entity_id")
+        if new_entity_id and registry.async_get(new_entity_id) is None:
+            if hass.states.get(new_entity_id) is not None:
+                # Clear stale restored states so the registry rename can claim the
+                # preferred entity ID during staged naming migrations.
+                hass.states.async_remove(new_entity_id)
+
+        registry.async_update_entity(entity_entry.entity_id, **updates)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up ElectricityPriceLevel from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     async_setup_services(hass)
+    await _async_migrate_entity_registry(hass, entry)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     runtime_data = getattr(entry, "runtime_data", None)

@@ -6,9 +6,15 @@ from unittest.mock import patch
 
 import pytest
 
+from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 
-from custom_components.electricitypricelevels.const import DOMAIN
+from custom_components.electricitypricelevels import _async_migrate_entity_registry
+from custom_components.electricitypricelevels.const import (
+    DOMAIN,
+    PREFERRED_SENSOR_ENTITY_IDS,
+    build_sensor_unique_id,
+)
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -140,3 +146,51 @@ async def test_migrate_v2_entry_not_modified(hass):
     assert entry.version == 2
     assert entry.options["nordpool_prices_sensor"] == "sensor.test"
     assert entry.options["price_divisor"] == 1
+
+
+async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
+    """Current entity IDs should migrate to the preferred staged naming."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="sensor.nord_pool_se4_current_price",
+        data={},
+        options={},
+    )
+    entry.add_to_hass(hass)
+
+    registry = er.async_get(hass)
+    current_entity_ids = {
+        "electricitypricelevels": "sensor.electricity_price_levels_price",
+        "compactlevels": "sensor.electricity_price_levels_compact_levels",
+        "batterychargemode": "sensor.electricity_price_levels_battery_charge_mode",
+        "solarforecast": "sensor.electricity_price_levels_solar_forecast_refined",
+    }
+
+    for sensor_key, current_entity_id in current_entity_ids.items():
+        created = registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            f"{entry.entry_id}_{sensor_key}",
+            config_entry=entry,
+            translation_key=sensor_key,
+            has_entity_name=True,
+            original_name=sensor_key,
+        )
+        registry.async_update_entity(
+            created.entity_id,
+            new_entity_id=current_entity_id,
+        )
+
+    hass.states.async_set(
+        "sensor.electricity_price_levels_solar_forecast",
+        "restored-placeholder",
+    )
+    await _async_migrate_entity_registry(hass, entry)
+
+    for sensor_key, preferred_entity_id in PREFERRED_SENSOR_ENTITY_IDS.items():
+        migrated = registry.async_get(preferred_entity_id)
+        assert migrated is not None
+        assert migrated.config_entry_id == entry.entry_id
+        assert migrated.unique_id == build_sensor_unique_id(entry, sensor_key)
+
+    assert hass.states.get("sensor.electricity_price_levels_solar_forecast") is None

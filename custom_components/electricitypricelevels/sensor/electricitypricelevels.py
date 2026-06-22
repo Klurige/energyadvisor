@@ -41,6 +41,8 @@ from ..const import (
     CONF_GRID_ENERGY_TAX,
     CONF_ELECTRICITY_VAT,
     CONF_EXCLUDE_FROM_RECORDING,
+    PREFERRED_SENSOR_ENTITY_IDS,
+    build_sensor_unique_id,
     parse_unit_of_measurement,
 )
 from ..util import build_levels_payload_from_rates, level_to_compact
@@ -134,8 +136,9 @@ class ElectricityPriceLevelsSensor(SensorEntity):
             translation_key="electricitypricelevels",
         )
         self.entity_description = description
+        self.entity_id = PREFERRED_SENSOR_ENTITY_IDS[description.key]
         self._attr_suggested_object_id = description.key
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_unique_id = build_sensor_unique_id(entry, description.key)
 
         self._state = 0.0
         self._spot_price = 0.0

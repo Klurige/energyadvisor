@@ -39,14 +39,16 @@ def _make_sensor(
     )
     entry = MagicMock()
     entry.entry_id = "entry-id"
+    entry.unique_id = "sensor.nord_pool_se4_current_price"
     entry.options = {CONF_EXCLUDE_FROM_RECORDING: exclude_from_recording}
     return SolarForecastSensor(MagicMock(), entry, {}, coordinator)
 
 
 def test_sensor_uses_suggested_object_id_and_excludes_large_attribute():
-    """The entity should rely on HA naming and keep forecasts out of recorder attrs."""
+    """The entity should use the staged preferred ID and keep forecasts unrecorded."""
     sensor = _make_sensor(exclude_from_recording=False)
 
+    assert sensor.entity_id == "sensor.electricity_price_levels_solar_forecast"
     assert sensor._attr_suggested_object_id == "solarforecast"
     assert sensor._attr_exclude_from_recording is False
     assert ATTR_FORECASTS in sensor._unrecorded_attributes

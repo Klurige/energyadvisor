@@ -5,14 +5,22 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorEntityDescription,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.util import dt as dt_util
 
-from ..const import CONF_EXCLUDE_FROM_RECORDING, DOMAIN
+from ..const import (
+    CONF_EXCLUDE_FROM_RECORDING,
+    DOMAIN,
+    PREFERRED_SENSOR_ENTITY_IDS,
+    build_sensor_unique_id,
+)
 
 if TYPE_CHECKING:
     from .electricitypricelevels import ElectricityPriceLevelsSensor
@@ -99,8 +107,9 @@ class CompactLevelsSensor(SensorEntity):
             translation_key="compactlevels",
         )
         self.entity_description = description
+        self.entity_id = PREFERRED_SENSOR_ENTITY_IDS[description.key]
         self._attr_suggested_object_id = description.key
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_unique_id = build_sensor_unique_id(entry, description.key)
         self._attr_device_info = device_info
         self._attr_exclude_from_recording = entry.options.get(
             CONF_EXCLUDE_FROM_RECORDING, True

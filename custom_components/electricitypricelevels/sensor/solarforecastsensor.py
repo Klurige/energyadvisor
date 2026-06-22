@@ -21,13 +21,15 @@ from ..const import (
     ATTR_INTRADAY_SCALING,
     ATTR_TOTAL_SAMPLES,
     CONF_EXCLUDE_FROM_RECORDING,
+    PREFERRED_SENSOR_ENTITY_IDS,
+    build_sensor_unique_id,
 )
 from ..solar_forecast_coordinator import SolarForecastCoordinator
 
 
 class SolarForecastSensor(SensorEntity):
     """
-    Refined solar forecast sensor — today and tomorrow.
+    Solar forecast sensor — today and tomorrow.
 
     State   : corrected kW estimate for the current 15-minute slot
     Unit    : kW
@@ -63,8 +65,9 @@ class SolarForecastSensor(SensorEntity):
             translation_key="solarforecast",
         )
         self.entity_description = description
+        self.entity_id = PREFERRED_SENSOR_ENTITY_IDS[description.key]
         self._attr_suggested_object_id = description.key
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_unique_id = build_sensor_unique_id(entry, description.key)
         self._attr_device_info = device_info
         self._attr_exclude_from_recording = entry.options.get(
             CONF_EXCLUDE_FROM_RECORDING, True

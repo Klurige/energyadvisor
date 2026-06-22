@@ -21,28 +21,42 @@ from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 
 
 from .const import (
+    CONF_BATHROOM_HUMIDITY_ENTITY,
     CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_CHARGE_POWER_ENTITY,
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
+    CONF_BATTERY_SOC_ENTITY,
+    CONF_DEHUMIDIFIER_POWER_ENTITY,
+    CONF_DEHUMIDIFIER_POWER_W,
     CONF_NORDPOOL_PRICES_SENSOR,
     CONF_LOW_THRESHOLD,
     CONF_HIGH_THRESHOLD,
+    CONF_GRID_EXPORT_ENTITY,
     CONF_SUPPLIER_NOTE,
     CONF_SUPPLIER_FIXED_FEE,
     CONF_SUPPLIER_VARIABLE_FEE,
     CONF_SUPPLIER_FIXED_CREDIT,
     CONF_SUPPLIER_VARIABLE_CREDIT,
+    CONF_GRID_IMPORT_ENTITY,
     CONF_GRID_NOTE,
     CONF_GRID_FIXED_FEE,
     CONF_GRID_VARIABLE_FEE,
     CONF_GRID_FIXED_CREDIT,
     CONF_GRID_VARIABLE_CREDIT,
     CONF_GRID_ENERGY_TAX,
+    CONF_HOUSEHOLD_BASE_LOAD_W,
     CONF_ELECTRICITY_VAT,
     CONF_EXCLUDE_FROM_RECORDING,
     CONF_FORECAST_ENTITY,
     CONF_POWER_ENTITY,
     CONF_FORECAST_TOMORROW_ENTITY,
+    CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    CONF_POOL_PUMP_POWER_ENTITY,
+    CONF_POOL_PUMP_POWER_W,
+    CONF_WATER_HEATER_MAX_HOURS,
+    CONF_WATER_HEATER_POWER_ENTITY,
+    CONF_WATER_HEATER_POWER_W,
     DEV_DEFAULTS,
     DEV_DEFAULTS_ENABLED,
     DOMAIN,
@@ -57,9 +71,171 @@ def _parse_unit_of_measurement(unit_str: str) -> tuple[str | None, str | None]:
     return parse_unit_of_measurement(unit_str)
 
 
-def _dev_default(key: str):
-    """Return the dev default for key when DEV_DEFAULTS_ENABLED, else None."""
-    return DEV_DEFAULTS.get(key) if DEV_DEFAULTS_ENABLED else None
+def _dev_default(*keys: str):
+    """Return the first matching dev default when DEV_DEFAULTS_ENABLED."""
+    if not DEV_DEFAULTS_ENABLED:
+        return None
+    for key in keys:
+        if key in DEV_DEFAULTS:
+            return DEV_DEFAULTS[key]
+    return None
+
+
+LEGACY_DEV_DEFAULT_ALIASES: dict[str, tuple[str, ...]] = {
+    CONF_WATER_HEATER_POWER_ENTITY: ("water_heater_entity",),
+    CONF_WATER_HEATER_MAX_HOURS: ("water_heater_min_hours",),
+    CONF_POOL_PUMP_POWER_ENTITY: ("pool_pump_entity",),
+    CONF_DEHUMIDIFIER_POWER_ENTITY: ("dehumidifier_entity",),
+}
+
+OPTIMIZER_ENTITY_KEYS: tuple[str, ...] = (
+    CONF_BATTERY_SOC_ENTITY,
+    CONF_BATTERY_CHARGE_POWER_ENTITY,
+    CONF_GRID_IMPORT_ENTITY,
+    CONF_GRID_EXPORT_ENTITY,
+    CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    CONF_BATHROOM_HUMIDITY_ENTITY,
+    CONF_WATER_HEATER_POWER_ENTITY,
+    CONF_POOL_PUMP_POWER_ENTITY,
+    CONF_DEHUMIDIFIER_POWER_ENTITY,
+)
+
+OPTIMIZER_NUMERIC_KEYS: tuple[str, ...] = (
+    CONF_HOUSEHOLD_BASE_LOAD_W,
+    CONF_WATER_HEATER_POWER_W,
+    CONF_WATER_HEATER_MAX_HOURS,
+    CONF_POOL_PUMP_POWER_W,
+    CONF_DEHUMIDIFIER_POWER_W,
+)
+
+
+def _schema_default(value: Any) -> Any:
+    """Return a voluptuous default marker for an optional field."""
+    return value if value is not None else vol.UNDEFINED
+
+
+def _form_value(data: dict[str, Any], key: str) -> Any:
+    """Return stored value or matching dev default for a config key."""
+    value = data.get(key)
+    if value is not None:
+        return value
+    return _dev_default(key, *LEGACY_DEV_DEFAULT_ALIASES.get(key, ()))
+
+
+def _validate_optional_sensor_entities(
+    hass: HomeAssistant,
+    entity_ids: dict[str, str | None],
+) -> dict[str, str]:
+    """Validate optional sensor entity ids when provided."""
+    errors: dict[str, str] = {}
+    for key, entity_id in entity_ids.items():
+        if entity_id and hass.states.get(entity_id) is None:
+            errors[key] = "entity_not_found"
+    return errors
+
+
+def _build_battery_and_optimizer_schema(
+    values: dict[str, Any],
+    unit_of_measurement: str,
+) -> dict[Any, Any]:
+    """Build the config schema for battery and optimizer inputs."""
+    return {
+        vol.Optional(
+            CONF_BATTERY_CAPACITY_KWH,
+            default=_schema_default(values.get(CONF_BATTERY_CAPACITY_KWH)),
+            description={"suffix": "kWh"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
+        vol.Optional(
+            CONF_BATTERY_MAX_CHARGE_POWER_W,
+            default=_schema_default(values.get(CONF_BATTERY_MAX_CHARGE_POWER_W)),
+            description={"suffix": "W"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=1)),
+        vol.Optional(
+            CONF_BATTERY_DEGRADATION_COST,
+            default=_schema_default(values.get(CONF_BATTERY_DEGRADATION_COST)),
+            description={"suffix": unit_of_measurement},
+        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        vol.Optional(
+            CONF_BATTERY_SOC_ENTITY,
+            default=_schema_default(values.get(CONF_BATTERY_SOC_ENTITY)),
+            description={"suggested_value": values.get(CONF_BATTERY_SOC_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_BATTERY_CHARGE_POWER_ENTITY,
+            default=_schema_default(values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)),
+            description={
+                "suggested_value": values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)
+            },
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_GRID_IMPORT_ENTITY,
+            default=_schema_default(values.get(CONF_GRID_IMPORT_ENTITY)),
+            description={"suggested_value": values.get(CONF_GRID_IMPORT_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_GRID_EXPORT_ENTITY,
+            default=_schema_default(values.get(CONF_GRID_EXPORT_ENTITY)),
+            description={"suggested_value": values.get(CONF_GRID_EXPORT_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_OUTDOOR_TEMPERATURE_ENTITY,
+            default=_schema_default(values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)),
+            description={
+                "suggested_value": values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)
+            },
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_HOUSEHOLD_BASE_LOAD_W,
+            default=_schema_default(values.get(CONF_HOUSEHOLD_BASE_LOAD_W)),
+            description={"suffix": "W"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        vol.Optional(
+            CONF_WATER_HEATER_POWER_ENTITY,
+            default=_schema_default(values.get(CONF_WATER_HEATER_POWER_ENTITY)),
+            description={
+                "suggested_value": values.get(CONF_WATER_HEATER_POWER_ENTITY)
+            },
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_WATER_HEATER_POWER_W,
+            default=_schema_default(values.get(CONF_WATER_HEATER_POWER_W)),
+            description={"suffix": "W"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=1)),
+        vol.Optional(
+            CONF_WATER_HEATER_MAX_HOURS,
+            default=_schema_default(values.get(CONF_WATER_HEATER_MAX_HOURS)),
+            description={"suffix": "h"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
+        vol.Optional(
+            CONF_BATHROOM_HUMIDITY_ENTITY,
+            default=_schema_default(values.get(CONF_BATHROOM_HUMIDITY_ENTITY)),
+            description={
+                "suggested_value": values.get(CONF_BATHROOM_HUMIDITY_ENTITY)
+            },
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_POOL_PUMP_POWER_ENTITY,
+            default=_schema_default(values.get(CONF_POOL_PUMP_POWER_ENTITY)),
+            description={"suggested_value": values.get(CONF_POOL_PUMP_POWER_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_POOL_PUMP_POWER_W,
+            default=_schema_default(values.get(CONF_POOL_PUMP_POWER_W)),
+            description={"suffix": "W"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=1)),
+        vol.Optional(
+            CONF_DEHUMIDIFIER_POWER_ENTITY,
+            default=_schema_default(values.get(CONF_DEHUMIDIFIER_POWER_ENTITY)),
+            description={
+                "suggested_value": values.get(CONF_DEHUMIDIFIER_POWER_ENTITY)
+            },
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_DEHUMIDIFIER_POWER_W,
+            default=_schema_default(values.get(CONF_DEHUMIDIFIER_POWER_W)),
+            description={"suffix": "W"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=1)),
+    }
 
 
 def _validate_solar_forecast_entities(
@@ -533,14 +709,17 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
                 {
                     vol.Optional(
                         CONF_FORECAST_ENTITY,
+                        default=_schema_default(forecast_entity_val),
                         description={"suggested_value": forecast_entity_val},
                     ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
                     vol.Optional(
                         CONF_POWER_ENTITY,
+                        default=_schema_default(power_entity_val),
                         description={"suggested_value": power_entity_val},
                     ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
                     vol.Optional(
                         CONF_FORECAST_TOMORROW_ENTITY,
+                        default=_schema_default(tomorrow_entity_val),
                         description={"suggested_value": tomorrow_entity_val},
                     ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
                 }
@@ -557,6 +736,9 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
             battery_capacity_kwh = user_input.get(CONF_BATTERY_CAPACITY_KWH)
             battery_max_charge_power_w = user_input.get(CONF_BATTERY_MAX_CHARGE_POWER_W)
             battery_degradation_cost = user_input.get(CONF_BATTERY_DEGRADATION_COST)
+            optimizer_entities = {
+                key: user_input.get(key) for key in OPTIMIZER_ENTITY_KEYS
+            }
 
             errors.update(
                 _validate_battery_settings(
@@ -566,9 +748,18 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
             )
 
             if not errors:
+                errors.update(
+                    _validate_optional_sensor_entities(self.hass, optimizer_entities)
+                )
+
+            if not errors:
                 self.data[CONF_BATTERY_CAPACITY_KWH] = battery_capacity_kwh
                 self.data[CONF_BATTERY_MAX_CHARGE_POWER_W] = battery_max_charge_power_w
                 self.data[CONF_BATTERY_DEGRADATION_COST] = battery_degradation_cost
+                for key, entity_id in optimizer_entities.items():
+                    self.data[key] = entity_id or None
+                for key in OPTIMIZER_NUMERIC_KEYS:
+                    self.data[key] = user_input.get(key)
                 return self.async_create_entry(
                     title="ElectricityPriceLevel",
                     data=self.data,
@@ -617,57 +808,28 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
                         CONF_BATTERY_DEGRADATION_COST: self.data.get(
                             CONF_BATTERY_DEGRADATION_COST
                         ),
+                        **{
+                            key: self.data.get(key)
+                            for key in (*OPTIMIZER_ENTITY_KEYS, *OPTIMIZER_NUMERIC_KEYS)
+                        },
                     },
                 )
 
-        battery_capacity_val = (
-            self.data.get(CONF_BATTERY_CAPACITY_KWH)
-            if self.data.get(CONF_BATTERY_CAPACITY_KWH) is not None
-            else _dev_default(CONF_BATTERY_CAPACITY_KWH)
-        )
-        battery_max_power_val = (
-            self.data.get(CONF_BATTERY_MAX_CHARGE_POWER_W)
-            if self.data.get(CONF_BATTERY_MAX_CHARGE_POWER_W) is not None
-            else _dev_default(CONF_BATTERY_MAX_CHARGE_POWER_W)
-        )
-        battery_degradation_val = (
-            self.data.get(CONF_BATTERY_DEGRADATION_COST)
-            if self.data.get(CONF_BATTERY_DEGRADATION_COST) is not None
-            else _dev_default(CONF_BATTERY_DEGRADATION_COST)
-        )
+        form_values = {
+            key: _form_value(self.data, key)
+            for key in (
+                CONF_BATTERY_CAPACITY_KWH,
+                CONF_BATTERY_MAX_CHARGE_POWER_W,
+                CONF_BATTERY_DEGRADATION_COST,
+                *OPTIMIZER_ENTITY_KEYS,
+                *OPTIMIZER_NUMERIC_KEYS,
+            )
+        }
 
         return self.async_show_form(
             step_id="battery",
             data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_BATTERY_CAPACITY_KWH,
-                        default=(
-                            battery_capacity_val
-                            if battery_capacity_val is not None
-                            else vol.UNDEFINED
-                        ),
-                        description={"suffix": "kWh"},
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
-                    vol.Optional(
-                        CONF_BATTERY_MAX_CHARGE_POWER_W,
-                        default=(
-                            battery_max_power_val
-                            if battery_max_power_val is not None
-                            else vol.UNDEFINED
-                        ),
-                        description={"suffix": "W"},
-                    ): vol.All(vol.Coerce(float), vol.Range(min=1)),
-                    vol.Optional(
-                        CONF_BATTERY_DEGRADATION_COST,
-                        default=(
-                            battery_degradation_val
-                            if battery_degradation_val is not None
-                            else vol.UNDEFINED
-                        ),
-                        description={"suffix": unit_of_measurement},
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-                }
+                _build_battery_and_optimizer_schema(form_values, unit_of_measurement)
             ),
             errors=errors,
         )
@@ -748,6 +910,14 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
                     )
 
                 if not errors:
+                    errors.update(
+                        _validate_optional_sensor_entities(
+                            self.hass,
+                            {key: user_input.get(key) for key in OPTIMIZER_ENTITY_KEYS},
+                        )
+                    )
+
+                if not errors:
                     # All validations passed, create/update the options entry
                     self.current_options.update(user_input)
                     # Ensure unit_of_measurement, currency, and energy_unit are updated if sensor changed
@@ -769,12 +939,14 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
                         CONF_FORECAST_ENTITY,
                         CONF_POWER_ENTITY,
                         CONF_FORECAST_TOMORROW_ENTITY,
+                        *OPTIMIZER_ENTITY_KEYS,
                     ):
                         self.current_options[key] = user_input.get(key) or None
                     for key in (
                         CONF_BATTERY_CAPACITY_KWH,
                         CONF_BATTERY_MAX_CHARGE_POWER_W,
                         CONF_BATTERY_DEGRADATION_COST,
+                        *OPTIMIZER_NUMERIC_KEYS,
                     ):
                         self.current_options[key] = (
                             user_input[key] if key in user_input else None
@@ -913,55 +1085,44 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
             ): vol.All(vol.Coerce(float), vol.Range(min=0)),
             vol.Optional(
                 CONF_FORECAST_ENTITY,
+                default=_schema_default(_form_value(self.current_options, CONF_FORECAST_ENTITY)),
                 description={
                     "suggested_value": self.current_options.get(CONF_FORECAST_ENTITY)
                 },
             ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
             vol.Optional(
                 CONF_POWER_ENTITY,
+                default=_schema_default(_form_value(self.current_options, CONF_POWER_ENTITY)),
                 description={
                     "suggested_value": self.current_options.get(CONF_POWER_ENTITY)
                 },
             ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
             vol.Optional(
                 CONF_FORECAST_TOMORROW_ENTITY,
+                default=_schema_default(
+                    _form_value(self.current_options, CONF_FORECAST_TOMORROW_ENTITY)
+                ),
                 description={
                     "suggested_value": self.current_options.get(
                         CONF_FORECAST_TOMORROW_ENTITY
                     )
                 },
             ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
-            vol.Optional(
-                CONF_BATTERY_CAPACITY_KWH,
-                description={
-                    "suggested_value": self.current_options.get(
-                        CONF_BATTERY_CAPACITY_KWH
-                    ),
-                    "suffix": "kWh",
-                },
-                default=self.current_options.get(CONF_BATTERY_CAPACITY_KWH),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
-            vol.Optional(
-                CONF_BATTERY_MAX_CHARGE_POWER_W,
-                description={
-                    "suggested_value": self.current_options.get(
-                        CONF_BATTERY_MAX_CHARGE_POWER_W
-                    ),
-                    "suffix": "W",
-                },
-                default=self.current_options.get(CONF_BATTERY_MAX_CHARGE_POWER_W),
-            ): vol.All(vol.Coerce(float), vol.Range(min=1)),
-            vol.Optional(
-                CONF_BATTERY_DEGRADATION_COST,
-                description={
-                    "suggested_value": self.current_options.get(
-                        CONF_BATTERY_DEGRADATION_COST
-                    ),
-                    "suffix": self.unit_of_measurement,
-                },
-                default=self.current_options.get(CONF_BATTERY_DEGRADATION_COST),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
         }
+
+        form_values = {
+            key: _form_value(self.current_options, key)
+            for key in (
+                CONF_BATTERY_CAPACITY_KWH,
+                CONF_BATTERY_MAX_CHARGE_POWER_W,
+                CONF_BATTERY_DEGRADATION_COST,
+                *OPTIMIZER_ENTITY_KEYS,
+                *OPTIMIZER_NUMERIC_KEYS,
+            )
+        }
+        schema_dict.update(
+            _build_battery_and_optimizer_schema(form_values, self.unit_of_measurement)
+        )
 
         return self.async_show_form(
             step_id="init",

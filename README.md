@@ -80,6 +80,17 @@ called differently for other grids and suppliers.
 | `battery_max_charge_power_w` | Optional maximum battery charge power; provide together with capacity | `5000` |
 | `battery_degradation_cost` | Optional minimum spread required before cycling the battery | `0.7` |
 
+The config UI also stores optional planner inputs for upcoming optimizer work:
+`battery_soc_entity`, `battery_charge_power_entity`, `grid_import_entity`,
+`grid_export_entity`, `outdoor_temperature_entity`, `household_base_load_w`,
+`water_heater_power_entity`, `water_heater_power_w`, `water_heater_max_hours`,
+`bathroom_humidity_entity`, `pool_pump_power_entity`, `pool_pump_power_w`,
+`dehumidifier_power_entity`, and `dehumidifier_power_w`.
+
+These inputs are preserved in the config entry now, but they do not change the
+current price-only battery scheduler yet. The rollout plan for using them lives
+in [docs/battery-optimizer-README.md](docs/battery-optimizer-README.md).
+
 When `exclude_from_recording` is `true` (default), Home Assistant recorder/history excludes:
 - `sensor.electricitypricelevels`
 - `sensor.compactlevels`

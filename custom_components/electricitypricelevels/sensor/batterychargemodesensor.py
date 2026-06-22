@@ -25,6 +25,8 @@ from ..const import (
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_EXCLUDE_FROM_RECORDING,
+    PREFERRED_SENSOR_ENTITY_IDS,
+    build_sensor_unique_id,
 )
 
 if TYPE_CHECKING:
@@ -319,8 +321,9 @@ class BatteryChargeModeSensor(SensorEntity):
             translation_key="batterychargemode",
         )
         self.entity_description = description
+        self.entity_id = PREFERRED_SENSOR_ENTITY_IDS[description.key]
         self._attr_suggested_object_id = description.key
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_unique_id = build_sensor_unique_id(entry, description.key)
         self._attr_device_info = device_info
         self._attr_exclude_from_recording = entry.options.get(
             CONF_EXCLUDE_FROM_RECORDING, True

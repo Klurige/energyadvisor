@@ -2,59 +2,129 @@
   "config": {
     "step": {
       "user": {
-        "description": "Fill in the values as needed. Refer to the documentation for more details.",
+        "title": "Price source",
+        "description": "Select the Nord Pool entity that represents the current electricity price for your area.",
         "data": {
-          "nordpool_prices_sensor": "Nord Pool prices sensor"
+          "nordpool_prices_sensor": "Nord Pool current price"
+        },
+        "data_description": {
+          "nordpool_prices_sensor": "Choose the Nord Pool current-price entity. If several Nord Pool sensors exist, pick the one ending in `current_price`."
         }
       },
       "supplier_fees_and_credits": {
-        "description": "Supplier fees and credits.",
+        "title": "Supplier fees and credits",
+        "description": "Add supplier-specific import fees and export credits. Leave unused fields empty or at zero.",
         "data": {
           "supplier_note": "Notes on supplier fees and credits.",
           "supplier_fixed_fee": "Supplier fee per unit",
           "supplier_variable_fee": "Supplier fee in percentage",
           "supplier_fixed_credit": "Supplier credit per unit",
           "supplier_variable_credit": "Supplier credit in percentage"
+        },
+        "data_description": {
+          "supplier_note": "Optional note describing what is included in the supplier pricing.",
+          "supplier_fixed_fee": "Fixed supplier markup added per imported kWh.",
+          "supplier_variable_fee": "Percentage supplier markup applied to the spot price on import.",
+          "supplier_fixed_credit": "Fixed supplier credit received per exported kWh.",
+          "supplier_variable_credit": "Percentage supplier credit applied to the spot price on export."
         }
       },
       "grid_fees_and_credits": {
-        "description": "Grid fees and credits.",
+        "title": "Grid fees and credits",
+        "description": "Add grid-specific import fees and export credits. Leave unused fields empty or at zero.",
         "data": {
           "grid_note": "Notes on grid fees and credits.",
           "grid_fixed_fee": "Grid fee per unit",
           "grid_variable_fee": "Grid fee in percentage",
           "grid_fixed_credit": "Grid credit per unit",
           "grid_variable_credit": "Grid credit in percentage"
+        },
+        "data_description": {
+          "grid_note": "Optional note describing what is included in the grid pricing.",
+          "grid_fixed_fee": "Fixed grid fee added per imported kWh.",
+          "grid_variable_fee": "Percentage grid markup applied to the spot price on import.",
+          "grid_fixed_credit": "Fixed grid credit received per exported kWh.",
+          "grid_variable_credit": "Percentage grid credit applied to the spot price on export."
         }
       },
       "taxes_and_vat": {
-        "description": "Energy taxes and VAT.",
+        "title": "Taxes and VAT",
+        "description": "Add statutory taxes that should be included in the final electricity cost.",
         "data": {
           "grid_energy_tax": "Energy tax per unit",
           "electricity_vat": "Electricity VAT in percentage"
+        },
+        "data_description": {
+          "grid_energy_tax": "Energy tax added per imported kWh.",
+          "electricity_vat": "VAT percentage applied to the import cost after fees and taxes."
         }
       },
       "thresholds": {
-        "description": "Thresholds for high and low electricity prices.",
+        "title": "Price thresholds",
+        "description": "Set the thresholds used to classify prices as Low, Medium, or High.",
         "data": {
           "low_threshold": "Lower threshold.",
           "high_threshold": "Upper threshold."
+        },
+        "data_description": {
+          "low_threshold": "Prices below this total import cost are classified as Low.",
+          "high_threshold": "Prices above this total import cost are classified as High."
         }
       },
       "solar_forecast": {
-        "description": "Configure the solar forecast sensors for bias-corrected solar production estimates. Leave empty to skip solar forecast.",
+        "title": "Solar forecast",
+        "description": "Configure optional solar inputs for bias-corrected production forecasts. Leave these fields empty to skip solar forecasting.",
         "data": {
           "forecast_entity": "Solar forecast sensor (today)",
           "power_entity": "Inverter actual power sensor (W)",
           "forecast_tomorrow_entity": "Solar forecast sensor (tomorrow) – optional"
+        },
+        "data_description": {
+          "forecast_entity": "Sensor that provides today's solar forecast.",
+          "power_entity": "Measured inverter AC power in watts, used to refine the forecast.",
+          "forecast_tomorrow_entity": "Optional sensor that provides tomorrow's solar forecast."
         }
       },
       "battery": {
-        "description": "Configure optional battery scheduling values. Leave battery capacity and max charge power empty to keep the default timings.",
+        "title": "Battery and planner inputs",
+        "description": "Configure current battery timing values and optional planner sensors. Leave any field empty if that input is not available yet.",
         "data": {
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
-          "battery_degradation_cost": "Battery degradation cost margin"
+          "battery_degradation_cost": "Battery degradation cost margin",
+          "battery_soc_entity": "Battery state of charge sensor",
+          "battery_charge_power_entity": "Battery charge power sensor",
+          "grid_import_entity": "Grid import power sensor",
+          "grid_export_entity": "Grid export power sensor",
+          "outdoor_temperature_entity": "Outdoor temperature sensor",
+          "household_base_load_w": "Estimated household base load",
+          "water_heater_power_entity": "Water heater power sensor",
+          "water_heater_power_w": "Water heater rated power",
+          "water_heater_max_hours": "Water heater worst-case refill hours",
+          "bathroom_humidity_entity": "Bathroom humidity sensor",
+          "pool_pump_power_entity": "Pool pump power sensor",
+          "pool_pump_power_w": "Pool pump rated power",
+          "dehumidifier_power_entity": "Dehumidifier power sensor",
+          "dehumidifier_power_w": "Dehumidifier rated power"
+        },
+        "data_description": {
+          "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
+          "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
+          "battery_degradation_cost": "Minimum price spread required before the battery is cycled.",
+          "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
+          "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning.",
+          "grid_import_entity": "Sensor reporting power currently imported from the grid.",
+          "grid_export_entity": "Sensor reporting power currently exported to the grid.",
+          "outdoor_temperature_entity": "Optional outdoor temperature sensor for future heating and load estimation.",
+          "household_base_load_w": "Fallback estimate of the household's non-flexible base load in watts.",
+          "water_heater_power_entity": "Sensor reporting current water-heater power, used to track reheating after hot-water use.",
+          "water_heater_power_w": "Approximate full-power draw of the water heater in watts.",
+          "water_heater_max_hours": "Worst-case refill time after heavy hot-water use.",
+          "bathroom_humidity_entity": "Bathroom humidity sensor used to detect shower events.",
+          "pool_pump_power_entity": "Sensor reporting current pool-pump power.",
+          "pool_pump_power_w": "Approximate full-power draw of the pool pump in watts.",
+          "dehumidifier_power_entity": "Sensor reporting current dehumidifier power.",
+          "dehumidifier_power_w": "Approximate full-power draw of the dehumidifier in watts."
         }
       }
     },
@@ -69,9 +139,10 @@
   "options": {
     "step": {
       "init": {
-        "description": "Electricity prices are based on the spot price and can be adjusted for import and export. Refer to the documentation for more details.",
+        "title": "Edit settings",
+        "description": "Review price inputs, solar sources, battery timings, and optional planner sensors.",
         "data": {
-          "nordpool_prices_sensor": "Nord Pool prices sensor",
+          "nordpool_prices_sensor": "Nord Pool current price",
           "low_threshold": "Lower threshold.",
           "high_threshold": "Upper threshold.",
           "supplier_note": "Notes on supplier fees and credits.",
@@ -91,7 +162,58 @@
           "forecast_tomorrow_entity": "Solar forecast sensor (tomorrow) – optional",
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
-          "battery_degradation_cost": "Battery degradation cost margin"
+          "battery_degradation_cost": "Battery degradation cost margin",
+          "battery_soc_entity": "Battery state of charge sensor",
+          "battery_charge_power_entity": "Battery charge power sensor",
+          "grid_import_entity": "Grid import power sensor",
+          "grid_export_entity": "Grid export power sensor",
+          "outdoor_temperature_entity": "Outdoor temperature sensor",
+          "household_base_load_w": "Estimated household base load",
+          "water_heater_power_entity": "Water heater power sensor",
+          "water_heater_power_w": "Water heater rated power",
+          "water_heater_max_hours": "Water heater worst-case refill hours",
+          "bathroom_humidity_entity": "Bathroom humidity sensor",
+          "pool_pump_power_entity": "Pool pump power sensor",
+          "pool_pump_power_w": "Pool pump rated power",
+          "dehumidifier_power_entity": "Dehumidifier power sensor",
+          "dehumidifier_power_w": "Dehumidifier rated power"
+        },
+        "data_description": {
+          "nordpool_prices_sensor": "Choose the Nord Pool current-price entity. If several Nord Pool sensors exist, pick the one ending in `current_price`.",
+          "low_threshold": "Prices below this total import cost are classified as Low.",
+          "high_threshold": "Prices above this total import cost are classified as High.",
+          "supplier_note": "Optional note describing what is included in the supplier pricing.",
+          "supplier_fixed_fee": "Fixed supplier markup added per imported kWh.",
+          "supplier_variable_fee": "Percentage supplier markup applied to the spot price on import.",
+          "supplier_fixed_credit": "Fixed supplier credit received per exported kWh.",
+          "supplier_variable_credit": "Percentage supplier credit applied to the spot price on export.",
+          "grid_note": "Optional note describing what is included in the grid pricing.",
+          "grid_fixed_fee": "Fixed grid fee added per imported kWh.",
+          "grid_variable_fee": "Percentage grid markup applied to the spot price on import.",
+          "grid_fixed_credit": "Fixed grid credit received per exported kWh.",
+          "grid_variable_credit": "Percentage grid credit applied to the spot price on export.",
+          "grid_energy_tax": "Energy tax added per imported kWh.",
+          "electricity_vat": "VAT percentage applied to the import cost after fees and taxes.",
+          "forecast_entity": "Sensor that provides today's solar forecast.",
+          "power_entity": "Measured inverter AC power in watts, used to refine the forecast.",
+          "forecast_tomorrow_entity": "Optional sensor that provides tomorrow's solar forecast.",
+          "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
+          "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
+          "battery_degradation_cost": "Minimum price spread required before the battery is cycled.",
+          "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
+          "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning.",
+          "grid_import_entity": "Sensor reporting power currently imported from the grid.",
+          "grid_export_entity": "Sensor reporting power currently exported to the grid.",
+          "outdoor_temperature_entity": "Optional outdoor temperature sensor for future heating and load estimation.",
+          "household_base_load_w": "Fallback estimate of the household's non-flexible base load in watts.",
+          "water_heater_power_entity": "Sensor reporting current water-heater power, used to track reheating after hot-water use.",
+          "water_heater_power_w": "Approximate full-power draw of the water heater in watts.",
+          "water_heater_max_hours": "Worst-case refill time after heavy hot-water use.",
+          "bathroom_humidity_entity": "Bathroom humidity sensor used to detect shower events.",
+          "pool_pump_power_entity": "Sensor reporting current pool-pump power.",
+          "pool_pump_power_w": "Approximate full-power draw of the pool pump in watts.",
+          "dehumidifier_power_entity": "Sensor reporting current dehumidifier power.",
+          "dehumidifier_power_w": "Approximate full-power draw of the dehumidifier in watts."
         }
       }
     }
@@ -99,13 +221,13 @@
   "entity": {
     "sensor": {
       "electricitypricelevels": {
-        "name": "Current price"
+        "name": "Price"
       },
       "compactlevels": {
         "name": "Compact levels"
       },
       "solarforecast": {
-        "name": "Solar Forecast (Refined)"
+        "name": "Solar Forecast"
       },
       "batterychargemode": {
         "name": "Battery charge mode",

@@ -30,6 +30,7 @@ def hass():
 def entry():
     entry = MagicMock()
     entry.entry_id = "test_entry_id"
+    entry.unique_id = "sensor.nord_pool_se4_current_price"
     entry.options = {}
     return entry
 
@@ -58,6 +59,12 @@ def sensor(hass, entry, device_info, source_sensor):
     compact.entity_id = "sensor.levels"
     compact.async_on_remove = MagicMock()
     return compact
+
+
+def test_constructor_uses_preferred_entity_id(hass, entry, device_info, source_sensor):
+    """The compact sensor should use the staged preferred entity ID."""
+    compact = CompactLevelsSensor(hass, entry, device_info, source_sensor)
+    assert compact.entity_id == "sensor.electricity_price_levels_compact_levels"
 
 
 @pytest.mark.asyncio

@@ -2,59 +2,129 @@
   "config": {
     "step": {
       "user": {
-        "description": "Fyll i värden vid behov. Se dokumentationen för mer detaljer.",
+        "title": "Priskälla",
+        "description": "Välj Nord Pool-enheten som motsvarar aktuellt elpris för ditt område.",
         "data": {
-          "nordpool_prices_sensor": "Nord Pool prissensor"
+          "nordpool_prices_sensor": "Nord Pool aktuellt pris"
+        },
+        "data_description": {
+          "nordpool_prices_sensor": "Välj Nord Pool-enheten för aktuellt pris. Om flera Nord Pool-sensorer finns ska du välja den som slutar med `current_price`."
         }
       },
       "supplier_fees_and_credits": {
-        "description": "Elhandelsavgifter och intäkter.",
+        "title": "Elhandelsavgifter och intäkter",
+        "description": "Lägg till elhandelns importavgifter och exportintäkter. Lämna oanvända fält tomma eller på noll.",
         "data": {
           "supplier_note": "Noteringar om elhandelsavgifter och intäkter.",
           "supplier_fixed_fee": "Elhandelspåslag per enhet vid import",
           "supplier_variable_fee": "Elhandelspåslag i procent vid import",
           "supplier_fixed_credit": "Elhandelsavdrag per enhet vid export",
           "supplier_variable_credit": "Elhandelsavdrag i procent vid export"
+        },
+        "data_description": {
+          "supplier_note": "Valfri anteckning om vad som ingår i elhandelspriset.",
+          "supplier_fixed_fee": "Fast elhandelspåslag per importerad kWh.",
+          "supplier_variable_fee": "Procentuellt elhandelspåslag på spotpriset vid import.",
+          "supplier_fixed_credit": "Fast elhandelsintäkt per exporterad kWh.",
+          "supplier_variable_credit": "Procentuell elhandelsintäkt baserad på spotpriset vid export."
         }
       },
       "grid_fees_and_credits": {
-        "description": "Elnätsavgifter och intäkter.",
+        "title": "Elnätsavgifter och intäkter",
+        "description": "Lägg till elnätets importavgifter och exportintäkter. Lämna oanvända fält tomma eller på noll.",
         "data": {
           "grid_note": "Noteringar om elnätsavgifter och intäkter.",
           "grid_fixed_fee": "Elnätsavgift per enhet",
           "grid_variable_fee": "Elnätsavgift i procent",
           "grid_fixed_credit": "Elnätsintäkt per enhet",
           "grid_variable_credit": "Elnätsintäkt i procent"
+        },
+        "data_description": {
+          "grid_note": "Valfri anteckning om vad som ingår i elnätspriset.",
+          "grid_fixed_fee": "Fast elnätsavgift per importerad kWh.",
+          "grid_variable_fee": "Procentuellt elnätspåslag på spotpriset vid import.",
+          "grid_fixed_credit": "Fast elnätsintäkt per exporterad kWh.",
+          "grid_variable_credit": "Procentuell elnätsintäkt baserad på spotpriset vid export."
         }
       },
       "taxes_and_vat": {
-        "description": "Energiskatter och moms.",
+        "title": "Skatter och moms",
+        "description": "Lägg till lagstadgade skatter som ska ingå i det slutliga elpriset.",
         "data": {
           "grid_energy_tax": "Energiskatt per enhet",
           "electricity_vat": "Elmoms i procent"
+        },
+        "data_description": {
+          "grid_energy_tax": "Energiskatt som läggs på per importerad kWh.",
+          "electricity_vat": "Momssats som läggs på importkostnaden efter avgifter och skatter."
         }
       },
       "thresholds": {
-        "description": "Gränsvärden för när elen är dyr respektive billig. Används för att dela upp priset i low, medium och high",
+        "title": "Prisgränser",
+        "description": "Ställ in gränserna som används för att klassificera priset som Low, Medium eller High.",
         "data": {
           "low_threshold": "Nedre gränsvärde.",
           "high_threshold": "Övre gränsvärde."
+        },
+        "data_description": {
+          "low_threshold": "Priser under denna totala importkostnad klassas som Low.",
+          "high_threshold": "Priser över denna totala importkostnad klassas som High."
         }
       },
       "solar_forecast": {
-        "description": "Konfigurera solprognosenheterna för att få biasjusterade solproduktionsprognoser. Lämna tomt för att hoppa över solprognosen.",
+        "title": "Solprognos",
+        "description": "Konfigurera valfria solindata för biasjusterade produktionsprognoser. Lämna fälten tomma för att hoppa över solprognosen.",
         "data": {
           "forecast_entity": "Solprognosenhet (idag)",
           "power_entity": "Växelriktarens effektsensor (W)",
           "forecast_tomorrow_entity": "Solprognosenhet (imorgon) – valfritt"
+        },
+        "data_description": {
+          "forecast_entity": "Sensor som ger dagens solprognos.",
+          "power_entity": "Uppmätt AC-effekt från växelriktaren i watt, används för att justera prognosen.",
+          "forecast_tomorrow_entity": "Valfri sensor som ger morgondagens solprognos."
         }
       },
       "battery": {
-        "description": "Konfigurera valfria batterivärden för schemaläggning. Lämna batterikapacitet och maximal laddningseffekt tomma för att behålla standardtiderna.",
+        "title": "Batteri och planeringsindata",
+        "description": "Konfigurera nuvarande batteritider och valfria planeringssensorer. Lämna ett fält tomt om den indatan inte finns ännu.",
         "data": {
           "battery_capacity_kwh": "Batterikapacitet",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt",
-          "battery_degradation_cost": "Marginal för batterislitage"
+          "battery_degradation_cost": "Marginal för batterislitage",
+          "battery_soc_entity": "Sensor för batteriets laddningsnivå",
+          "battery_charge_power_entity": "Sensor för batteriets laddningseffekt",
+          "grid_import_entity": "Sensor för nätimporteffekt",
+          "grid_export_entity": "Sensor för nätexporteffekt",
+          "outdoor_temperature_entity": "Utetemperatursensor",
+          "household_base_load_w": "Beräknad hushållsbaslast",
+          "water_heater_power_entity": "Varmvattenberedarens effektsensor",
+          "water_heater_power_w": "Varmvattenberedarens märkeffekt",
+          "water_heater_max_hours": "Varmvattenberedarens värsta fall återladdningstid",
+          "bathroom_humidity_entity": "Badrummets luftfuktighetssensor",
+          "pool_pump_power_entity": "Poolpumpens effektsensor",
+          "pool_pump_power_w": "Poolpumpens märkeffekt",
+          "dehumidifier_power_entity": "Avfuktarens effektsensor",
+          "dehumidifier_power_w": "Avfuktarens märkeffekt"
+        },
+        "data_description": {
+          "battery_capacity_kwh": "Användbar batterikapacitet. Ange tillsammans med maximal laddningseffekt för att ersätta standardantagandena.",
+          "battery_max_charge_power_w": "Batteriets maximala laddningseffekt. Ange tillsammans med batterikapaciteten.",
+          "battery_degradation_cost": "Minsta prisskillnad som krävs innan batteriet cyklas.",
+          "battery_soc_entity": "Sensor som rapporterar batteriets aktuella laddningsnivå i procent.",
+          "battery_charge_power_entity": "Sensor som rapporterar aktuell batteriladdningseffekt för verifiering och framtida inlärning.",
+          "grid_import_entity": "Sensor som rapporterar effekt som just nu importeras från elnätet.",
+          "grid_export_entity": "Sensor som rapporterar effekt som just nu exporteras till elnätet.",
+          "outdoor_temperature_entity": "Valfri utetemperatursensor för framtida värme- och lastberäkning.",
+          "household_base_load_w": "Reservvärde för hushållets icke-flexibla baslast i watt.",
+          "water_heater_power_entity": "Sensor som rapporterar varmvattenberedarens aktuella effekt och används för att följa återvärmning efter varmvattenanvändning.",
+          "water_heater_power_w": "Ungefärlig full effekt för varmvattenberedaren i watt.",
+          "water_heater_max_hours": "Återladdningstid i värsta fall efter stor varmvattenanvändning.",
+          "bathroom_humidity_entity": "Badrummets luftfuktighetssensor som används för att upptäcka duschhändelser.",
+          "pool_pump_power_entity": "Sensor som rapporterar poolpumpens aktuella effekt.",
+          "pool_pump_power_w": "Ungefärlig full effekt för poolpumpen i watt.",
+          "dehumidifier_power_entity": "Sensor som rapporterar avfuktarens aktuella effekt.",
+          "dehumidifier_power_w": "Ungefärlig full effekt för avfuktaren i watt."
         }
       }
     },
@@ -69,9 +139,10 @@
   "options": {
     "step": {
       "init": {
-        "description": "Elpriset utgår från spotpriset och kan justeras för import och export av el. Se dokumentationen för mer detaljer.",
+        "title": "Ändra inställningar",
+        "description": "Granska prisindata, solkällor, batteritider och valfria planeringssensorer.",
         "data": {
-          "nordpool_prices_sensor": "Nord Pool prissensor",
+          "nordpool_prices_sensor": "Nord Pool aktuellt pris",
           "low_threshold": "Nedre gränsvärde.",
           "high_threshold": "Övre gränsvärde.",
           "supplier_note": "Noteringar om elhandelsavgifter och intäkter.",
@@ -91,7 +162,58 @@
           "forecast_tomorrow_entity": "Solprognos-sensor (imorgon) – valfri",
           "battery_capacity_kwh": "Batterikapacitet",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt",
-          "battery_degradation_cost": "Marginal för batterislitage"
+          "battery_degradation_cost": "Marginal för batterislitage",
+          "battery_soc_entity": "Sensor för batteriets laddningsnivå",
+          "battery_charge_power_entity": "Sensor för batteriets laddningseffekt",
+          "grid_import_entity": "Sensor för nätimporteffekt",
+          "grid_export_entity": "Sensor för nätexporteffekt",
+          "outdoor_temperature_entity": "Utetemperatursensor",
+          "household_base_load_w": "Beräknad hushållsbaslast",
+          "water_heater_power_entity": "Varmvattenberedarens effektsensor",
+          "water_heater_power_w": "Varmvattenberedarens märkeffekt",
+          "water_heater_max_hours": "Varmvattenberedarens värsta fall återladdningstid",
+          "bathroom_humidity_entity": "Badrummets luftfuktighetssensor",
+          "pool_pump_power_entity": "Poolpumpens effektsensor",
+          "pool_pump_power_w": "Poolpumpens märkeffekt",
+          "dehumidifier_power_entity": "Avfuktarens effektsensor",
+          "dehumidifier_power_w": "Avfuktarens märkeffekt"
+        },
+        "data_description": {
+          "nordpool_prices_sensor": "Välj Nord Pool-enheten för aktuellt pris. Om flera Nord Pool-sensorer finns ska du välja den som slutar med `current_price`.",
+          "low_threshold": "Priser under denna totala importkostnad klassas som Low.",
+          "high_threshold": "Priser över denna totala importkostnad klassas som High.",
+          "supplier_note": "Valfri anteckning om vad som ingår i elhandelspriset.",
+          "supplier_fixed_fee": "Fast elhandelspåslag per importerad kWh.",
+          "supplier_variable_fee": "Procentuellt elhandelspåslag på spotpriset vid import.",
+          "supplier_fixed_credit": "Fast elhandelsintäkt per exporterad kWh.",
+          "supplier_variable_credit": "Procentuell elhandelsintäkt baserad på spotpriset vid export.",
+          "grid_note": "Valfri anteckning om vad som ingår i elnätspriset.",
+          "grid_fixed_fee": "Fast elnätsavgift per importerad kWh.",
+          "grid_variable_fee": "Procentuellt elnätspåslag på spotpriset vid import.",
+          "grid_fixed_credit": "Fast elnätsintäkt per exporterad kWh.",
+          "grid_variable_credit": "Procentuell elnätsintäkt baserad på spotpriset vid export.",
+          "grid_energy_tax": "Energiskatt som läggs på per importerad kWh.",
+          "electricity_vat": "Momssats som läggs på importkostnaden efter avgifter och skatter.",
+          "forecast_entity": "Sensor som ger dagens solprognos.",
+          "power_entity": "Uppmätt AC-effekt från växelriktaren i watt, används för att justera prognosen.",
+          "forecast_tomorrow_entity": "Valfri sensor som ger morgondagens solprognos.",
+          "battery_capacity_kwh": "Användbar batterikapacitet. Ange tillsammans med maximal laddningseffekt för att ersätta standardantagandena.",
+          "battery_max_charge_power_w": "Batteriets maximala laddningseffekt. Ange tillsammans med batterikapaciteten.",
+          "battery_degradation_cost": "Minsta prisskillnad som krävs innan batteriet cyklas.",
+          "battery_soc_entity": "Sensor som rapporterar batteriets aktuella laddningsnivå i procent.",
+          "battery_charge_power_entity": "Sensor som rapporterar aktuell batteriladdningseffekt för verifiering och framtida inlärning.",
+          "grid_import_entity": "Sensor som rapporterar effekt som just nu importeras från elnätet.",
+          "grid_export_entity": "Sensor som rapporterar effekt som just nu exporteras till elnätet.",
+          "outdoor_temperature_entity": "Valfri utetemperatursensor för framtida värme- och lastberäkning.",
+          "household_base_load_w": "Reservvärde för hushållets icke-flexibla baslast i watt.",
+          "water_heater_power_entity": "Sensor som rapporterar varmvattenberedarens aktuella effekt och används för att följa återvärmning efter varmvattenanvändning.",
+          "water_heater_power_w": "Ungefärlig full effekt för varmvattenberedaren i watt.",
+          "water_heater_max_hours": "Återladdningstid i värsta fall efter stor varmvattenanvändning.",
+          "bathroom_humidity_entity": "Badrummets luftfuktighetssensor som används för att upptäcka duschhändelser.",
+          "pool_pump_power_entity": "Sensor som rapporterar poolpumpens aktuella effekt.",
+          "pool_pump_power_w": "Ungefärlig full effekt för poolpumpen i watt.",
+          "dehumidifier_power_entity": "Sensor som rapporterar avfuktarens aktuella effekt.",
+          "dehumidifier_power_w": "Ungefärlig full effekt för avfuktaren i watt."
         }
       }
     }
@@ -99,13 +221,13 @@
   "entity": {
     "sensor": {
       "electricitypricelevels": {
-        "name": "Pris nu"
+        "name": "Pris"
       },
       "compactlevels": {
         "name": "Kompakta nivåer"
       },
       "solarforecast": {
-        "name": "Solprognos (justerad)"
+        "name": "Solprognos"
       },
       "batterychargemode": {
         "name": "Batteriladdningsläge",

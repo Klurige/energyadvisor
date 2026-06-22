@@ -100,6 +100,7 @@ def mock_config_entry():
         DEFAULT_CONFIG_OPTIONS.copy()
     )  # Use a copy to allow modification in tests
     entry.entry_id = "test_entry_id"
+    entry.unique_id = "sensor.nord_pool_se4_current_price"
     return entry
 
 
@@ -118,6 +119,11 @@ def sensor_instance(mock_hass, mock_config_entry, mock_device_info):
     # Prevent actual listener setup during tests not focused on it
     sensor.async_on_remove = MagicMock()
     return sensor
+
+
+def test_sensor_uses_preferred_entity_id(sensor_instance):
+    """The main sensor should use the staged preferred entity ID."""
+    assert sensor_instance.entity_id == "sensor.electricity_price_levels_price"
 
 
 # Helper to create Nord Pool data

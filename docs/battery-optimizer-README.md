@@ -19,13 +19,12 @@ agent or computer restarts.
 - [ ] `bathroom_humidity_entity` — when humidity reaches `100%`, treat it as a shower and reset the water-heater 24-hour timer.
 - [ ] `outdoor_temperature_entity` or temperature forecast entity — required to predict heating-driven winter load.
 - [ ] `water_heater_power_entity` and `water_heater_power_w` — required to measure actual reheating energy after a hot-water event and verify heater recovery.
-- [ ] `pool_pump_entity` and `pool_pump_power_w` — required to schedule the pool pump only in sunny or surplus slots.
-- [ ] `dehumidifier_entity` and `dehumidifier_power_w` — required to schedule the dehumidifier only in sunny or surplus slots.
+- [ ] `pool_pump_power_entity` and `pool_pump_power_w` — required to schedule the pool pump only in sunny or surplus slots.
+- [ ] `dehumidifier_power_entity` and `dehumidifier_power_w` — required to schedule the dehumidifier only in sunny or surplus slots.
 
-> **Naming note (resolve before step 3):** `dev_config.py` uses `water_heater_entity` but the plan
-> above says `water_heater_power_entity`. `bathroom_humidity_entity` is listed here but is missing
-> from `dev_config.py` entirely. Pick canonical names and align both files before adding config
-> plumbing.
+> **Naming note:** canonical config keys use `*_power_entity` for appliance power
+> sensors: `water_heater_power_entity`, `pool_pump_power_entity`, and
+> `dehumidifier_power_entity`.
 
 ### Recommended for better verification and learning
 
@@ -68,17 +67,19 @@ agent or computer restarts.
   - `sensor.electricitypricelevels`
   - `sensor.batterychargemode` with price-only `standby` / `charge` / `discharge`
   - optional `sensor.solarforecast`
-- Not yet wired into config/runtime:
+- Wired into config storage but not yet used by runtime planning:
   - `battery_soc_entity`
   - `household_base_load_w`
-  - `pool_pump_*`
+  - `pool_pump_power_*`
   - `water_heater_power_*`
   - `bathroom_humidity_entity`
-  - `dehumidifier_*`
+  - `dehumidifier_power_*`
+  - `outdoor_temperature_entity`
+  - `grid_import_entity`
   - `grid_export_entity`
   - `battery_charge_power_entity`
-- Several of those names already exist in `dev_config.py` as development
-  defaults, but they are not yet connected to the integration logic.
+- Not yet used by runtime planning:
+  - the stored optimizer inputs above
 
 ## Verifiable baby steps
 
@@ -95,11 +96,12 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
      Added edge-case coverage for flat price curves (no charge/discharge expected), only
      today's prices available (no tomorrow data), and a spring DST transition day.
 
-3. [ ] Add config plumbing for the new inputs.
+3. [x] Add config plumbing for the new inputs.
    - **Deliverable:** add constants, config-flow fields, option-flow fields, and translations for the new entities and parameters.
    - **Verify:** the new inputs can be configured from the UI and survive reloads.
-   - **Prerequisite:** resolve the naming inconsistency noted above before writing any code.
+   - **Naming outcome:** canonical appliance sensor keys now use `*_power_entity` (`water_heater_power_entity`, `pool_pump_power_entity`, `dehumidifier_power_entity`).
    - **Mode naming note:** add `maxuse` and `sell` to the `batterychargemode` state translations in `strings.json` and both translation files no later than step 15. If localized shadow-mode output is wanted earlier, expose `proposed_mode` as a dedicated diagnostic sensor instead of a plain attribute.
+   - **Done:** added config/options storage, validation, and translated labels for the agreed optimizer inputs; documented that they are stored now but not yet used by the runtime planner.
    - **Deploy:** not by itself; bundle this with step 4 and step 5 for the first live release.
 
 4. [ ] Make the battery sensor explain itself.

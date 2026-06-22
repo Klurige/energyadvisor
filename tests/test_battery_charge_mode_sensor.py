@@ -373,6 +373,7 @@ def hass():
 def entry():
     e = MagicMock()
     e.entry_id = "test_entry_id"
+    e.unique_id = "sensor.nord_pool_se4_current_price"
     e.options = {}
     return e
 
@@ -380,6 +381,12 @@ def entry():
 @pytest.fixture
 def device_info():
     return MagicMock()
+
+
+def test_constructor_uses_preferred_entity_id(entry, device_info, source_sensor):
+    """The battery sensor should use the staged preferred entity ID."""
+    sensor = BatteryChargeModeSensor(MagicMock(), entry, device_info, source_sensor)
+    assert sensor.entity_id == "sensor.electricity_price_levels_battery_charge_mode"
 
 
 @pytest.fixture
