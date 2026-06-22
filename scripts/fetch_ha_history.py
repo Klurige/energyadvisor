@@ -117,20 +117,25 @@ def fetch_current_states(entity_ids: list[str]) -> dict[str, dict]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch HA sensor history for development")
+    parser = argparse.ArgumentParser(
+        description="Fetch HA sensor history for development"
+    )
     parser.add_argument(
-        "--entity", "-e",
+        "--entity",
+        "-e",
         action="append",
         help="Entity ID to fetch (can be repeated). Defaults to surplus scheduler entities.",
     )
     parser.add_argument(
-        "--days", "-d",
+        "--days",
+        "-d",
         type=int,
         default=7,
         help="Number of days of history to fetch (default: 7)",
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         type=str,
         default=None,
         help="Output JSON file path (default: scripts/ha_history.json)",

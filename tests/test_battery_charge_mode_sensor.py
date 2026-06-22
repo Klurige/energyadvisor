@@ -611,7 +611,9 @@ def test_update_current_mode_sets_charge_explainability(sensor):
     assert attrs["required_load_kwh"] == 0.0
 
 
-def test_update_current_mode_sets_standby_explainability_when_all_slots_are_standby(sensor):
+def test_update_current_mode_sets_standby_explainability_when_all_slots_are_standby(
+    sensor,
+):
     base = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
     sensor._charge_entries = [
         {
@@ -672,7 +674,9 @@ def test_recompute_returns_60_when_no_rates(sensor, source_sensor):
     source_sensor.compact_rates = []
     assert sensor._recompute() == 60
     assert sensor._mode == "standby"
-    assert sensor.extra_state_attributes["reason"] == "Waiting for electricity price data."
+    assert (
+        sensor.extra_state_attributes["reason"] == "Waiting for electricity price data."
+    )
     assert sensor.extra_state_attributes["next_mode_change"] is None
     assert sensor.extra_state_attributes["charge_source"] is None
 
@@ -713,7 +717,9 @@ def test_recompute_with_flat_prices_keeps_sensor_in_standby(sensor, source_senso
     assert next_update == 1801
 
 
-def test_recompute_handles_today_only_rates_without_tomorrow_data(sensor, source_sensor):
+def test_recompute_handles_today_only_rates_without_tomorrow_data(
+    sensor, source_sensor
+):
     source_sensor.compact_rates = make_rates([1.0] * 3 + [4.0] * 21)
     with patch(
         "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
@@ -728,7 +734,9 @@ def test_recompute_handles_today_only_rates_without_tomorrow_data(sensor, source
         next_update = sensor._recompute()
 
     assert len(sensor._charge_entries) == 24
-    assert sensor._charge_entries[-1]["start"] == datetime(2024, 1, 1, 23, 0, tzinfo=UTC)
+    assert sensor._charge_entries[-1]["start"] == datetime(
+        2024, 1, 1, 23, 0, tzinfo=UTC
+    )
     assert sensor._charge_entries[-1]["end"] == datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
     assert sensor._charge_entries[-1]["mode"] == "discharge"
     assert sensor._mode == "discharge"

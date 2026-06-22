@@ -55,8 +55,12 @@ _DEFAULT_DISCHARGE_EFFICIENCY = 0.95
 _ENERGY_EPSILON_KWH = 0.05
 
 _WAITING_FOR_RATES_REASON = "Waiting for electricity price data."
-_OUTSIDE_HORIZON_REASON = "Current time is outside the available battery schedule horizon."
-_BETWEEN_WINDOWS_REASON = "Current slot is outside the scheduled charge and discharge windows."
+_OUTSIDE_HORIZON_REASON = (
+    "Current time is outside the available battery schedule horizon."
+)
+_BETWEEN_WINDOWS_REASON = (
+    "Current slot is outside the scheduled charge and discharge windows."
+)
 _NO_PROFITABLE_CYCLE_REASON = (
     "No profitable battery cycle is scheduled in the available price horizon."
 )
@@ -69,9 +73,7 @@ _DISCHARGE_REASON = (
 _DISCHARGE_BLOCKED_RESERVE_REASON = (
     "Discharging is blocked because the battery is already at its reserve floor."
 )
-_DISCHARGE_BLOCKED_ENERGY_REASON = (
-    "Discharging is blocked because the usable battery energy above reserve cannot cover the remaining slot."
-)
+_DISCHARGE_BLOCKED_ENERGY_REASON = "Discharging is blocked because the usable battery energy above reserve cannot cover the remaining slot."
 
 
 def _format_compact_local_datetime(value: datetime) -> str:
@@ -365,9 +367,7 @@ class BatteryChargeModeSensor(SensorEntity):
         capacity_kwh = entry.options.get(CONF_BATTERY_CAPACITY_KWH)
         max_power_w = entry.options.get(CONF_BATTERY_MAX_CHARGE_POWER_W)
         self._battery_soc_entity = entry.options.get(CONF_BATTERY_SOC_ENTITY)
-        self._battery_capacity_kwh = (
-            capacity_kwh if capacity_kwh is not None else None
-        )
+        self._battery_capacity_kwh = capacity_kwh if capacity_kwh is not None else None
         self._charge_power_kw: float | None = None
         self._discharge_power_kw: float | None = None
         degradation_cost = entry.options.get(CONF_BATTERY_DEGRADATION_COST)
@@ -562,9 +562,7 @@ class BatteryChargeModeSensor(SensorEntity):
 
             if planned_mode == "charge":
                 stored_gain_kwh = (
-                    self._charge_power_kw
-                    * remaining_hours
-                    * _DEFAULT_CHARGE_EFFICIENCY
+                    self._charge_power_kw * remaining_hours * _DEFAULT_CHARGE_EFFICIENCY
                 )
                 current_energy_kwh = min(
                     self._battery_capacity_kwh,
@@ -649,7 +647,9 @@ class BatteryChargeModeSensor(SensorEntity):
         if current_entry is None:
             if now is None:
                 return None
-            future_entry = next((e for e in self._charge_entries if e["start"] > now), None)
+            future_entry = next(
+                (e for e in self._charge_entries if e["start"] > now), None
+            )
             return future_entry["start"] if future_entry else None
 
         block_end = current_entry["end"]

@@ -191,9 +191,7 @@ async def test_periodic_update(sensor):
             mock_sleep.assert_called_once_with(1)
 
 
-@patch(
-    "custom_components.energyadvisor.sensor.compactlevels.dt_util.get_time_zone"
-)
+@patch("custom_components.energyadvisor.sensor.compactlevels.dt_util.get_time_zone")
 @patch("custom_components.energyadvisor.sensor.compactlevels.datetime")
 def test_fetch_service_value_now_and_next(mock_dt, mock_tz, sensor, source_sensor):
     mock_tz.return_value = "UTC"

@@ -192,9 +192,7 @@ def _build_battery_and_optimizer_schema(
         vol.Optional(
             CONF_WATER_HEATER_POWER_ENTITY,
             default=_schema_default(values.get(CONF_WATER_HEATER_POWER_ENTITY)),
-            description={
-                "suggested_value": values.get(CONF_WATER_HEATER_POWER_ENTITY)
-            },
+            description={"suggested_value": values.get(CONF_WATER_HEATER_POWER_ENTITY)},
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
         vol.Optional(
             CONF_WATER_HEATER_POWER_W,
@@ -209,9 +207,7 @@ def _build_battery_and_optimizer_schema(
         vol.Optional(
             CONF_BATHROOM_HUMIDITY_ENTITY,
             default=_schema_default(values.get(CONF_BATHROOM_HUMIDITY_ENTITY)),
-            description={
-                "suggested_value": values.get(CONF_BATHROOM_HUMIDITY_ENTITY)
-            },
+            description={"suggested_value": values.get(CONF_BATHROOM_HUMIDITY_ENTITY)},
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
         vol.Optional(
             CONF_POOL_PUMP_POWER_ENTITY,
@@ -226,9 +222,7 @@ def _build_battery_and_optimizer_schema(
         vol.Optional(
             CONF_DEHUMIDIFIER_POWER_ENTITY,
             default=_schema_default(values.get(CONF_DEHUMIDIFIER_POWER_ENTITY)),
-            description={
-                "suggested_value": values.get(CONF_DEHUMIDIFIER_POWER_ENTITY)
-            },
+            description={"suggested_value": values.get(CONF_DEHUMIDIFIER_POWER_ENTITY)},
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
         vol.Optional(
             CONF_DEHUMIDIFIER_POWER_W,
@@ -1085,14 +1079,18 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
             ): vol.All(vol.Coerce(float), vol.Range(min=0)),
             vol.Optional(
                 CONF_FORECAST_ENTITY,
-                default=_schema_default(_form_value(self.current_options, CONF_FORECAST_ENTITY)),
+                default=_schema_default(
+                    _form_value(self.current_options, CONF_FORECAST_ENTITY)
+                ),
                 description={
                     "suggested_value": self.current_options.get(CONF_FORECAST_ENTITY)
                 },
             ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
             vol.Optional(
                 CONF_POWER_ENTITY,
-                default=_schema_default(_form_value(self.current_options, CONF_POWER_ENTITY)),
+                default=_schema_default(
+                    _form_value(self.current_options, CONF_POWER_ENTITY)
+                ),
                 description={
                     "suggested_value": self.current_options.get(CONF_POWER_ENTITY)
                 },

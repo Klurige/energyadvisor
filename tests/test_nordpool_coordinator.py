@@ -1,4 +1,5 @@
 """Tests for the nordpool coordinator."""
+
 import datetime
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -71,8 +72,16 @@ async def test_execute_nordpool_call_success(coordinator, mock_hass):
     test_date = datetime.date(2025, 8, 9)
     mock_service_response = {
         "SE3": [
-            {"start": "2025-08-09T00:00:00+02:00", "end": "2025-08-09T01:00:00+02:00", "value": 10.5},
-            {"start": "2025-08-09T01:00:00+02:00", "end": "2025-08-09T02:00:00+02:00", "value": 11.2},
+            {
+                "start": "2025-08-09T00:00:00+02:00",
+                "end": "2025-08-09T01:00:00+02:00",
+                "value": 10.5,
+            },
+            {
+                "start": "2025-08-09T01:00:00+02:00",
+                "end": "2025-08-09T02:00:00+02:00",
+                "value": 11.2,
+            },
         ]
     }
 
@@ -94,8 +103,9 @@ async def test_execute_nordpool_call_success(coordinator, mock_hass):
         "get_prices_for_date",
         {"config_entry": "test_config_entry_id", "date": "2025-08-09"},
         blocking=True,
-        return_response=True
+        return_response=True,
     )
+
 
 @pytest.mark.asyncio
 async def test_execute_nordpool_call_no_currency(coordinator, mock_hass):
@@ -104,7 +114,11 @@ async def test_execute_nordpool_call_no_currency(coordinator, mock_hass):
     test_date = datetime.date(2025, 8, 9)
     mock_service_response = {
         "SE3": [
-            {"start": "2025-08-09T00:00:00+02:00", "end": "2025-08-09T01:00:00+02:00", "value": 10.5},
+            {
+                "start": "2025-08-09T00:00:00+02:00",
+                "end": "2025-08-09T01:00:00+02:00",
+                "value": 10.5,
+            },
         ]
     }
 
@@ -122,7 +136,9 @@ async def test_execute_nordpool_call_no_currency(coordinator, mock_hass):
 async def test_execute_nordpool_call_service_not_ready(coordinator, mock_hass):
     """Test Nordpool service call when service is not ready."""
     test_date = datetime.date(2025, 8, 9)
-    mock_hass.services.async_call.side_effect = ServiceValidationError("The config entry did not set up.")
+    mock_hass.services.async_call.side_effect = ServiceValidationError(
+        "The config entry did not set up."
+    )
 
     status, payload = await coordinator._execute_nordpool_call_logic(test_date)
 
@@ -151,11 +167,19 @@ async def test_send_updated_data_to_sensor(coordinator, mock_callback):
     current_date = datetime.date(2025, 8, 9)
     coordinator._currency = "EUR"
     coordinator._data_for_current_hass_date = [
-        {"start": "2025-08-09T00:00:00+02:00", "end": "2025-08-09T01:00:00+02:00", "value": 10.5},
+        {
+            "start": "2025-08-09T00:00:00+02:00",
+            "end": "2025-08-09T01:00:00+02:00",
+            "value": 10.5,
+        },
     ]
     coordinator._date_of_current_data = current_date
     coordinator._data_for_next_hass_date = [
-        {"start": "2025-08-10T00:00:00+02:00", "end": "2025-08-10T01:00:00+02:00", "value": 12.1},
+        {
+            "start": "2025-08-10T00:00:00+02:00",
+            "end": "2025-08-10T01:00:00+02:00",
+            "value": 12.1,
+        },
     ]
     coordinator._date_of_next_data = current_date + datetime.timedelta(days=1)
 
@@ -164,9 +188,17 @@ async def test_send_updated_data_to_sensor(coordinator, mock_callback):
     expected_payload = {
         "currency": "EUR",
         "raw": [
-            {"start": "2025-08-09T00:00:00+02:00", "end": "2025-08-09T01:00:00+02:00", "value": 10.5},
-            {"start": "2025-08-10T00:00:00+02:00", "end": "2025-08-10T01:00:00+02:00", "value": 12.1},
-        ]
+            {
+                "start": "2025-08-09T00:00:00+02:00",
+                "end": "2025-08-09T01:00:00+02:00",
+                "value": 10.5,
+            },
+            {
+                "start": "2025-08-10T00:00:00+02:00",
+                "end": "2025-08-10T01:00:00+02:00",
+                "value": 12.1,
+            },
+        ],
     }
 
     mock_callback.assert_called_once_with(expected_payload)
@@ -179,13 +211,21 @@ async def test_send_updated_data_stale_dates(coordinator, mock_callback):
     coordinator._currency = "EUR"
     # Data from yesterday (stale)
     coordinator._data_for_current_hass_date = [
-        {"start": "2025-08-08T00:00:00+02:00", "end": "2025-08-08T01:00:00+02:00", "value": 10.5},
+        {
+            "start": "2025-08-08T00:00:00+02:00",
+            "end": "2025-08-08T01:00:00+02:00",
+            "value": 10.5,
+        },
     ]
     coordinator._date_of_current_data = datetime.date(2025, 8, 8)
 
     # Data for next day is correct
     coordinator._data_for_next_hass_date = [
-        {"start": "2025-08-10T00:00:00+02:00", "end": "2025-08-10T01:00:00+02:00", "value": 12.1},
+        {
+            "start": "2025-08-10T00:00:00+02:00",
+            "end": "2025-08-10T01:00:00+02:00",
+            "value": 12.1,
+        },
     ]
     coordinator._date_of_next_data = current_date + datetime.timedelta(days=1)
 
@@ -195,8 +235,12 @@ async def test_send_updated_data_stale_dates(coordinator, mock_callback):
     expected_payload = {
         "currency": "EUR",
         "raw": [
-            {"start": "2025-08-10T00:00:00+02:00", "end": "2025-08-10T01:00:00+02:00", "value": 12.1},
-        ]
+            {
+                "start": "2025-08-10T00:00:00+02:00",
+                "end": "2025-08-10T01:00:00+02:00",
+                "value": 12.1,
+            },
+        ],
     }
 
     mock_callback.assert_called_once_with(expected_payload)
@@ -219,7 +263,9 @@ async def test_trigger_rollover_promotes_next_day_data(coordinator):
     ), patch.object(
         coordinator,
         "_execute_nordpool_call_logic",
-        new=AsyncMock(return_value=("SUCCESS_DATA", {"currency": "EUR", "raw": ["tomorrow_data"]})),
+        new=AsyncMock(
+            return_value=("SUCCESS_DATA", {"currency": "EUR", "raw": ["tomorrow_data"]})
+        ),
     ) as mock_execute, patch.object(
         coordinator,
         "_send_updated_data_to_sensor",
@@ -250,7 +296,9 @@ async def test_trigger_fetches_today_when_missing(coordinator):
     ), patch.object(
         coordinator,
         "_execute_nordpool_call_logic",
-        new=AsyncMock(return_value=("SUCCESS_DATA", {"currency": "EUR", "raw": ["today_data"]})),
+        new=AsyncMock(
+            return_value=("SUCCESS_DATA", {"currency": "EUR", "raw": ["today_data"]})
+        ),
     ) as mock_execute, patch.object(
         coordinator,
         "_send_updated_data_to_sensor",
@@ -281,7 +329,9 @@ async def test_trigger_fetches_tomorrow_when_missing(coordinator):
     ), patch.object(
         coordinator,
         "_execute_nordpool_call_logic",
-        new=AsyncMock(return_value=("SUCCESS_DATA", {"currency": "EUR", "raw": ["tomorrow_data"]})),
+        new=AsyncMock(
+            return_value=("SUCCESS_DATA", {"currency": "EUR", "raw": ["tomorrow_data"]})
+        ),
     ) as mock_execute, patch.object(
         coordinator,
         "_send_updated_data_to_sensor",

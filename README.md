@@ -34,7 +34,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 4. Restart Home Assistant.
 
 Or use the direct link:
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=custom-components&repository=electricitypricelevels&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Klurige&repository=energyadvisor&category=integration)
 
 #### Add the integration via the Home Assistant UI
 1. Go to `Settings` -> `Devices & Services`

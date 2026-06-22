@@ -42,10 +42,14 @@ def mock_pynordpool():
     mod.DeliveryPeriodEntry = object
     mod.DeliveryPeriodsData = object
     mod.NordPoolClient = object
-    mod.NordPoolEmptyResponseError = type("NordPoolEmptyResponseError", (Exception,), {})
+    mod.NordPoolEmptyResponseError = type(
+        "NordPoolEmptyResponseError", (Exception,), {}
+    )
     mod.NordPoolError = type("NordPoolError", (Exception,), {})
     mod.NordPoolResponseError = type("NordPoolResponseError", (Exception,), {})
-    mod.NordPoolAuthenticationError = type("NordPoolAuthenticationError", (Exception,), {})
+    mod.NordPoolAuthenticationError = type(
+        "NordPoolAuthenticationError", (Exception,), {}
+    )
     mod.AREAS = {}
     sys.modules["pynordpool"] = mod
     yield
@@ -103,7 +107,9 @@ async def test_migrate_v1_to_v2_renames_area_id(hass):
     assert entry.version == 2
     assert "nordpool_area_id" not in entry.options
     assert "nordpool_area_id" not in entry.data
-    assert entry.options["nordpool_prices_sensor"] == "sensor.nord_pool_se3_current_price"
+    assert (
+        entry.options["nordpool_prices_sensor"] == "sensor.nord_pool_se3_current_price"
+    )
     assert entry.data["nordpool_prices_sensor"] == "sensor.nord_pool_se3_current_price"
     assert entry.options["price_divisor"] == 1
 

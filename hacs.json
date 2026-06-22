@@ -1,5 +1,5 @@
 {
-    "name": "ElectricityPriceLevels",
+    "name": "Energy Advisor",
     "homeassistant": "2025.0.0",
     "content_in_root": false,
     "render_readme": true,

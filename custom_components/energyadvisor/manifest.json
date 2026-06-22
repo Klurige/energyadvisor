@@ -4,10 +4,10 @@
   "codeowners": ["@Klurige"],
   "config_flow": true,
   "dependencies": ["nordpool"],
-  "documentation": "https://github.com/Klurige/electricitypricelevels",
+  "documentation": "https://github.com/Klurige/energyadvisor",
   "integration_type": "helper",
   "iot_class": "calculated",
-  "issue_tracker": "https://github.com/Klurige/electricitypricelevels/issues",
+  "issue_tracker": "https://github.com/Klurige/energyadvisor/issues",
   "requirements": [],
   "version": "1.1.2"
 }

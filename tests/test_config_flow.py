@@ -396,21 +396,14 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
     assert validated[CONF_GRID_IMPORT_ENTITY] == "sensor.remote_gridimport"
     assert validated[CONF_GRID_EXPORT_ENTITY] == "sensor.remote_gridexport"
     assert validated[CONF_HOUSEHOLD_BASE_LOAD_W] == 600.0
-    assert (
-        validated[CONF_WATER_HEATER_POWER_ENTITY]
-        == "sensor.remote_waterheaterpower"
-    )
+    assert validated[CONF_WATER_HEATER_POWER_ENTITY] == "sensor.remote_waterheaterpower"
     assert validated[CONF_WATER_HEATER_POWER_W] == 3500.0
     assert validated[CONF_WATER_HEATER_MAX_HOURS] == 4.0
-    assert (
-        validated[CONF_BATHROOM_HUMIDITY_ENTITY]
-        == "sensor.remote_bathroomhumidity"
-    )
+    assert validated[CONF_BATHROOM_HUMIDITY_ENTITY] == "sensor.remote_bathroomhumidity"
     assert validated[CONF_POOL_PUMP_POWER_ENTITY] == "sensor.remote_poolpumppower"
     assert validated[CONF_POOL_PUMP_POWER_W] == 500.0
     assert (
-        validated[CONF_DEHUMIDIFIER_POWER_ENTITY]
-        == "sensor.remote_dehumidifierpower"
+        validated[CONF_DEHUMIDIFIER_POWER_ENTITY] == "sensor.remote_dehumidifierpower"
     )
     assert validated[CONF_DEHUMIDIFIER_POWER_W] == 1500.0
 
@@ -511,20 +504,17 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
     assert result["options"][CONF_GRID_EXPORT_ENTITY] == "sensor.grid_export"
     assert result["options"][CONF_HOUSEHOLD_BASE_LOAD_W] == 600.0
     assert (
-        result["options"][CONF_WATER_HEATER_POWER_ENTITY]
-        == "sensor.water_heater_power"
+        result["options"][CONF_WATER_HEATER_POWER_ENTITY] == "sensor.water_heater_power"
     )
     assert result["options"][CONF_WATER_HEATER_POWER_W] == 3500.0
     assert result["options"][CONF_WATER_HEATER_MAX_HOURS] == 4.0
     assert (
-        result["options"][CONF_BATHROOM_HUMIDITY_ENTITY]
-        == "sensor.bathroom_humidity"
+        result["options"][CONF_BATHROOM_HUMIDITY_ENTITY] == "sensor.bathroom_humidity"
     )
     assert result["options"][CONF_POOL_PUMP_POWER_ENTITY] == "sensor.pool_pump_power"
     assert result["options"][CONF_POOL_PUMP_POWER_W] == 500.0
     assert (
-        result["options"][CONF_DEHUMIDIFIER_POWER_ENTITY]
-        == "sensor.dehumidifier_power"
+        result["options"][CONF_DEHUMIDIFIER_POWER_ENTITY] == "sensor.dehumidifier_power"
     )
     assert result["options"][CONF_DEHUMIDIFIER_POWER_W] == 1500.0
 
@@ -701,17 +691,10 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
     assert result["type"] == "create_entry"
     assert result["data"][CONF_BATTERY_DEGRADATION_COST] == 0.0
     assert (
-        result["data"][CONF_OUTDOOR_TEMPERATURE_ENTITY]
-        == "sensor.outdoor_temperature"
+        result["data"][CONF_OUTDOOR_TEMPERATURE_ENTITY] == "sensor.outdoor_temperature"
     )
     assert result["data"][CONF_HOUSEHOLD_BASE_LOAD_W] == 600.0
-    assert (
-        result["data"][CONF_WATER_HEATER_POWER_ENTITY]
-        == "sensor.water_heater_power"
-    )
+    assert result["data"][CONF_WATER_HEATER_POWER_ENTITY] == "sensor.water_heater_power"
     assert result["data"][CONF_WATER_HEATER_POWER_W] == 3500.0
     assert result["data"][CONF_WATER_HEATER_MAX_HOURS] == 4.0
-    assert (
-        result["data"][CONF_BATHROOM_HUMIDITY_ENTITY]
-        == "sensor.bathroom_humidity"
-    )
+    assert result["data"][CONF_BATHROOM_HUMIDITY_ENTITY] == "sensor.bathroom_humidity"
