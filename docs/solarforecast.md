@@ -35,9 +35,9 @@ The coordinator reads `hass.config.latitude` and `hass.config.longitude` for sol
 
 ## Output sensor
 
-**Default entity ID:** `sensor.solarforecast` for the first config entry.
+**Default entity ID:** `sensor.energy_advisor_solar_forecast` for the first config entry.
 Additional entries receive the usual Home Assistant numeric suffixes, such as
-`sensor.solarforecast_2`.
+`sensor.energy_advisor_solar_forecast_2`.
 
 ### State
 
@@ -133,7 +133,7 @@ HA state change (power sensor)
                         │
                         └─► registered SolarForecastSensor callbacks
                                   │
-                                  └─► sensor.solarforecast* (HA state update)
+                                  └─► sensor.energy_advisor_solar_forecast* (HA state update)
 ```
 
 \* For the first config entry. Later entries receive suffixed entity ids.
@@ -150,9 +150,9 @@ Stale DB files (belonging to removed config entries) are deleted on startup.
 
 ## Dev mode
 
-When `dev_config.py` defines `HA_TOKEN` and `HA_URL`, the coordinator polls the remote HA REST API for inverter power every 30 seconds instead of listening to a local state change event. This allows development against a live production instance without `remote_homeassistant`.
+When `custom_components/energyadvisor/dev_config.py` defines `HA_TOKEN` and `HA_URL`, the coordinator polls the remote HA REST API for inverter power every 30 seconds instead of listening to a local state change event. This allows development against a live production instance without `remote_homeassistant`.
 
-See `const.py` and `dev_config.py` (gitignored) for details.
+See `custom_components/energyadvisor/const.py` and the gitignored `custom_components/energyadvisor/dev_config.py` for details.
 
 ---
 

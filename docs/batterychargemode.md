@@ -1,5 +1,7 @@
 # Battery Charge Mode Sensor
 
+> **Scope note:** this document describes the **Energy Advisor** battery helper.
+
 ## Purpose
 
 Determines whether a home battery should be **charging**, **discharging**, or in **standby** based on the electricity price schedule from the linked price sensor in the same config entry. The goal is to charge during cheap slots and discharge during expensive slots within each 12-hour window, while requiring a minimum price spread to prevent unnecessary cycling that would accelerate battery degradation.
@@ -10,17 +12,18 @@ Determines whether a home battery should be **charging**, **discharging**, or in
 
 ### Required
 
-The linked Electricity Price Levels sensor for the same config entry must be available. The battery sensor reads the price sensor's compact rate payload directly and follows the same per-entry wiring as the compact and solar sensors.
+The linked price sensor for the same config entry must be available. The battery sensor reads the price sensor's compact rate payload directly and follows the same per-entry wiring as the compact and solar sensors.
 
 ### Configuration (all optional — defaults are reasonable without a battery configured)
 
-Set during the final **battery** step of the initial setup flow or later via **Settings → Devices & Services → Electricity Price Levels → Configure**:
+Set during the final **battery** step of the initial setup flow or later via **Settings → Devices & Services → Energy Advisor → Configure**:
 
 | Option | Key | Default | Description |
 |---|---|---|---|
 | Battery capacity | `battery_capacity_kwh` | — | kWh. Used to compute charging time. |
 | Max charge power | `battery_max_charge_power_w` | — | W. Used to compute charging time. |
 | Degradation cost margin | `battery_degradation_cost` | 0.7 | Minimum cost-unit spread between cheapest and most expensive slot before a charge/discharge cycle is scheduled. Prevents cycling on near-flat price days. |
+| Battery SoC sensor | `battery_soc_entity` | — | Percent sensor used to keep discharge recommendations realistic from the current battery state. |
 
 When capacity and power are both set:
 - `charging_time_minutes = capacity_kwh / (max_power_w / 1000) × 60`
@@ -28,22 +31,25 @@ When capacity and power are both set:
 
 Otherwise falls back to 160 min charge / 240 min discharge.
 
-The config flow also stores additional planner inputs such as `battery_soc_entity`,
+The config flow also stores additional planner inputs such as
 `battery_charge_power_entity`, `grid_import_entity`, `grid_export_entity`,
 `outdoor_temperature_entity`, `household_base_load_w`,
 `water_heater_power_entity`, `water_heater_power_w`, `water_heater_max_hours`,
 `bathroom_humidity_entity`, `pool_pump_power_entity`, `pool_pump_power_w`,
 `dehumidifier_power_entity`, and `dehumidifier_power_w`. Those fields are for
-the staged optimizer rollout and are not used by the current price-only battery
-mode algorithm yet.
+the staged optimizer rollout and are not used by the current battery mode
+algorithm yet. `battery_soc_entity` is the first optimizer input now used at
+runtime: together with the configured battery size/power settings it can turn
+impossible discharge slots into `standby` while preserving planned cheap
+charging windows.
 
 ---
 
 ## Output sensor
 
-**Default entity ID:** `sensor.electricity_price_levels_battery_charge_mode` for the first config entry.
+**Default entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
 Additional entries receive the usual Home Assistant numeric suffixes, such as
-`sensor.electricity_price_levels_battery_charge_mode_2`.
+`sensor.energy_advisor_battery_charge_mode_2`.
 
 ### State
 
@@ -61,7 +67,7 @@ Icon changes dynamically: `mdi:battery-charging` / `mdi:battery-arrow-down-outli
 | `discharging_time_minutes` | int | Computed or default discharging duration |
 | `reason` | str | Human-readable explanation for the currently chosen mode |
 | `next_mode_change` | str \| null | Local time string (`YYYY-MM-DDTHH:MM`) for the next expected mode change |
-| `reserved_kwh` | float | Battery energy currently reserved for future needs; `0.0` until step 5/6 adds reserve logic |
+| `reserved_kwh` | float | Active reserve floor in `kWh` when SoC constraints are configured, otherwise `0.0` |
 | `required_load_kwh` | float | Load-backed energy target for the current plan; `0.0` until later load-aware steps |
 | `charge_source` | str \| null | `grid` while the current mode is `charge`, otherwise `null` |
 
@@ -79,6 +85,7 @@ The schedule is recomputed whenever the linked price sensor changes (i.e. when n
 1. **Find discharge peaks** (`_find_local_peaks`): locate the most expensive slots in each window. The global price maximum defines the peak; slots around it are widened to fill `discharging_time_minutes` of total discharge. If the peak–valley spread is below `margin`, the window is skipped entirely.
 2. **Find charge valleys** (`_find_local_valleys`): for each discharge block, look back up to 8 hours and pick the cheapest slots that cover `charging_time_minutes`.
 3. **Extend peaks** (`_extend_peaks`): if at least one explicit charge/discharge slot was found, extend discharge before the first scheduled event, after the last, and across standby gaps between a discharge block and the next charge block.
+4. **Apply SoC constraints**: when `battery_soc_entity`, `battery_capacity_kwh`, and `battery_max_charge_power_w` are configured, the helper simulates the remaining slots from the current time forward and converts impossible `discharge` recommendations into `standby` using a 5% reserve floor and 95% charge/discharge efficiency assumptions. Planned cheap charging windows are kept even when the battery is already near full, so minor self-consumption can still be refilled.
 
 If the margin guard rejects all cycles for the day, the schedule remains
 `standby` throughout instead of forcing discharge on flat-price days.
@@ -106,9 +113,9 @@ Background task: _periodic_update()
 ```
 
 **Key files:**
-- `sensor/batterychargemodesensor.py` — all logic: algorithm functions + battery sensor entity
-- `const.py` — `CONF_BATTERY_CAPACITY_KWH`, `CONF_BATTERY_MAX_CHARGE_POWER_W`, `CONF_BATTERY_DEGRADATION_COST`
-- `tests/test_battery_charge_mode_sensor.py` — ~600 lines, covers algorithm edge cases, config defaults, state transitions
+- `custom_components/energyadvisor/sensor/batterychargemodesensor.py` — all logic: algorithm functions + battery sensor entity
+- `custom_components/energyadvisor/const.py` — `CONF_BATTERY_CAPACITY_KWH`, `CONF_BATTERY_MAX_CHARGE_POWER_W`, `CONF_BATTERY_DEGRADATION_COST`, `CONF_BATTERY_SOC_ENTITY`
+- `tests/test_energyadvisor_battery_charge_mode_sensor.py` — ~600 lines, covers algorithm edge cases, config defaults, state transitions
 
 ---
 
@@ -116,3 +123,5 @@ Background task: _periodic_update()
 
 - Battery timing overrides are optional. If `battery_capacity_kwh` and `battery_max_charge_power_w` are both left empty, the integration falls back to the default 160-minute charge and 240-minute discharge timings.
 - `battery_capacity_kwh` and `battery_max_charge_power_w` must be provided together when overriding the defaults.
+- `battery_soc_entity` without capacity/power still blocks obviously empty `discharge` slots for the current period, but full slot-by-slot SoC simulation requires the battery size/power settings.
+- `standby` is intended for holding battery energy for later higher-value periods, not for suppressing cheap charging merely because the battery is already close to full.

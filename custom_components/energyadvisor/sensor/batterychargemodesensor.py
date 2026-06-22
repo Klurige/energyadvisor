@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -16,14 +17,17 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
 from ..const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
+    CONF_BATTERY_SOC_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
@@ -45,6 +49,10 @@ _DEFAULT_CHARGING_TIME_MINUTES = 160  # Time to fully charge the battery, in min
 _DEFAULT_DISCHARGING_TIME_MINUTES = (
     240  # Expected battery discharge duration, in minutes.
 )
+_DEFAULT_RESERVE_FRACTION = 0.05
+_DEFAULT_CHARGE_EFFICIENCY = 0.95
+_DEFAULT_DISCHARGE_EFFICIENCY = 0.95
+_ENERGY_EPSILON_KWH = 0.05
 
 _WAITING_FOR_RATES_REASON = "Waiting for electricity price data."
 _OUTSIDE_HORIZON_REASON = "Current time is outside the available battery schedule horizon."
@@ -57,6 +65,12 @@ _CHARGE_REASON = (
 )
 _DISCHARGE_REASON = (
     "Discharging is scheduled in a high-price window after earlier lower-price periods."
+)
+_DISCHARGE_BLOCKED_RESERVE_REASON = (
+    "Discharging is blocked because the battery is already at its reserve floor."
+)
+_DISCHARGE_BLOCKED_ENERGY_REASON = (
+    "Discharging is blocked because the usable battery energy above reserve cannot cover the remaining slot."
 )
 
 
@@ -350,24 +364,37 @@ class BatteryChargeModeSensor(SensorEntity):
         # Battery parameters from config (or fallback defaults).
         capacity_kwh = entry.options.get(CONF_BATTERY_CAPACITY_KWH)
         max_power_w = entry.options.get(CONF_BATTERY_MAX_CHARGE_POWER_W)
+        self._battery_soc_entity = entry.options.get(CONF_BATTERY_SOC_ENTITY)
+        self._battery_capacity_kwh = (
+            capacity_kwh if capacity_kwh is not None else None
+        )
+        self._charge_power_kw: float | None = None
+        self._discharge_power_kw: float | None = None
         degradation_cost = entry.options.get(CONF_BATTERY_DEGRADATION_COST)
         self._margin = (
             degradation_cost if degradation_cost is not None else _DEFAULT_MARGIN
         )
 
-        if capacity_kwh and max_power_w:
+        if capacity_kwh is not None and max_power_w is not None:
             max_power_kw = max_power_w / 1000.0
+            self._charge_power_kw = max_power_kw
             # Charging time: capacity / power × 60 (minutes)
             self._charging_time_minutes = round(capacity_kwh / max_power_kw * 60)
             # Discharging time: typically 1.5× charging time (lower average discharge power)
             self._discharging_time_minutes = round(self._charging_time_minutes * 1.5)
+            self._discharge_power_kw = capacity_kwh / (
+                self._discharging_time_minutes / 60
+            )
         else:
             self._charging_time_minutes = _DEFAULT_CHARGING_TIME_MINUTES
             self._discharging_time_minutes = _DEFAULT_DISCHARGING_TIME_MINUTES
 
         self._mode = "standby"
+        self._planned_charge_entries: list[dict] = []
         self._charge_entries: list[dict] = []
         self._cached_attributes: dict = {}
+        self._reserved_kwh = 0.0
+        self._required_load_kwh = 0.0
         self._last_rates_hash: int | None = None
         self._task: asyncio.Task | None = None
         self._remove_source_listener = None
@@ -379,6 +406,14 @@ class BatteryChargeModeSensor(SensorEntity):
             self._handle_source_update
         )
         self.async_on_remove(self._remove_source_listener)
+        if self._battery_soc_entity:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass,
+                    [self._battery_soc_entity],
+                    self._handle_constraint_source_update,
+                )
+            )
         if self._source_sensor.has_rates:
             await self._start_sensor()
 
@@ -388,6 +423,13 @@ class BatteryChargeModeSensor(SensorEntity):
         if self._waiting_for_first_value:
             if self._source_sensor.has_rates:
                 self.hass.async_create_task(self._start_sensor())
+            return
+        self.hass.async_create_task(self._refresh_from_source())
+
+    @callback
+    def _handle_constraint_source_update(self, _event=None) -> None:
+        """Refresh the live battery decision when SoC changes."""
+        if self.hass is None or self._waiting_for_first_value:
             return
         self.hass.async_create_task(self._refresh_from_source())
 
@@ -414,32 +456,182 @@ class BatteryChargeModeSensor(SensorEntity):
             self._task.cancel()
         await super().async_will_remove_from_hass()
 
+    def _read_entity_float_state(self, entity_id: str | None) -> float | None:
+        """Return a finite float state for the configured entity, if available."""
+        if not entity_id or self.hass is None:
+            return None
+
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+
+        try:
+            value = float(str(state.state).replace(",", "."))
+        except (TypeError, ValueError):
+            _LOGGER.debug(
+                "Battery constraint state for %s is not numeric: %s",
+                entity_id,
+                state.state,
+            )
+            return None
+
+        if not math.isfinite(value):
+            return None
+        return value
+
+    def _battery_soc_percent(self) -> float | None:
+        """Return the configured battery SoC, clamped to 0-100 percent."""
+        value = self._read_entity_float_state(self._battery_soc_entity)
+        if value is None:
+            return None
+        return max(0.0, min(100.0, value))
+
+    def _remaining_slot_hours(self, entry: dict, now: datetime | None = None) -> float:
+        """Return the remaining hours for a slot from now onward."""
+        effective_start = entry["start"]
+        if now is not None and entry["start"] < now:
+            effective_start = now
+        remaining_seconds = max(0.0, (entry["end"] - effective_start).total_seconds())
+        return remaining_seconds / 3600.0
+
+    def _apply_threshold_constraint(
+        self, entries: list[dict], now: datetime, soc_percent: float
+    ) -> None:
+        """Block only impossible current-slot discharge when SoC exists alone."""
+        current_index, current_entry = self._find_current_entry(now, entries)
+        if current_index is None or current_entry is None:
+            return
+
+        if (
+            current_entry["mode"] == "discharge"
+            and soc_percent <= _DEFAULT_RESERVE_FRACTION * 100
+        ):
+            current_entry["mode"] = "standby"
+            current_entry["constraint_reason"] = _DISCHARGE_BLOCKED_RESERVE_REASON
+
+    def _apply_battery_constraints(
+        self, planned_entries: list[dict], now: datetime
+    ) -> list[dict]:
+        """Apply SoC-aware feasibility constraints to the price-only slot plan."""
+        adjusted = [entry.copy() for entry in planned_entries]
+        self._reserved_kwh = 0.0
+        self._required_load_kwh = 0.0
+
+        if not adjusted:
+            return adjusted
+
+        soc_percent = self._battery_soc_percent()
+        if soc_percent is None:
+            return adjusted
+
+        if (
+            self._battery_capacity_kwh is None
+            or self._charge_power_kw is None
+            or self._discharge_power_kw is None
+        ):
+            self._apply_threshold_constraint(adjusted, now, soc_percent)
+            return adjusted
+
+        reserve_kwh = self._battery_capacity_kwh * _DEFAULT_RESERVE_FRACTION
+        self._reserved_kwh = round(reserve_kwh, 3)
+        current_energy_kwh = max(
+            0.0,
+            min(
+                self._battery_capacity_kwh,
+                self._battery_capacity_kwh * soc_percent / 100.0,
+            ),
+        )
+        first_actionable_index = next(
+            (index for index, entry in enumerate(adjusted) if entry["end"] > now),
+            None,
+        )
+        if first_actionable_index is None:
+            return adjusted
+
+        for index in range(first_actionable_index, len(adjusted)):
+            entry = adjusted[index]
+            planned_mode = entry["mode"]
+            if planned_mode not in {"charge", "discharge"}:
+                continue
+
+            remaining_hours = self._remaining_slot_hours(
+                entry, now if index == first_actionable_index else None
+            )
+            if remaining_hours <= 0:
+                continue
+
+            if planned_mode == "charge":
+                stored_gain_kwh = (
+                    self._charge_power_kw
+                    * remaining_hours
+                    * _DEFAULT_CHARGE_EFFICIENCY
+                )
+                current_energy_kwh = min(
+                    self._battery_capacity_kwh,
+                    current_energy_kwh + stored_gain_kwh,
+                )
+                continue
+
+            usable_energy_kwh = max(0.0, current_energy_kwh - reserve_kwh)
+            required_energy_kwh = (
+                self._discharge_power_kw
+                * remaining_hours
+                / _DEFAULT_DISCHARGE_EFFICIENCY
+            )
+            if (
+                usable_energy_kwh <= _ENERGY_EPSILON_KWH
+                or usable_energy_kwh + _ENERGY_EPSILON_KWH < required_energy_kwh
+            ):
+                entry["mode"] = "standby"
+                entry["constraint_reason"] = (
+                    _DISCHARGE_BLOCKED_RESERVE_REASON
+                    if usable_energy_kwh <= _ENERGY_EPSILON_KWH
+                    else _DISCHARGE_BLOCKED_ENERGY_REASON
+                )
+                continue
+
+            current_energy_kwh = max(
+                reserve_kwh,
+                current_energy_kwh - required_energy_kwh,
+            )
+
+        return adjusted
+
     def _recompute(self) -> int:
         """Recompute charge modes from current rates. Returns seconds until next slot."""
+        local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        now = dt_util.now().astimezone(local_tz)
         rates = self._source_sensor.compact_rates
         if not rates:
             self._last_rates_hash = None
+            self._planned_charge_entries = []
             self._charge_entries = []
-            return self._update_current_mode()
+            self._reserved_kwh = 0.0
+            self._required_load_kwh = 0.0
+            return self._update_current_mode(now)
 
         # Skip full recomputation if rates haven't changed.
         rates_hash = hash(tuple((r.get("from"), r.get("cost")) for r in rates))
         if rates_hash != self._last_rates_hash:
             self._last_rates_hash = rates_hash
-            self._charge_entries = compute_charge_modes(
+            self._planned_charge_entries = compute_charge_modes(
                 rates,
                 self._margin,
                 self._charging_time_minutes,
                 self._discharging_time_minutes,
             )
 
-        return self._update_current_mode()
+        self._charge_entries = self._apply_battery_constraints(
+            self._planned_charge_entries, now
+        )
+        return self._update_current_mode(now)
 
     def _find_current_entry(
-        self, now: datetime
+        self, now: datetime, entries: list[dict] | None = None
     ) -> tuple[int | None, dict | None]:
         """Return the index and entry covering the current time, if any."""
-        for index, entry in enumerate(self._charge_entries):
+        search_entries = self._charge_entries if entries is None else entries
+        for index, entry in enumerate(search_entries):
             if entry["start"] <= now < entry["end"]:
                 return index, entry
         return None, None
@@ -488,6 +680,8 @@ class BatteryChargeModeSensor(SensorEntity):
                 return _OUTSIDE_HORIZON_REASON
             return _BETWEEN_WINDOWS_REASON
 
+        if current_entry.get("constraint_reason"):
+            return current_entry["constraint_reason"]
         if current_entry["mode"] == "charge":
             return _CHARGE_REASON
         if current_entry["mode"] == "discharge":
@@ -497,18 +691,19 @@ class BatteryChargeModeSensor(SensorEntity):
             return _BETWEEN_WINDOWS_REASON
         return _NO_PROFITABLE_CYCLE_REASON
 
-    def _update_current_mode(self) -> int:
+    def _update_current_mode(self, now: datetime | None = None) -> int:
         """Update _mode from charge_entries for the current time.
 
         Returns seconds until the current slot ends (for scheduling the next update).
         """
         if not self._charge_entries:
             self._mode = "standby"
-            self._rebuild_cached_attributes()
+            self._rebuild_cached_attributes(now)
             return 60
 
-        local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
-        now = dt_util.now().astimezone(local_tz)
+        if now is None:
+            local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
+            now = dt_util.now().astimezone(local_tz)
         current_index, current = self._find_current_entry(now)
 
         if current:
@@ -574,8 +769,8 @@ class BatteryChargeModeSensor(SensorEntity):
                 if next_mode_change is not None
                 else None
             ),
-            "reserved_kwh": 0.0,
-            "required_load_kwh": 0.0,
+            "reserved_kwh": round(self._reserved_kwh, 3),
+            "required_load_kwh": round(self._required_load_kwh, 3),
             "charge_source": "grid" if self._mode == "charge" else None,
         }
 

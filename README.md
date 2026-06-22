@@ -1,4 +1,4 @@
-# Electricity Price Levels for Home Assistant
+# Energy Advisor for Home Assistant
 
 A custom component for Home Assistant that provides electricity price level sensors based on data from the Home Assistant NordPool integration. This integration helps you monitor and automate your home based on real-time and forecasted electricity prices, using the NordPool sensor as a data source.
 
@@ -29,8 +29,8 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 ### Option 1: HACS (Recommended)
 
 1. Open Home Assistant and go to HACS.
-2. Search for `electricitypricelevels` in Integrations.
-3. Install the integration.
+2. Search for `Energy Advisor` in Integrations.
+3. Install the repository.
 4. Restart Home Assistant.
 
 Or use the direct link:
@@ -39,16 +39,16 @@ Or use the direct link:
 #### Add the integration via the Home Assistant UI
 1. Go to `Settings` -> `Devices & Services`
 2. Select `+ Add Integration`
-3. Search for `electricitypricelevels` and select it
+3. Search for `Energy Advisor`
 4. Fill in the name of your NordPool sensor and press `Submit`
 
 ### Option 2: Manual
-1. Copy the `custom_components/electricitypricelevels` directory into your Home Assistant `custom_components` folder.
+1. Copy the `custom_components/energyadvisor` directory into your Home Assistant `custom_components` folder.
 2. Restart Home Assistant.
 3. Add the integration via the Home Assistant UI.
 
 ## Configuration
-This integration is configured through the Home Assistant UI. During setup you select the Nord Pool prices sensor to use, then configure optional fees, credits, taxes, thresholds, optional solar forecast sources, and optional battery scheduling values.
+The integration is configured through the Home Assistant UI. During setup you select the Nord Pool prices sensor to use, then configure optional fees, credits, taxes, thresholds, optional solar forecast sources, and optional battery scheduling values.
 
 There are many extra fees and taxes that can be added to the price. Suppliers and grid owners can have many different types of fees, which may vary by region or contract. You can specify the details of these fees in the `supplier_note` and `grid_note` fields, and add up the actual amounts in the corresponding fee fields. This allows you to document and sum up all relevant charges for your specific situation in the configuration.
 
@@ -79,36 +79,40 @@ called differently for other grids and suppliers.
 | `battery_capacity_kwh`     | Optional battery capacity; provide together with max charge power to override default timings | `10.0` |
 | `battery_max_charge_power_w` | Optional maximum battery charge power; provide together with capacity | `5000` |
 | `battery_degradation_cost` | Optional minimum spread required before cycling the battery | `0.7` |
+| `battery_soc_entity`       | Optional battery state-of-charge sensor in percent; keeps discharge recommendations realistic when configured | `sensor.home_battery_soc` |
 
-The config UI also stores optional planner inputs for upcoming optimizer work:
-`battery_soc_entity`, `battery_charge_power_entity`, `grid_import_entity`,
-`grid_export_entity`, `outdoor_temperature_entity`, `household_base_load_w`,
+The config UI also stores optional planner inputs for upcoming optimizer work.
+`battery_soc_entity` is already used together with the battery size/power
+settings to block impossible discharge slots from the current time forward
+while keeping cheap charge windows intact. The remaining stored planner inputs are:
+`battery_charge_power_entity`, `grid_import_entity`, `grid_export_entity`,
+`outdoor_temperature_entity`, `household_base_load_w`,
 `water_heater_power_entity`, `water_heater_power_w`, `water_heater_max_hours`,
 `bathroom_humidity_entity`, `pool_pump_power_entity`, `pool_pump_power_w`,
 `dehumidifier_power_entity`, and `dehumidifier_power_w`.
 
-These inputs are preserved in the config entry now, but they do not change the
-current price-only battery scheduler yet. The rollout plan for using them lives
+Those remaining inputs are preserved in the config entry now, but they do not
+change the current battery scheduler yet. The rollout plan for using them lives
 in [docs/battery-optimizer-README.md](docs/battery-optimizer-README.md).
 
 When `exclude_from_recording` is `true` (default), Home Assistant recorder/history excludes:
-- `sensor.electricitypricelevels`
-- `sensor.compactlevels`
-- `sensor.batterychargemode`
-- `sensor.solarforecast` when the solar forecast feature is configured
+- `sensor.energy_advisor_price`
+- `sensor.energy_advisor_compact_levels`
+- `sensor.energy_advisor_battery_charge_mode`
+- `sensor.energy_advisor_solar_forecast` when the solar forecast feature is configured
 
-In addition, the `rates` attribute on `sensor.electricitypricelevels`, the `charge_entries` attribute on `sensor.batterychargemode`, and the `forecasts` attribute on `sensor.solarforecast` are excluded from recorder attribute storage to avoid oversized state attributes.
+In addition, the `rates` attribute on `sensor.energy_advisor_price`, the `charge_entries` attribute on `sensor.energy_advisor_battery_charge_mode`, and the `forecasts` attribute on `sensor.energy_advisor_solar_forecast` are excluded from recorder attribute storage to avoid oversized state attributes.
 
 ## Usage
-- The integration adds two price sensors, one battery charge mode sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.electricitypricelevels`, `sensor.compactlevels`, `sensor.batterychargemode`, and `sensor.solarforecast` when the optional solar sensor is enabled. Additional config entries receive numeric suffixes such as `sensor.electricitypricelevels_2`.
-  - `sensor.electricitypricelevels` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
-  - `sensor.compactlevels` provides a compact level string intended for integrations such as Level Indicator Clock.
-  - `sensor.batterychargemode` provides a schedule-based `charge`, `discharge`, or `standby` recommendation for a home battery.
-  - `sensor.solarforecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and inverter power sensors.
-  - `electricitypricelevels.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
+- The integration adds two price sensors, one battery charge mode sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, and `sensor.energy_advisor_solar_forecast` when the optional solar sensor is enabled. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
+  - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
+  - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
+  - `sensor.energy_advisor_battery_charge_mode` provides a schedule-based `charge`, `discharge`, or `standby` recommendation for a home battery.
+  - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and inverter power sensors.
+  - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).
 
-### `sensor.electricitypricelevels`
+### `sensor.energy_advisor_price`
 - **Description:** The current electricity price, including all configured fees and taxes.
 - **State:** The numeric value of the current price.
 - **Attributes:**
@@ -129,10 +133,10 @@ In addition, the `rates` attribute on `sensor.electricitypricelevels`, the `char
     - `rank`: The rank of the price for the period compared to other prices for the current day.
 - **Update Frequency:** Updated when new Nord Pool data is processed and when the selected Nord Pool source sensor changes state.
 
-### `sensor.compactlevels`
-The integration also provides `sensor.compactlevels`, which exposes electricity price levels in a compact format. It is intended for the Level Indicator Clock (https://github.com/Klurige/LevelIndicatorClock) and similar ESPHome-based clocks.
+### `sensor.energy_advisor_compact_levels`
+The integration also provides `sensor.energy_advisor_compact_levels`, which exposes electricity price levels in a compact format. It is intended for the Level Indicator Clock (https://github.com/Klurige/LevelIndicatorClock) and similar ESPHome-based clocks.
 - **Default visibility:** Disabled by default in the entity registry.
-- **Entity ID:** `sensor.compactlevels`
+- **Entity ID:** `sensor.energy_advisor_compact_levels`
 - **State:** Minutes since midnight.
 - **Attributes:**
   - `compact`: String containing minutes_since_midnight:level_length:history:future where level_length is in minutes and history and future are two char arrays with one char per level, where:
@@ -143,9 +147,9 @@ The integration also provides `sensor.compactlevels`, which exposes electricity 
 
    Typically, there is one hour of data for history and twelve hours for future, but that is not guaranteed.
 
-### `sensor.solarforecast`
+### `sensor.energy_advisor_solar_forecast`
 - **Description:** Optional refined solar production forecast learned from the difference between your forecast source and the inverter's measured output.
-- **Default Entity ID:** `sensor.solarforecast` for the first config entry.
+- **Default Entity ID:** `sensor.energy_advisor_solar_forecast` for the first config entry.
 - **State:** Corrected power estimate in `kW` for the current 15-minute slot.
 - **Attributes:**
   - `forecasts`: 192 entries covering today and tomorrow in 15-minute steps, each with:
@@ -160,9 +164,9 @@ The integration also provides `sensor.compactlevels`, which exposes electricity 
 
 See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast description, correction model, and database behavior.
 
-### `sensor.batterychargemode`
-- **Description:** Optional battery schedule recommendation based on the price rates from the linked `sensor.electricitypricelevels` entry.
-- **Default Entity ID:** `sensor.electricity_price_levels_battery_charge_mode` for the first config entry.
+### `sensor.energy_advisor_battery_charge_mode`
+- **Description:** Energy Advisor's battery schedule recommendation based on the price rates from the linked `sensor.energy_advisor_price` entry, with optional SoC-based feasibility constraints.
+- **Default Entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
 - **State:** `charge`, `discharge`, or `standby`.
 - **Attributes:**
   - `charge_entries`: Planned per-slot schedule with local `from`, `mode`, and `cost` (`YYYY-MM-DDTHH:MM`).
@@ -171,16 +175,23 @@ See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast d
   - `discharging_time_minutes`: Discharge duration used by the planner.
   - `reason`: Human-readable explanation for the current recommendation.
   - `next_mode_change`: Local time string (`YYYY-MM-DDTHH:MM`) for the next expected mode change.
-  - `reserved_kwh`: Reserved battery energy, currently `0.0` until reserve logic is introduced.
+  - `reserved_kwh`: Active reserve floor in `kWh` when SoC constraints are configured, otherwise `0.0`.
   - `required_load_kwh`: Load-backed energy target, currently `0.0` until later load-aware steps.
   - `charge_source`: `grid` while charging, otherwise `null`.
 
+When `battery_soc_entity`, `battery_capacity_kwh`, and
+`battery_max_charge_power_w` are configured in Energy Advisor, the helper runs a second pass from
+the current slot forward and converts impossible `discharge` slots to
+`standby` using a 5% reserve floor and 95% charge/discharge efficiency
+assumptions. Full batteries still keep the planned `charge` recommendation so
+small self-consumption can be refilled during cheap periods.
+
 See [docs/batterychargemode.md](docs/batterychargemode.md) for the battery scheduling rules and configuration details.
 
-### `electricitypricelevels.get_levels`
+### `energyadvisor.get_levels`
 - **Description:** The price levels for today and tomorrow as a string with one char per time period. Main purpose is to provide data for the Level Indicator Clock (https://github.com/Klurige/LevelIndicatorClock)
 - **Input parameters:**
- - `entity_id`: Optional `sensor.electricitypricelevels` entity id. Required when multiple Electricity Price Levels entries are loaded.
+ - `entity_id`: Optional `sensor.energy_advisor_price` entity id. Required when multiple Energy Advisor entries are loaded.
  - `level_length`: The length of each level in minutes. Default `0` means the same length as the Nord Pool price periods.
 - **Output:**
  - `level_length`: The length of each level in minutes.
@@ -192,10 +203,10 @@ See [docs/batterychargemode.md](docs/batterychargemode.md) for the battery sched
  - `low_threshold`: The threshold cost for low prices.
  - `high_threshold`: The threshold cost for high prices.
 
-The service and the compact sensor use the main sensor's internal rate data directly, so they follow the same threshold decisions as `sensor.electricitypricelevels` without recomputing from rounded state attributes.
+The service and the compact sensor use the main sensor's internal rate data directly, so they follow the same threshold decisions as `sensor.energy_advisor_price` without recomputing from rounded state attributes.
 
 ## Ranking
-The `sensor.electricitypricelevels` sensor provides a `rank` attribute that indicates the current price's rank compared to other prices for the current day. The rank is expressed on a minute scale across a 1440-minute day.
+The `sensor.energy_advisor_price` sensor provides a `rank` attribute that indicates the current price's rank compared to other prices for the current day. The rank is expressed on a minute scale across a 1440-minute day.
 - `0` is the lowest-price slot for the day.
 - The highest rank is the start minute of the most expensive slot. For 24 hourly prices this is `1380`, and for 96 quarter-hour prices this is `1425`.
 
@@ -214,10 +225,10 @@ Also needed is the ´config-template-card´.
 ```yaml
 type: custom:config-template-card
 variables:
-  thresholdLow: states["sensor.electricitypricelevels"].attributes.low_threshold
-  thresholdHigh: states["sensor.electricitypricelevels"].attributes.high_threshold
+  thresholdLow: states["sensor.energy_advisor_price"].attributes.low_threshold
+  thresholdHigh: states["sensor.energy_advisor_price"].attributes.high_threshold
 entities:
-  - sensor.electricitypricelevels
+  - sensor.energy_advisor_price
 card:
   type: custom:apexcharts-card
   graph_span: 48h
@@ -226,7 +237,7 @@ card:
   experimental:
     color_threshold: true
   series:
-    - entity: sensor.electricitypricelevels
+    - entity: sensor.energy_advisor_price
       name: Electricity Price
       type: column
       color: green
@@ -234,7 +245,7 @@ card:
       extend_to: end
       data_generator: |
         return entity.attributes.rates.map((rate, index) => {
-          return [new Date(rate["start"]).getTime(), rate["cost"]];
+          return [new Date(rate["from"]).getTime(), rate["cost"]];
         });
       color_threshold:
         - value: -1000000
@@ -250,10 +261,10 @@ Or if you prefer one graph for today and one for tomorrow (These graphs also set
 ```yaml
 type: custom:config-template-card
 variables:
-  thresholdLow: states["sensor.electricitypricelevels"].attributes.low_threshold
-  thresholdHigh: states["sensor.electricitypricelevels"].attributes.high_threshold
+  thresholdLow: states["sensor.energy_advisor_price"].attributes.low_threshold
+  thresholdHigh: states["sensor.energy_advisor_price"].attributes.high_threshold
 entities:
-  - sensor.electricitypricelevels
+  - sensor.energy_advisor_price
 card:
   type: custom:apexcharts-card
   header:
@@ -273,7 +284,7 @@ card:
       min: 0
       max: 7
   series:
-    - entity: sensor.electricitypricelevels
+    - entity: sensor.energy_advisor_price
       name: Import
       type: column
       color: green
@@ -284,7 +295,7 @@ card:
         extremas: true
       data_generator: |
         return entity.attributes.rates.map((rate, index) => {
-          return [new Date(rate["start"]).getTime(), rate["cost"]];
+          return [new Date(rate["from"]).getTime(), rate["cost"]];
         });
       color_threshold:
         - value: -1000000
@@ -298,10 +309,10 @@ card:
 ```yaml
 type: custom:config-template-card
 variables:
-  thresholdLow: states["sensor.electricitypricelevels"].attributes.low_threshold
-  thresholdHigh: states["sensor.electricitypricelevels"].attributes.high_threshold
+  thresholdLow: states["sensor.energy_advisor_price"].attributes.low_threshold
+  thresholdHigh: states["sensor.energy_advisor_price"].attributes.high_threshold
 entities:
-  - sensor.electricitypricelevels
+  - sensor.energy_advisor_price
 card:
   type: custom:apexcharts-card
   header:
@@ -319,7 +330,7 @@ card:
       min: 0
       max: 7
   series:
-    - entity: sensor.electricitypricelevels
+    - entity: sensor.energy_advisor_price
       name: Import
       type: column
       color: green
@@ -327,7 +338,7 @@ card:
       extend_to: end
       data_generator: |
         return entity.attributes.rates.map((rate, index) => {
-          return [new Date(rate["start"]).getTime(), rate["cost"]];
+          return [new Date(rate["from"]).getTime(), rate["cost"]];
         });
       color_threshold:
         - value: -1000000
@@ -343,7 +354,7 @@ card:
 ## Troubleshooting
 - Ensure the NordPool integration is working and provides price data.
 - Restart Home Assistant after installation or configuration changes.
-- Check logs for errors related to `electricitypricelevels`.
+- Check logs for errors related to `energyadvisor`.
 
 ### Debug logging
 Add this to your `configuration.yaml` and restart Home Assistant to debug the component.
@@ -352,10 +363,10 @@ Add this to your `configuration.yaml` and restart Home Assistant to debug the co
 logger:
   default: info
   logs:
-    custom_components.electricitypricelevels: debug
-    custom_components.electricitypricelevels.sensor.electricitypricelevels: info
-    custom_components.electricitypricelevels.sensor.compactlevels: info
-    custom_components.electricitypricelevels.util: debug
+    custom_components.energyadvisor: debug
+    custom_components.energyadvisor.sensor.electricitypricelevels: info
+    custom_components.energyadvisor.sensor.compactlevels: info
+    custom_components.energyadvisor.util: debug
 ```
 
 ## Contributing
@@ -375,7 +386,7 @@ pip install -r requirements.test.txt
 Then you can run the tests with:
 
 ```bash
-pytest -v --cov=custom_components.electricitypricelevels tests/
+pytest -v --cov=custom_components.energyadvisor tests/
 ```
 
 Or without coverage:

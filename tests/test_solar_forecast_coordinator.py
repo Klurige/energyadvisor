@@ -83,7 +83,7 @@ if not _REAL_HA_AVAILABLE:
     sys.meta_path.insert(0, _HAMockFinder())
 
 # Now we can import the coordinator (it will get mock HA modules)
-from custom_components.electricitypricelevels.solar_forecast_coordinator import (  # noqa: E402
+from custom_components.energyadvisor.solar_forecast_coordinator import (  # noqa: E402
     CORRECTION_HALF_LIFE_DAYS,
     DB_SCHEMA_VERSION,
     INTRADAY_MAX_SCALING,

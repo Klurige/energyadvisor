@@ -4,7 +4,7 @@
 Usage:
     python scripts/fetch_ha_history.py [--entity ENTITY_ID] [--days N] [--output FILE]
 
-Credentials are read from custom_components/electricitypricelevels/dev_config.py.
+Credentials are read from custom_components/energyadvisor/dev_config.py.
 """
 
 from __future__ import annotations
@@ -19,13 +19,13 @@ from urllib.error import HTTPError, URLError
 
 # Add project root to path so we can import dev_config
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / "custom_components" / "electricitypricelevels"))
+sys.path.insert(0, str(PROJECT_ROOT / "custom_components" / "energyadvisor"))
 
 try:
     from dev_config import HA_URL, HA_TOKEN
 except ImportError:
     print("ERROR: dev_config.py not found or missing HA_URL/HA_TOKEN.")
-    print("Create custom_components/electricitypricelevels/dev_config.py with:")
+    print("Create custom_components/energyadvisor/dev_config.py with:")
     print('  HA_URL = "http://your-ha-instance:8123"')
     print('  HA_TOKEN = "your-long-lived-access-token"')
     sys.exit(1)

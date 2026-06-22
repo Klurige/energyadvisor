@@ -1,4 +1,4 @@
-"""Services for the electricitypricelevels integration."""
+"""Services for the Energy Advisor integration."""
 
 from __future__ import annotations
 
@@ -49,17 +49,17 @@ def _resolve_levels_sensor(hass: HomeAssistant, entity_id: str | None) -> object
         if matches:
             return matches[0]
         raise ServiceValidationError(
-            f"Unknown electricitypricelevels sensor entity_id: {entity_id}"
+            f"Unknown energyadvisor sensor entity_id: {entity_id}"
         )
 
     if len(matches) == 1:
         return matches[0]
 
     if not matches:
-        raise ServiceValidationError("No electricitypricelevels sensor is loaded.")
+        raise ServiceValidationError("No energyadvisor sensor is loaded.")
 
     raise ServiceValidationError(
-        "Multiple electricitypricelevels sensors are loaded. "
+        "Multiple energyadvisor sensors are loaded. "
         "Specify entity_id in the service call."
     )
 

@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.electricitypricelevels.const import DOMAIN
-from custom_components.electricitypricelevels.sensor.compactlevels import (
+from custom_components.energyadvisor.const import DOMAIN
+from custom_components.energyadvisor.sensor.compactlevels import (
     CompactLevelsSensor,
     calculate_levels,
 )
@@ -64,7 +64,7 @@ def sensor(hass, entry, device_info, source_sensor):
 def test_constructor_uses_preferred_entity_id(hass, entry, device_info, source_sensor):
     """The compact sensor should use the staged preferred entity ID."""
     compact = CompactLevelsSensor(hass, entry, device_info, source_sensor)
-    assert compact.entity_id == "sensor.electricity_price_levels_compact_levels"
+    assert compact.entity_id == "sensor.energy_advisor_compact_levels"
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,7 @@ async def test_start_levels_sensor_idempotent(sensor):
     assert sensor._waiting_for_first_value is False
 
 
-@patch("custom_components.electricitypricelevels.sensor.compactlevels.datetime")
+@patch("custom_components.energyadvisor.sensor.compactlevels.datetime")
 def test_fetch_service_value_normal(mock_dt, sensor, source_sensor):
     mock_now = datetime(2025, 1, 1, 1, 12, 0)
     mock_dt.now.return_value = mock_now
@@ -192,9 +192,9 @@ async def test_periodic_update(sensor):
 
 
 @patch(
-    "custom_components.electricitypricelevels.sensor.compactlevels.dt_util.get_time_zone"
+    "custom_components.energyadvisor.sensor.compactlevels.dt_util.get_time_zone"
 )
-@patch("custom_components.electricitypricelevels.sensor.compactlevels.datetime")
+@patch("custom_components.energyadvisor.sensor.compactlevels.datetime")
 def test_fetch_service_value_now_and_next(mock_dt, mock_tz, sensor, source_sensor):
     mock_tz.return_value = "UTC"
     mock_now = datetime(2023, 1, 1, 10, 15, 30)
@@ -232,7 +232,7 @@ def test_fetch_service_value_now_and_next(mock_dt, mock_tz, sensor, source_senso
 
 
 def test_calculate_levels_resolves_loaded_sensor(hass, source_sensor):
-    source_sensor.entity_id = "sensor.electricitypricelevels"
+    source_sensor.entity_id = "sensor.energy_advisor_price"
     source_sensor.build_levels_payload.return_value = {
         "level_length": 60,
         "levels": "LM",

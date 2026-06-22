@@ -5,7 +5,7 @@ get_levels:
             selector:
                 entity:
                     domain: sensor
-            description: Electricity Price Levels sensor entity id. Required when multiple entries are loaded.
+            description: Energy Advisor price sensor entity id. Required when multiple entries are loaded.
         level_length:
             selector:
                 number:

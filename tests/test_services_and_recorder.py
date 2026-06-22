@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 from homeassistant.exceptions import ServiceValidationError
 
-from custom_components.electricitypricelevels.const import DOMAIN
-from custom_components.electricitypricelevels.services import async_setup_services
+from custom_components.energyadvisor.const import DOMAIN
+from custom_components.energyadvisor.services import async_setup_services
 
 
 @pytest.mark.asyncio
@@ -18,7 +18,7 @@ async def test_get_levels_service_handler_uses_requested_level_length() -> None:
     hass.services.has_service.return_value = False
     expected = {"level_length": 60, "levels": "LMH"}
     levels_sensor = MagicMock()
-    levels_sensor.entity_id = "sensor.electricitypricelevels"
+    levels_sensor.entity_id = "sensor.energy_advisor_price"
     levels_sensor.build_levels_payload.return_value = expected
     hass.data = {DOMAIN: {"entry": SimpleNamespace(levels_sensor=levels_sensor)}}
 
@@ -41,7 +41,7 @@ async def test_get_levels_service_handler_defaults_level_length_to_zero() -> Non
     hass.services.has_service.return_value = False
     expected = {"level_length": 0, "levels": "U"}
     levels_sensor = MagicMock()
-    levels_sensor.entity_id = "sensor.electricitypricelevels"
+    levels_sensor.entity_id = "sensor.energy_advisor_price"
     levels_sensor.build_levels_payload.return_value = expected
     hass.data = {DOMAIN: {"entry": SimpleNamespace(levels_sensor=levels_sensor)}}
 
@@ -64,13 +64,13 @@ async def test_get_levels_service_handler_selects_requested_entity() -> None:
     hass.services.has_service.return_value = False
 
     selected_sensor = MagicMock()
-    selected_sensor.entity_id = "sensor.electricitypricelevels_2"
+    selected_sensor.entity_id = "sensor.energy_advisor_price_2"
     selected_sensor.build_levels_payload.return_value = {
         "level_length": 15,
         "levels": "LM",
     }
     other_sensor = MagicMock()
-    other_sensor.entity_id = "sensor.electricitypricelevels"
+    other_sensor.entity_id = "sensor.energy_advisor_price"
 
     hass.data = {
         DOMAIN: {
@@ -83,7 +83,7 @@ async def test_get_levels_service_handler_selects_requested_entity() -> None:
     handler = hass.services.async_register.call_args.args[2]
 
     call = MagicMock()
-    call.data = {"entity_id": "sensor.electricitypricelevels_2", "level_length": 15}
+    call.data = {"entity_id": "sensor.energy_advisor_price_2", "level_length": 15}
     response = await handler(call)
 
     assert response == {"level_length": 15, "levels": "LM"}

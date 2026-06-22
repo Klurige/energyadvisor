@@ -5,9 +5,9 @@ on:
     types: [published]
 
 jobs:
-  update-manifest:
+  update-manifests:
     runs-on: ubuntu-latest
-    name: Update manifest version
+    name: Update manifest versions
     permissions:
       contents: write
     steps:
@@ -15,20 +15,23 @@ jobs:
         with:
           ref: ${{ github.event.release.target_commitish }}
 
-      - name: Update version in manifest.json
+      - name: Update version in manifest.json files
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          jq --arg v "$VERSION" '.version = $v' \
-            custom_components/electricitypricelevels/manifest.json > manifest.tmp \
-            && mv manifest.tmp custom_components/electricitypricelevels/manifest.json
-          echo "Updated manifest.json to version $VERSION"
-          cat custom_components/electricitypricelevels/manifest.json
+          for manifest in custom_components/*/manifest.json; do
+            [ -f "$manifest" ] || continue
+            tmp="$(mktemp)"
+            jq --arg v "$VERSION" '.version = $v' "$manifest" > "$tmp"
+            mv "$tmp" "$manifest"
+            echo "Updated $manifest to version $VERSION"
+            cat "$manifest"
+          done
 
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add custom_components/electricitypricelevels/manifest.json
+          git add custom_components/*/manifest.json
           git diff --cached --quiet && echo "No changes" && exit 0
-          git commit -m "Update manifest.json version to ${GITHUB_REF_NAME#v}"
+          git commit -m "Update integration manifest versions to ${GITHUB_REF_NAME#v}"
           git push

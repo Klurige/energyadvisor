@@ -9,9 +9,9 @@ import types
 
 def test_const_loads_dev_defaults_without_ha_secrets():
     """DEV_DEFAULTS should still load when HA_URL/TOKEN are absent."""
-    import custom_components.electricitypricelevels.const as const_mod
+    import custom_components.energyadvisor.const as const_mod
 
-    module_name = "custom_components.electricitypricelevels.dev_config"
+    module_name = "custom_components.energyadvisor.dev_config"
     original_dev_module = sys.modules.get(module_name)
 
     fake_dev_module = types.ModuleType(module_name)

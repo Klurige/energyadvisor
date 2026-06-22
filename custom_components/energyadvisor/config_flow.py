@@ -1,4 +1,4 @@
-"""Config flow for ElectricityPriceLevel integration."""
+"""Config flow for the Energy Advisor integration."""
 
 from __future__ import annotations
 
@@ -761,7 +761,7 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
                 for key in OPTIMIZER_NUMERIC_KEYS:
                     self.data[key] = user_input.get(key)
                 return self.async_create_entry(
-                    title="ElectricityPriceLevel",
+                    title="Energy Advisor",
                     data=self.data,
                     options={
                         CONF_NORDPOOL_PRICES_SENSOR: self.data[

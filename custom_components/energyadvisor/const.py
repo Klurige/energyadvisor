@@ -1,4 +1,4 @@
-"""Constants for the electricitypricelevels integration."""
+"""Constants for the Energy Advisor integration."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 
-DOMAIN = "electricitypricelevels"
+DOMAIN = "energyadvisor"
 LOGGER = logging.getLogger(__package__)
 
 # Development configuration — imported from dev_config.py (gitignored).
@@ -74,10 +74,10 @@ ATTR_ENERGY_TOMORROW_KWH = "energy_tomorrow_kwh"
 ATTR_INTRADAY_SCALING = "intraday_scaling"
 
 PREFERRED_SENSOR_ENTITY_IDS: dict[str, str] = {
-    "electricitypricelevels": "sensor.electricity_price_levels_price",
-    "compactlevels": "sensor.electricity_price_levels_compact_levels",
-    "batterychargemode": "sensor.electricity_price_levels_battery_charge_mode",
-    "solarforecast": "sensor.electricity_price_levels_solar_forecast",
+    "electricitypricelevels": "sensor.energy_advisor_price",
+    "compactlevels": "sensor.energy_advisor_compact_levels",
+    "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
+    "solarforecast": "sensor.energy_advisor_solar_forecast",
 }
 
 

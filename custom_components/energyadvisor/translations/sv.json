@@ -240,8 +240,8 @@
     }
   },
   "device_info": {
-    "device_name": "Elprisnivåer",
-    "manufacturer": "Electricity Price Levels",
-    "model": "Electricity Price Levels"
+    "device_name": "Energirådgivare",
+    "manufacturer": "Energy Advisor",
+    "model": "Energy Advisor"
   }
 }

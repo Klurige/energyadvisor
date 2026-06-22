@@ -1,4 +1,4 @@
-# Feature: Electricity Price Levels Sensor
+# Feature: Energy Advisor Price Sensors
 
 ## Purpose
 
@@ -94,7 +94,7 @@ should turn it on if rank is below 240 and off if rank is 240 or higher.
 
 ## Output
 
-### `sensor.electricitypricelevels`
+### `sensor.energy_advisor_price`
 
 | Property | Value |
 |----------|-------|
@@ -136,10 +136,10 @@ should turn it on if rank is below 240 and off if rank is 240 or higher.
 
 ---
 
-### `sensor.compactlevels`
+### `sensor.energy_advisor_compact_levels`
 
 Hidden diagnostic sensor (disabled in entity registry by default).
-Consumed by LevelIndicatorClock and the `electricitypricelevels.get_levels` service.
+Consumed by LevelIndicatorClock and the `energyadvisor.get_levels` service.
 
 | Property | Value |
 |----------|-------|
@@ -151,10 +151,10 @@ Updates automatically at the end of each price slot. Level characters: `L`, `M`,
 
 ---
 
-### Service: `electricitypricelevels.get_levels`
+### Service: `energyadvisor.get_levels`
 
 Returns a dict with level string and slot length, used by LevelIndicatorClock.
-When multiple Electricity Price Levels entries are loaded, pass the desired
+When multiple Energy Advisor entries are loaded, pass the desired
 `entity_id`.
 
 ---
@@ -196,10 +196,10 @@ CompactLevelsSensor
 
 ## Development setup
 
-### `dev_config.py` (gitignored)
+### `custom_components/energyadvisor/dev_config.py` (gitignored)
 
-Copy `dev_config.py.example` → `dev_config.py` (or create manually) to pre-fill
-the config-flow wizard with real values during development. When `DEV_DEFAULTS_ENABLED = True`,
+Create `custom_components/energyadvisor/dev_config.py` to pre-fill the config-flow
+wizard with real values during development. When `DEV_DEFAULTS_ENABLED = True`,
 `config_flow.py` pre-populates every form field from `DEV_DEFAULTS`.
 
 ```python
@@ -223,7 +223,7 @@ is absent.
 
 Fetches historical sensor data from a live HA instance over the REST API.
 Used to seed inverter/price history for solar forecast calibration.
-Requires `HA_URL` and `HA_TOKEN` in `dev_config.py`.
+Requires `HA_URL` and `HA_TOKEN` in `custom_components/energyadvisor/dev_config.py`.
 
 ### Tests
 

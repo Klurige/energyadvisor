@@ -1,6 +1,6 @@
 {
-  "domain": "electricitypricelevels",
-  "name": "Electricity Price Levels",
+  "domain": "energyadvisor",
+  "name": "Energy Advisor",
   "codeowners": ["@Klurige"],
   "config_flow": true,
   "dependencies": ["nordpool"],

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
-from custom_components.electricitypricelevels.const import (
+from custom_components.energyadvisor.const import (
     ATTR_DATA_SINCE,
     ATTR_ENERGY_TODAY_KWH,
     ATTR_ENERGY_TOMORROW_KWH,
@@ -14,7 +14,7 @@ from custom_components.electricitypricelevels.const import (
     ATTR_TOTAL_SAMPLES,
     CONF_EXCLUDE_FROM_RECORDING,
 )
-from custom_components.electricitypricelevels.sensor.solarforecastsensor import (
+from custom_components.energyadvisor.sensor.solarforecastsensor import (
     SolarForecastSensor,
 )
 
@@ -48,7 +48,7 @@ def test_sensor_uses_suggested_object_id_and_excludes_large_attribute():
     """The entity should use the staged preferred ID and keep forecasts unrecorded."""
     sensor = _make_sensor(exclude_from_recording=False)
 
-    assert sensor.entity_id == "sensor.electricity_price_levels_solar_forecast"
+    assert sensor.entity_id == "sensor.energy_advisor_solar_forecast"
     assert sensor._attr_suggested_object_id == "solarforecast"
     assert sensor._attr_exclude_from_recording is False
     assert ATTR_FORECASTS in sensor._unrecorded_attributes

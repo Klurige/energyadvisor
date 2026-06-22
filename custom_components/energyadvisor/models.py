@@ -1,4 +1,4 @@
-"""Runtime models for the electricitypricelevels integration."""
+"""Runtime models for the Energy Advisor integration."""
 
 from __future__ import annotations
 

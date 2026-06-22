@@ -15,7 +15,7 @@ agent or computer restarts.
 - [x] `forecast_entity` — existing solar forecast input for today.
 - [x] `forecast_tomorrow_entity` — existing solar forecast input for tomorrow.
 - [x] `power_entity` — existing inverter power input for the refined solar forecast.
-- [ ] `battery_soc_entity` — required to know how much usable energy is currently stored.
+- [x] `battery_soc_entity` — required to know how much usable energy is currently stored.
 - [ ] `bathroom_humidity_entity` — when humidity reaches `100%`, treat it as a shower and reset the water-heater 24-hour timer.
 - [ ] `outdoor_temperature_entity` or temperature forecast entity — required to predict heating-driven winter load.
 - [ ] `water_heater_power_entity` and `water_heater_power_w` — required to measure actual reheating energy after a hot-water event and verify heater recovery.
@@ -64,11 +64,12 @@ agent or computer restarts.
 ## Current repo state
 
 - Implemented today:
-  - `sensor.electricitypricelevels`
-  - `sensor.batterychargemode` with price-only `standby` / `charge` / `discharge`
-  - optional `sensor.solarforecast`
-- Wired into config storage but not yet used by runtime planning:
+  - `energyadvisor` is now the only shipped integration and carries the evolving planner work
+  - `sensor.energy_advisor_battery_charge_mode` now has explainability plus
+    SoC-aware discharge constraints
+- Wired into config storage and runtime planning in `energyadvisor`:
   - `battery_soc_entity`
+- Wired into config storage but not yet used by runtime planning:
   - `household_base_load_w`
   - `pool_pump_power_*`
   - `water_heater_power_*`
@@ -92,7 +93,7 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
 2. [x] Lock current battery behavior with tests.
    - **Deliverable:** add or tighten tests that pin the current price-only battery logic.
    - **Verify:** existing battery behavior remains unchanged before new features begin.
-   - **Note:** `test_battery_charge_mode_sensor.py` already covers the core algorithm well.
+   - **Note:** the battery sensor test suite already covers the core algorithm well.
      Added edge-case coverage for flat price curves (no charge/discharge expected), only
      today's prices available (no tomorrow data), and a spring DST transition day.
 
@@ -100,7 +101,7 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
    - **Deliverable:** add constants, config-flow fields, option-flow fields, and translations for the new entities and parameters.
    - **Verify:** the new inputs can be configured from the UI and survive reloads.
    - **Naming outcome:** canonical appliance sensor keys now use `*_power_entity` (`water_heater_power_entity`, `pool_pump_power_entity`, `dehumidifier_power_entity`).
-   - **Mode naming note:** add `maxuse` and `sell` to the `batterychargemode` state translations in `strings.json` and both translation files no later than step 15. If localized shadow-mode output is wanted earlier, expose `proposed_mode` as a dedicated diagnostic sensor instead of a plain attribute.
+   - **Mode naming note:** add `maxuse` and `sell` to the `energyadvisor` `batterychargemode` state translations in `strings.json` and both translation files no later than step 6.
    - **Done:** added config/options storage, validation, and translated labels for the agreed optimizer inputs; documented that they are stored now but not yet used by the runtime planner.
    - **Deploy:** not by itself; bundle this with step 4 and step 5 for the first live release.
 
@@ -115,18 +116,23 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
      `charge_source` for current charging periods.
    - **Deploy:** prepare for live release, but release together with step 5 as **R1**.
 
-5. [ ] Add real battery constraints.
+5. [x] Add real battery constraints.
    - **Deliverable:** use SoC, reserve floor, and efficiency to block impossible actions.
-   - **Verify:** low SoC cannot produce `discharge` or `sell`; full battery cannot produce `charge`.
+   - **Verify:** low SoC cannot produce `discharge` or `sell`; a full battery does not force cheap planned charging into `standby`.
+   - **Done:** the battery helper now keeps the price-only plan as a base schedule and applies
+     a SoC-aware feasibility pass from the current slot forward. With battery size/power
+     configured, it uses a 5% reserve floor and 95% charge/discharge efficiency assumptions
+     to block impossible discharge periods while preserving planned cheap charge windows;
+     with SoC alone, it still blocks obviously empty current-slot discharge actions.
    - **Deploy:** **Yes — R1.** Release step 3 + step 4 + step 5 together to the live system. Then observe that the new attributes are useful and that SoC only blocks impossible states.
 
-6. [ ] Introduce the new mode set in shadow mode.
-   - **Deliverable:** compute `standby`, `charge`, `maxuse`, `discharge`, and `sell` as a `proposed_mode` attribute while the main state still uses the current logic.
-   - **Verify:** old and proposed behavior can be compared safely for a few days.
-   - **Note:** after releasing to the live system, let it soak for at least several days on real
-     price and solar data before continuing to step 7. The shadow period is the primary
-     quality gate before promotion.
-   - **Deploy:** **Yes — R2.** Release this step to the live system and start the first shadow-mode soak period.
+6. [ ] Introduce the new mode set in Energy Advisor.
+   - **Deliverable:** compute `standby`, `charge`, `maxuse`, `discharge`, and `sell` as the main battery state in `energyadvisor`.
+   - **Verify:** the new mode set behaves sensibly for a few live days of real price and solar data.
+   - **Note:** after releasing to the live system, let the new mode set soak for at least several days on real
+     price and solar data before continuing to step 7. This first live soak is the primary
+     quality gate before deeper planner work continues.
+   - **Deploy:** **Yes — R2.** Release this step to the live system and start the first live soak period.
 
 7. [ ] Replace fixed battery duration with required-energy math.
    - **Deliverable:** stop assuming a fixed discharge length and instead compute required energy until the next useful solar window.
@@ -156,7 +162,7 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
 12. [ ] Make the battery planner reserve energy for planned loads.
    - **Deliverable:** the battery planner must consider water-heater demand, expected base load, and sunny-only loads before allowing `discharge` or `sell`.
    - **Verify:** the planner does not sell battery energy that is needed later the same night or before the next solar window.
-   - **Deploy:** **Yes — R3.** Release steps 7–12 together so the full advisory planner runs live in shadow mode, then start the second soak period.
+   - **Deploy:** **Yes — R3.** Release steps 7–12 together so the full advisory planner runs live in Energy Advisor, then start the second live soak period.
 
 13. [ ] Add historical learning.
    - **Deliverable:** learn expected base load from hour, weekday/weekend, season, and temperature; learn solar-surplus confidence from forecast versus actual production. `battery_charge_power_entity` feeds the charge/discharge learning here.
@@ -175,39 +181,39 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
      needed. Completion of this step is the confidence gate before step 15.
    - **Deploy:** no — development/offline only.
 
-15. [ ] Promote the proposed mode to the main sensor state.
-   - **Deliverable:** once shadow mode and backtests are good enough, publish the new mode set as the real battery state. Update `docs/batterychargemode.md` to document the new mode set and decision logic.
+15. [ ] Promote Energy Advisor to the primary live integration.
+   - **Deliverable:** once the live soak periods and backtests are good enough, treat the Energy Advisor mode set as the primary live path and update `docs/batterychargemode.md` to document the final decision logic.
    - **Verify:** scenario tests, regression tests, and documentation all match the new behavior.
-   - **Deploy:** **Yes — R4.** Release this only after the shadow-mode soak periods and offline backtesting both look safe.
+   - **Deploy:** **Yes — R4.** Release this only after the live soak periods and offline backtesting both look safe.
 
 ## Release gates
 
 Most steps are advisory additions or dev/offline work. The first live behavior change can happen
-in step 5 when SoC constraints block impossible states, while step 15 is the point where the main
-battery mode sensor changes to the new mode set. Some steps add enough observable value that they
-should be released to the live system so real data can validate the plan:
+in step 5 when SoC constraints block impossible states in Energy Advisor, while step 15 is the point
+where Energy Advisor should be treated as the primary battery integration. Some steps add enough
+observable value that they should be released to the live system so real data can validate the plan:
 
 | Release | After step | What you gain |
 |---------|-----------|---------------|
 | **R1** | 4 (+ 5) | Battery decisions are explainable from sensor attributes; SoC constraints make modes more realistic. Low risk, but live behavior can tighten if SoC blocks an impossible action. |
-| **R2** | 6 | Shadow mode is live. Start the real-world comparison period. Let it soak for **at least several days** on real price and solar data before continuing. This is the primary quality gate. |
-| **R3** | 12 | Full advisory planner is live in shadow mode (battery + water heater + pool + dehumidifier). Start a second soak period before promoting. |
-| **R4** | 15 | The release that changes the main battery sensor to the new mode set. Should feel safe because shadow mode has been running for weeks. |
+| **R2** | 6 | Energy Advisor's new mode set is live. Start the first real-world soak period and let it run for **at least several days** before continuing. |
+| **R3** | 12 | Full advisory planner is live in Energy Advisor (battery + water heater + pool + dehumidifier). Start a second soak period before promoting. |
+| **R4** | 15 | Energy Advisor becomes the recommended primary live integration. This should feel safe because the live soak periods and backtests have already run. |
 
 Steps 13–14 are **dev/offline only** and do not require a live release.
 
 ## Likely files to touch
 
-- `custom_components/electricitypricelevels/const.py`
-- `custom_components/electricitypricelevels/config_flow.py`
-- `custom_components/electricitypricelevels/sensor/batterychargemodesensor.py`
-- `custom_components/electricitypricelevels/sensor/__init__.py`
-- `custom_components/electricitypricelevels/strings.json`
-- `custom_components/electricitypricelevels/translations/en.json`
-- `custom_components/electricitypricelevels/translations/sv.json`
+- `custom_components/energyadvisor/const.py`
+- `custom_components/energyadvisor/config_flow.py`
+- `custom_components/energyadvisor/sensor/batterychargemodesensor.py`
+- `custom_components/energyadvisor/sensor/__init__.py`
+- `custom_components/energyadvisor/strings.json`
+- `custom_components/energyadvisor/translations/en.json`
+- `custom_components/energyadvisor/translations/sv.json`
 - `docs/batterychargemode.md` *(update at step 15)*
 - `README.md`
-- `tests/test_battery_charge_mode_sensor.py`
+- `tests/test_energyadvisor_battery_charge_mode_sensor.py`
 - New helper modules for optimization logic (see implementation note below)
 
 ## Implementation note

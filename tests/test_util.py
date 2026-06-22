@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from custom_components.electricitypricelevels.util import (
+from custom_components.energyadvisor.util import (
     build_levels_payload_from_rates,
     infer_level_length_minutes,
 )

@@ -2,11 +2,17 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from custom_components.energyadvisor.const import (
+    CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_MAX_CHARGE_POWER_W,
+    CONF_BATTERY_SOC_ENTITY,
+)
 from custom_components.energyadvisor.sensor.batterychargemodesensor import (
     _DEFAULT_CHARGING_TIME_MINUTES as CHARGING_TIME_MINUTES,
     _DEFAULT_DISCHARGING_TIME_MINUTES as DISCHARGING_TIME_MINUTES,
@@ -366,6 +372,8 @@ def hass():
     h = MagicMock()
     h.config = MagicMock()
     h.config.time_zone = "UTC"
+    h.states = MagicMock()
+    h.states.get.return_value = None
     return h
 
 
@@ -467,6 +475,42 @@ async def test_handle_source_update_refreshes_when_running(sensor, hass):
         sensor, "_refresh_from_source", new_callable=AsyncMock
     ) as mock_refresh:
         sensor._handle_source_update()
+        await asyncio.gather(*created_tasks)
+
+    mock_refresh.assert_awaited_once()
+
+
+@patch(
+    "custom_components.energyadvisor.sensor.batterychargemodesensor.async_track_state_change_event",
+    return_value=MagicMock(),
+)
+async def test_async_added_to_hass_registers_soc_listener(
+    mock_track, hass, entry, device_info, source_sensor
+):
+    entry.options = {CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc"}
+    battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, source_sensor)
+    battery_sensor.hass = hass
+
+    await battery_sensor.async_added_to_hass()
+
+    mock_track.assert_called_once_with(
+        hass,
+        ["sensor.battery_soc"],
+        battery_sensor._handle_constraint_source_update,
+    )
+
+
+async def test_handle_constraint_source_update_refreshes_when_running(sensor, hass):
+    sensor._waiting_for_first_value = False
+    created_tasks = []
+    hass.async_create_task = lambda coro: created_tasks.append(
+        asyncio.create_task(coro)
+    )
+
+    with patch.object(
+        sensor, "_refresh_from_source", new_callable=AsyncMock
+    ) as mock_refresh:
+        sensor._handle_constraint_source_update()
         await asyncio.gather(*created_tasks)
 
     mock_refresh.assert_awaited_once()
@@ -691,6 +735,144 @@ def test_recompute_populates_charge_entries(sensor, source_sensor):
     ):
         sensor._recompute()
     assert len(sensor._charge_entries) == 12
+
+
+def test_recompute_keeps_charge_when_battery_is_full(
+    hass, entry, device_info, source_sensor
+):
+    entry.options = {
+        CONF_BATTERY_CAPACITY_KWH: 10.0,
+        CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
+        CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
+    }
+    hass.states.get.return_value = SimpleNamespace(state="100")
+    battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, source_sensor)
+    battery_sensor.hass = hass
+    source_sensor.compact_rates = make_rates([1.0] * 3 + [4.0] * 9)
+
+    with patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
+        return_value=datetime(2024, 1, 1, 0, 30, tzinfo=UTC),
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_time_zone",
+        return_value=UTC,
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_default_time_zone",
+        return_value=UTC,
+    ):
+        next_update = battery_sensor._recompute()
+
+    attrs = battery_sensor.extra_state_attributes
+    assert next_update == 1801
+    assert battery_sensor.state == "charge"
+    assert attrs["reason"] == (
+        "Charging is scheduled in a low-price window ahead of higher-price periods."
+    )
+    assert attrs["next_mode_change"] == "2024-01-01T02:00"
+    assert attrs["reserved_kwh"] == 0.5
+    assert attrs["charge_source"] == "grid"
+    assert attrs["charge_entries"][0]["mode"] == "charge"
+
+
+def test_recompute_blocks_discharge_when_soc_is_at_reserve_floor(
+    hass, entry, device_info, source_sensor
+):
+    entry.options = {
+        CONF_BATTERY_CAPACITY_KWH: 10.0,
+        CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
+        CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
+    }
+    hass.states.get.return_value = SimpleNamespace(state="5")
+    battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, source_sensor)
+    battery_sensor.hass = hass
+    source_sensor.compact_rates = make_rates([1.0] * 3 + [4.0] * 9)
+
+    with patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
+        return_value=datetime(2024, 1, 1, 3, 0, tzinfo=UTC),
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_time_zone",
+        return_value=UTC,
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_default_time_zone",
+        return_value=UTC,
+    ):
+        battery_sensor._recompute()
+
+    attrs = battery_sensor.extra_state_attributes
+    assert battery_sensor.state == "standby"
+    assert attrs["reason"] == (
+        "Discharging is blocked because the battery is already at its reserve floor."
+    )
+    assert attrs["next_mode_change"] is None
+    assert attrs["reserved_kwh"] == 0.5
+    assert attrs["charge_entries"][3]["mode"] == "standby"
+
+
+def test_recompute_blocks_discharge_when_slot_needs_more_energy_than_available(
+    hass, entry, device_info, source_sensor
+):
+    entry.options = {
+        CONF_BATTERY_CAPACITY_KWH: 10.0,
+        CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
+        CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
+    }
+    hass.states.get.return_value = SimpleNamespace(state="35")
+    battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, source_sensor)
+    battery_sensor.hass = hass
+    source_sensor.compact_rates = make_rates([1.0] * 3 + [4.0] * 9)
+
+    with patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
+        return_value=datetime(2024, 1, 1, 3, 0, tzinfo=UTC),
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_time_zone",
+        return_value=UTC,
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_default_time_zone",
+        return_value=UTC,
+    ):
+        battery_sensor._recompute()
+
+    attrs = battery_sensor.extra_state_attributes
+    assert battery_sensor.state == "standby"
+    assert attrs["reason"] == (
+        "Discharging is blocked because the usable battery energy above reserve cannot cover the remaining slot."
+    )
+    assert attrs["next_mode_change"] is None
+    assert attrs["reserved_kwh"] == 0.5
+    assert attrs["charge_entries"][3]["mode"] == "standby"
+
+
+def test_recompute_keeps_current_charge_slot_with_soc_only_when_battery_is_full(
+    hass, entry, device_info, source_sensor
+):
+    entry.options = {CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc"}
+    hass.states.get.return_value = SimpleNamespace(state="100")
+    battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, source_sensor)
+    battery_sensor.hass = hass
+    source_sensor.compact_rates = make_rates([1.0] * 3 + [4.0] * 9)
+
+    with patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
+        return_value=datetime(2024, 1, 1, 0, 30, tzinfo=UTC),
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_time_zone",
+        return_value=UTC,
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_default_time_zone",
+        return_value=UTC,
+    ):
+        battery_sensor._recompute()
+
+    attrs = battery_sensor.extra_state_attributes
+    assert battery_sensor.state == "charge"
+    assert attrs["reason"] == (
+        "Charging is scheduled in a low-price window ahead of higher-price periods."
+    )
+    assert attrs["reserved_kwh"] == 0.0
+    assert attrs["charge_source"] == "grid"
+    assert attrs["charge_entries"][0]["mode"] == "charge"
 
 
 def test_recompute_with_flat_prices_keeps_sensor_in_standby(sensor, source_sensor):

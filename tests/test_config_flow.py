@@ -4,14 +4,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from custom_components.electricitypricelevels import config_flow as config_flow_module
-from custom_components.electricitypricelevels.config_flow import (
+from custom_components.energyadvisor import config_flow as config_flow_module
+from custom_components.energyadvisor.config_flow import (
     ElectricityPriceLevelFlowHandler,
     ElectricityPriceLevelOptionFlowHandler,
     _parse_unit_of_measurement,
     _validate_nordpool_prices_sensor,
 )
-from custom_components.electricitypricelevels.const import (
+from custom_components.energyadvisor.const import (
     CONF_BATHROOM_HUMIDITY_ENTITY,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_CHARGE_POWER_ENTITY,
