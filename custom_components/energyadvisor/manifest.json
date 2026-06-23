@@ -1,13 +1,17 @@
 {
   "domain": "energyadvisor",
   "name": "Energy Advisor",
-  "codeowners": ["@Klurige"],
+  "codeowners": [
+    "@Klurige"
+  ],
   "config_flow": true,
-  "dependencies": ["nordpool"],
+  "dependencies": [
+    "nordpool"
+  ],
   "documentation": "https://github.com/Klurige/energyadvisor",
   "integration_type": "helper",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/Klurige/energyadvisor/issues",
   "requirements": [],
-  "version": "1.1.2"
+  "version": "0.0.1"
 }
