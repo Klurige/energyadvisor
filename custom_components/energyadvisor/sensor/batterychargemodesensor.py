@@ -1,7 +1,8 @@
 """Battery Charge Mode sensor for Home Assistant.
 
-Determines whether a home battery should be in standby, charging, or discharging
-based on the electricity price schedule from the ElectricityPriceLevels sensor.
+Determines whether a home battery should be in standby, charging, maxuse,
+discharge, or sell mode based on the electricity price schedule from the
+ElectricityPriceLevels sensor.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from ..const import (
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
+    CONF_HOUSEHOLD_BASE_LOAD_W,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
 )
@@ -53,13 +55,17 @@ _DEFAULT_RESERVE_FRACTION = 0.05
 _DEFAULT_CHARGE_EFFICIENCY = 0.95
 _DEFAULT_DISCHARGE_EFFICIENCY = 0.95
 _ENERGY_EPSILON_KWH = 0.05
+_FORECAST_SLOT_MINUTES = 15
+_MIN_USEFUL_SOLAR_KW = 0.05
+_SUMMER_SELL_WINDOWS = ((0, 10 * 60), (17 * 60, 24 * 60))
+_SUMMER_SELL_SLOTS_PER_DAY = 6
 
 _WAITING_FOR_RATES_REASON = "Waiting for electricity price data."
 _OUTSIDE_HORIZON_REASON = (
     "Current time is outside the available battery schedule horizon."
 )
 _BETWEEN_WINDOWS_REASON = (
-    "Current slot is outside the scheduled charge and discharge windows."
+    "Current slot is outside the scheduled battery activity windows."
 )
 _NO_PROFITABLE_CYCLE_REASON = (
     "No profitable battery cycle is scheduled in the available price horizon."
@@ -67,13 +73,14 @@ _NO_PROFITABLE_CYCLE_REASON = (
 _CHARGE_REASON = (
     "Charging is scheduled in a low-price window ahead of higher-price periods."
 )
-_DISCHARGE_REASON = (
-    "Discharging is scheduled in a high-price window after earlier lower-price periods."
+_MAXUSE_REASON = "Maximizing self-consumption is scheduled because this slot is outside the selected summer sell slots."
+_DISCHARGE_REASON = "Discharging is scheduled because using the battery now beats importing electricity now."
+_SELL_REASON = "Selling is scheduled because this slot is one of the six highest-valued periods between 00:00-10:00 and 17:00-24:00."
+_BATTERY_OUTPUT_BLOCKED_RESERVE_REASON = (
+    "Battery output is blocked because the battery is already at its reserve floor."
 )
-_DISCHARGE_BLOCKED_RESERVE_REASON = (
-    "Discharging is blocked because the battery is already at its reserve floor."
-)
-_DISCHARGE_BLOCKED_ENERGY_REASON = "Discharging is blocked because the usable battery energy above reserve cannot cover the remaining slot."
+_BATTERY_OUTPUT_BLOCKED_ENERGY_REASON = "Battery output is blocked because the usable battery energy above reserve cannot cover the remaining slot."
+_BATTERY_OUTPUT_MODES = frozenset({"maxuse", "discharge", "sell"})
 
 
 def _format_compact_local_datetime(value: datetime) -> str:
@@ -159,6 +166,7 @@ def _find_local_peaks(
     for entry in charge_entries:
         if entry["start"] in discharge_starts:
             entry["mode"] = "discharge"
+            entry["mode_source"] = "peak"
 
 
 def _find_local_valleys(charge_entries, margin, min_valley_time_minutes):
@@ -201,6 +209,7 @@ def _find_local_valleys(charge_entries, margin, min_valley_time_minutes):
     for entry in charge_entries:
         if entry["start"] in valley_starts:
             entry["mode"] = "charge"
+            entry["mode_source"] = "charge"
 
 
 def _extend_peaks(charge_entries):
@@ -224,6 +233,7 @@ def _extend_peaks(charge_entries):
     for entry in charge_entries:
         if head_start <= entry["start"] < head_end:
             entry["mode"] = "discharge"
+            entry["mode_source"] = "extension_head"
 
     # Tail: entries after the last non-standby slot → discharge.
     # Note: evaluated after the head step, so newly-set 'discharge' entries count.
@@ -235,6 +245,7 @@ def _extend_peaks(charge_entries):
     for entry in charge_entries:
         if tail_start <= entry["start"] < tail_end:
             entry["mode"] = "discharge"
+            entry["mode_source"] = "extension_tail"
 
     # Gaps: standby slots between a discharge block and its following charge block → discharge.
     non_standby = [e for e in charge_entries if e["mode"] != "standby"]
@@ -247,13 +258,109 @@ def _extend_peaks(charge_entries):
             for entry in charge_entries:
                 if gap_start < entry["start"] < gap_end:
                     entry["mode"] = "discharge"
+                    entry["mode_source"] = "extension_gap"
+
+
+def _has_prior_charge(charge_entries: list[dict], entry_index: int) -> bool:
+    """Return whether a charge slot exists before the current entry."""
+    return any(entry["mode"] == "charge" for entry in charge_entries[:entry_index])
+
+
+def _future_charge_cost(charge_entries: list[dict], entry_index: int) -> float | None:
+    """Return the cheapest later charge slot cost, if one exists."""
+    future_costs = [
+        entry["cost"]
+        for entry in charge_entries[entry_index + 1 :]
+        if entry["mode"] == "charge"
+    ]
+    if not future_costs:
+        return None
+    return min(future_costs)
+
+
+def _slot_hours(entry: dict) -> float:
+    """Return the full duration of a schedule entry in hours."""
+    return max(0.0, (entry["end"] - entry["start"]).total_seconds() / 3600.0)
+
+
+def _is_summer_sell_candidate(start: datetime) -> bool:
+    """Return whether a slot start belongs to the fixed summer sell windows."""
+    start_minutes = start.hour * 60 + start.minute
+    return any(
+        window_start <= start_minutes < window_end
+        for window_start, window_end in _SUMMER_SELL_WINDOWS
+    )
+
+
+def _entry_sell_value(entry: dict) -> float:
+    """Return the value used to rank summer sell slots."""
+    credit = entry.get("credit")
+    if isinstance(credit, (int, float)) and math.isfinite(credit):
+        return float(credit)
+
+    cost = entry.get("cost", 0.0)
+    if isinstance(cost, (int, float)) and math.isfinite(cost):
+        return float(cost)
+    return 0.0
+
+
+def _apply_summer_sell_strategy(charge_entries: list[dict]) -> None:
+    """Default to maxuse and mark the best summer-window slots as sell."""
+    entries_by_day: dict = {}
+    for entry in charge_entries:
+        entry["mode"] = "maxuse"
+        entries_by_day.setdefault(entry["start"].date(), []).append(entry)
+
+    for day_entries in entries_by_day.values():
+        candidates = [e for e in day_entries if _is_summer_sell_candidate(e["start"])]
+        candidates.sort(key=lambda entry: entry["start"])
+        candidates.sort(
+            key=lambda entry: (_entry_sell_value(entry), entry.get("cost", 0.0)),
+            reverse=True,
+        )
+        for entry in candidates[:_SUMMER_SELL_SLOTS_PER_DAY]:
+            entry["mode"] = "sell"
+
+
+def _classify_output_modes(charge_entries: list[dict], margin: float) -> None:
+    """Classify discharge-like slots into maxuse, discharge, or sell.
+
+    The price-window planner first marks cheap charge periods and expensive
+    battery-output periods. Step 6 refines the battery-output periods into:
+
+    - maxuse: self-consume battery energy when no earlier charge slot exists
+    - discharge: use the battery for house load after earlier cheap charging
+    - sell: export battery energy when a later cheaper charge window exists
+      and the current export credit is high enough to justify buying back later
+    """
+    for index, entry in enumerate(charge_entries):
+        if entry["mode"] != "discharge":
+            continue
+
+        mode_source = entry.get("mode_source", "peak")
+        has_prior_charge = _has_prior_charge(charge_entries, index)
+
+        if isinstance(mode_source, str) and mode_source.startswith("extension"):
+            entry["mode"] = "discharge" if has_prior_charge else "maxuse"
+            continue
+
+        future_charge_cost = _future_charge_cost(charge_entries, index)
+        if (
+            future_charge_cost is not None
+            and entry.get("credit", 0.0) >= future_charge_cost + margin
+        ):
+            entry["mode"] = "sell"
+        elif has_prior_charge:
+            entry["mode"] = "discharge"
+        else:
+            entry["mode"] = "maxuse"
 
 
 def _parse_compact_rates(rates: list[dict]) -> list[dict]:
     """Parse compact rate dicts (from attributes) into datetime-based dicts.
 
-    Compact format: {"from": "2026-05-25T00:00", "cost": 1.234, ...}
-    Output format:  {"start": datetime, "end": datetime, "cost": float}
+    Compact format: {"from": "2026-05-25T00:00", "cost": 1.234, "credit": 0.987, ...}
+    Output format:  {"start": datetime, "end": datetime, "cost": float, "credit": float}
     """
     if not rates:
         return []
@@ -265,7 +372,13 @@ def _parse_compact_rates(rates: list[dict]) -> list[dict]:
         if not from_str:
             continue
         start = datetime.fromisoformat(from_str).replace(tzinfo=local_tz)
-        parsed.append({"start": start, "cost": r.get("cost", 0.0)})
+        parsed.append(
+            {
+                "start": start,
+                "cost": r.get("cost", 0.0),
+                "credit": r.get("credit", 0.0),
+            }
+        )
 
     # Derive "end" from the next entry's start
     for i in range(len(parsed) - 1):
@@ -282,9 +395,12 @@ def _parse_compact_rates(rates: list[dict]) -> list[dict]:
 
 
 def compute_charge_modes(
-    prices_arr, margin, charging_time_minutes, discharging_time_minutes
+    prices_arr,
+    margin,
+    charging_time_minutes,
+    discharging_time_minutes,
 ):
-    """Compute charge/discharge/standby mode for every price slot.
+    """Compute the current summer battery mode for every price slot.
 
     Args:
         prices_arr: List of compact rate dicts with 'from' (ISO string) and 'cost' (float)
@@ -292,39 +408,28 @@ def compute_charge_modes(
         margin: Minimum cost difference between peak and valley to justify a cycle.
         charging_time_minutes: How long a full charge takes (minutes).
         discharging_time_minutes: Expected discharge duration (minutes).
-
     Returns:
-        List of dicts with 'start', 'end', 'mode', and 'cost' keys.
+        List of dicts with 'start', 'end', 'mode', 'cost', and 'credit' keys.
+        Scheduled slots use `maxuse` by default, with the six highest-valued
+        slots per day inside the 00:00-10:00 and 17:00-24:00 windows marked as
+        `sell`.
     """
     parsed = _parse_compact_rates(prices_arr)
     if not parsed:
         return []
 
     charge_entries = [
-        {"start": e["start"], "end": e["end"], "mode": "standby", "cost": e["cost"]}
+        {
+            "start": e["start"],
+            "end": e["end"],
+            "mode": "standby",
+            "cost": e["cost"],
+            "credit": e.get("credit", 0.0),
+        }
         for e in parsed
     ]
 
-    # Slide 12-hour windows from midnight of the first entry.
-    first_start = charge_entries[0]["start"].replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    last_end = charge_entries[-1]["end"]
-    window = timedelta(hours=12)
-    window_start = first_start
-
-    while window_start < last_end:
-        _find_local_peaks(
-            charge_entries,
-            window_start,
-            window_start + window,
-            margin,
-            discharging_time_minutes,
-        )
-        window_start += window
-
-    _find_local_valleys(charge_entries, margin, charging_time_minutes)
-    _extend_peaks(charge_entries)
+    _apply_summer_sell_strategy(charge_entries)
 
     return charge_entries
 
@@ -335,7 +440,7 @@ def compute_charge_modes(
 
 
 class BatteryChargeModeSensor(SensorEntity):
-    """Sensor that reports whether the battery should charge, discharge, or stand by."""
+    """Sensor that reports the current Energy Advisor battery mode."""
 
     _attr_has_entity_name = True
     _attr_should_poll = False
@@ -368,12 +473,16 @@ class BatteryChargeModeSensor(SensorEntity):
         max_power_w = entry.options.get(CONF_BATTERY_MAX_CHARGE_POWER_W)
         self._battery_soc_entity = entry.options.get(CONF_BATTERY_SOC_ENTITY)
         self._battery_capacity_kwh = capacity_kwh if capacity_kwh is not None else None
+        household_base_load_w = entry.options.get(CONF_HOUSEHOLD_BASE_LOAD_W)
         self._charge_power_kw: float | None = None
         self._discharge_power_kw: float | None = None
+        self._household_base_load_kw: float | None = None
         degradation_cost = entry.options.get(CONF_BATTERY_DEGRADATION_COST)
         self._margin = (
             degradation_cost if degradation_cost is not None else _DEFAULT_MARGIN
         )
+        if household_base_load_w is not None and household_base_load_w > 0:
+            self._household_base_load_kw = household_base_load_w / 1000.0
 
         if capacity_kwh is not None and max_power_w is not None:
             max_power_kw = max_power_w / 1000.0
@@ -395,7 +504,7 @@ class BatteryChargeModeSensor(SensorEntity):
         self._cached_attributes: dict = {}
         self._reserved_kwh = 0.0
         self._required_load_kwh = 0.0
-        self._last_rates_hash: int | None = None
+        self._last_plan_inputs_hash: int | None = None
         self._task: asyncio.Task | None = None
         self._remove_source_listener = None
         self._waiting_for_first_value = True
@@ -406,6 +515,16 @@ class BatteryChargeModeSensor(SensorEntity):
             self._handle_source_update
         )
         self.async_on_remove(self._remove_source_listener)
+        solar_coordinator = self._solar_coordinator()
+        if solar_coordinator is not None:
+            solar_coordinator.register_update_callback(
+                self._handle_solar_forecast_update
+            )
+            self.async_on_remove(
+                lambda: solar_coordinator.unregister_update_callback(
+                    self._handle_solar_forecast_update
+                )
+            )
         if self._battery_soc_entity:
             self.async_on_remove(
                 async_track_state_change_event(
@@ -423,6 +542,13 @@ class BatteryChargeModeSensor(SensorEntity):
         if self._waiting_for_first_value:
             if self._source_sensor.has_rates:
                 self.hass.async_create_task(self._start_sensor())
+            return
+        self.hass.async_create_task(self._refresh_from_source())
+
+    @callback
+    def _handle_solar_forecast_update(self) -> None:
+        """Refresh the plan when the linked solar forecast changes."""
+        if self.hass is None or self._waiting_for_first_value:
             return
         self.hass.async_create_task(self._refresh_from_source())
 
@@ -486,6 +612,20 @@ class BatteryChargeModeSensor(SensorEntity):
             return None
         return max(0.0, min(100.0, value))
 
+    def _solar_coordinator(self):
+        """Return the optional solar forecast coordinator for this config entry."""
+        runtime_data = getattr(self._entry, "runtime_data", None)
+        return getattr(runtime_data, "solar_coordinator", None)
+
+    def _solar_forecast_entries(self) -> list[dict]:
+        """Return the refined solar forecast entries, if configured."""
+        solar_coordinator = self._solar_coordinator()
+        if solar_coordinator is None:
+            return []
+
+        forecasts = getattr(solar_coordinator, "forecast", None)
+        return forecasts if isinstance(forecasts, list) else []
+
     def _remaining_slot_hours(self, entry: dict, now: datetime | None = None) -> float:
         """Return the remaining hours for a slot from now onward."""
         effective_start = entry["start"]
@@ -494,105 +634,72 @@ class BatteryChargeModeSensor(SensorEntity):
         remaining_seconds = max(0.0, (entry["end"] - effective_start).total_seconds())
         return remaining_seconds / 3600.0
 
+    def _bridge_to_solar_required_energy_kwh(
+        self,
+        entries: list[dict],
+        start_index: int,
+        bridge_start: datetime,
+        solar_start: datetime | None,
+        load_power_kw: float | None,
+    ) -> float:
+        """Return battery energy needed to cover load until useful solar begins."""
+        if solar_start is None or load_power_kw is None or load_power_kw <= 0:
+            return 0.0
+        if solar_start <= bridge_start:
+            return 0.0
+
+        required_energy_kwh = 0.0
+        for index in range(start_index, len(entries)):
+            entry = entries[index]
+            if entry["start"] >= solar_start:
+                break
+            if entry["cost"] <= 0 or entry["mode"] not in {"standby", "maxuse"}:
+                continue
+
+            effective_start = max(
+                entry["start"], bridge_start if index == start_index else entry["start"]
+            )
+            effective_end = min(entry["end"], solar_start)
+            remaining_hours = max(
+                0.0, (effective_end - effective_start).total_seconds() / 3600.0
+            )
+            if remaining_hours <= 0:
+                continue
+
+            required_energy_kwh += (
+                load_power_kw * remaining_hours / _DEFAULT_DISCHARGE_EFFICIENCY
+            )
+
+        return required_energy_kwh
+
+    def _output_power_kw_for_mode(self, mode: str) -> float | None:
+        """Return the power assumption used for the given output mode."""
+        if mode == "maxuse" and self._household_base_load_kw is not None:
+            return self._household_base_load_kw
+        return self._discharge_power_kw
+
     def _apply_threshold_constraint(
         self, entries: list[dict], now: datetime, soc_percent: float
     ) -> None:
-        """Block only impossible current-slot discharge when SoC exists alone."""
+        """Block only impossible current-slot battery output when SoC exists alone."""
         current_index, current_entry = self._find_current_entry(now, entries)
         if current_index is None or current_entry is None:
             return
 
         if (
-            current_entry["mode"] == "discharge"
+            current_entry["mode"] in _BATTERY_OUTPUT_MODES
             and soc_percent <= _DEFAULT_RESERVE_FRACTION * 100
         ):
             current_entry["mode"] = "standby"
-            current_entry["constraint_reason"] = _DISCHARGE_BLOCKED_RESERVE_REASON
+            current_entry["constraint_reason"] = _BATTERY_OUTPUT_BLOCKED_RESERVE_REASON
 
     def _apply_battery_constraints(
         self, planned_entries: list[dict], now: datetime
     ) -> list[dict]:
-        """Apply SoC-aware feasibility constraints to the price-only slot plan."""
+        """Return the planned entries unchanged for the temporary summer strategy."""
         adjusted = [entry.copy() for entry in planned_entries]
         self._reserved_kwh = 0.0
         self._required_load_kwh = 0.0
-
-        if not adjusted:
-            return adjusted
-
-        soc_percent = self._battery_soc_percent()
-        if soc_percent is None:
-            return adjusted
-
-        if (
-            self._battery_capacity_kwh is None
-            or self._charge_power_kw is None
-            or self._discharge_power_kw is None
-        ):
-            self._apply_threshold_constraint(adjusted, now, soc_percent)
-            return adjusted
-
-        reserve_kwh = self._battery_capacity_kwh * _DEFAULT_RESERVE_FRACTION
-        self._reserved_kwh = round(reserve_kwh, 3)
-        current_energy_kwh = max(
-            0.0,
-            min(
-                self._battery_capacity_kwh,
-                self._battery_capacity_kwh * soc_percent / 100.0,
-            ),
-        )
-        first_actionable_index = next(
-            (index for index, entry in enumerate(adjusted) if entry["end"] > now),
-            None,
-        )
-        if first_actionable_index is None:
-            return adjusted
-
-        for index in range(first_actionable_index, len(adjusted)):
-            entry = adjusted[index]
-            planned_mode = entry["mode"]
-            if planned_mode not in {"charge", "discharge"}:
-                continue
-
-            remaining_hours = self._remaining_slot_hours(
-                entry, now if index == first_actionable_index else None
-            )
-            if remaining_hours <= 0:
-                continue
-
-            if planned_mode == "charge":
-                stored_gain_kwh = (
-                    self._charge_power_kw * remaining_hours * _DEFAULT_CHARGE_EFFICIENCY
-                )
-                current_energy_kwh = min(
-                    self._battery_capacity_kwh,
-                    current_energy_kwh + stored_gain_kwh,
-                )
-                continue
-
-            usable_energy_kwh = max(0.0, current_energy_kwh - reserve_kwh)
-            required_energy_kwh = (
-                self._discharge_power_kw
-                * remaining_hours
-                / _DEFAULT_DISCHARGE_EFFICIENCY
-            )
-            if (
-                usable_energy_kwh <= _ENERGY_EPSILON_KWH
-                or usable_energy_kwh + _ENERGY_EPSILON_KWH < required_energy_kwh
-            ):
-                entry["mode"] = "standby"
-                entry["constraint_reason"] = (
-                    _DISCHARGE_BLOCKED_RESERVE_REASON
-                    if usable_energy_kwh <= _ENERGY_EPSILON_KWH
-                    else _DISCHARGE_BLOCKED_ENERGY_REASON
-                )
-                continue
-
-            current_energy_kwh = max(
-                reserve_kwh,
-                current_energy_kwh - required_energy_kwh,
-            )
-
         return adjusted
 
     def _recompute(self) -> int:
@@ -601,17 +708,19 @@ class BatteryChargeModeSensor(SensorEntity):
         now = dt_util.now().astimezone(local_tz)
         rates = self._source_sensor.compact_rates
         if not rates:
-            self._last_rates_hash = None
+            self._last_plan_inputs_hash = None
             self._planned_charge_entries = []
             self._charge_entries = []
             self._reserved_kwh = 0.0
             self._required_load_kwh = 0.0
             return self._update_current_mode(now)
 
-        # Skip full recomputation if rates haven't changed.
-        rates_hash = hash(tuple((r.get("from"), r.get("cost")) for r in rates))
-        if rates_hash != self._last_rates_hash:
-            self._last_rates_hash = rates_hash
+        # Skip full recomputation if the price schedule has not changed.
+        plan_inputs_hash = hash(
+            tuple((r.get("from"), r.get("cost"), r.get("credit")) for r in rates)
+        )
+        if plan_inputs_hash != self._last_plan_inputs_hash:
+            self._last_plan_inputs_hash = plan_inputs_hash
             self._planned_charge_entries = compute_charge_modes(
                 rates,
                 self._margin,
@@ -684,8 +793,12 @@ class BatteryChargeModeSensor(SensorEntity):
             return current_entry["constraint_reason"]
         if current_entry["mode"] == "charge":
             return _CHARGE_REASON
+        if current_entry["mode"] == "maxuse":
+            return _MAXUSE_REASON
         if current_entry["mode"] == "discharge":
             return _DISCHARGE_REASON
+        if current_entry["mode"] == "sell":
+            return _SELL_REASON
 
         if any(entry["mode"] != "standby" for entry in self._charge_entries):
             return _BETWEEN_WINDOWS_REASON
@@ -733,8 +846,12 @@ class BatteryChargeModeSensor(SensorEntity):
     def icon(self) -> str:
         if self._mode == "charge":
             return "mdi:battery-charging"
+        if self._mode == "maxuse":
+            return "mdi:home-lightning-bolt-outline"
         if self._mode == "discharge":
             return "mdi:battery-arrow-down-outline"
+        if self._mode == "sell":
+            return "mdi:battery-arrow-up-outline"
         return "mdi:battery-outline"
 
     def _rebuild_cached_attributes(

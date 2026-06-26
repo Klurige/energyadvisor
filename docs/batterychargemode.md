@@ -4,7 +4,11 @@
 
 ## Purpose
 
-Determines whether a home battery should be **charging**, **discharging**, or in **standby** based on the electricity price schedule from the linked price sensor in the same config entry. The goal is to charge during cheap slots and discharge during expensive slots within each 12-hour window, while requiring a minimum price spread to prevent unnecessary cycling that would accelerate battery degradation.
+Determines whether a home battery should be in **maxuse**, **sell**, or
+occasionally **standby** based on the electricity price schedule from the
+linked price sensor in the same config entry. The current temporary summer
+strategy keeps the battery in `maxuse` by default and marks only the highest
+valued morning/evening slots as `sell`.
 
 ---
 
@@ -20,10 +24,10 @@ Set during the final **battery** step of the initial setup flow or later via **S
 
 | Option | Key | Default | Description |
 |---|---|---|---|
-| Battery capacity | `battery_capacity_kwh` | — | kWh. Used to compute charging time. |
-| Max charge power | `battery_max_charge_power_w` | — | W. Used to compute charging time. |
-| Degradation cost margin | `battery_degradation_cost` | 0.7 | Minimum cost-unit spread between cheapest and most expensive slot before a charge/discharge cycle is scheduled. Prevents cycling on near-flat price days. |
-| Battery SoC sensor | `battery_soc_entity` | — | Percent sensor used to keep discharge recommendations realistic from the current battery state. |
+| Battery capacity | `battery_capacity_kwh` | — | kWh. Retained for future battery planner work. |
+| Max charge power | `battery_max_charge_power_w` | — | W. Retained for future battery planner work. |
+| Degradation cost margin | `battery_degradation_cost` | 0.7 | Retained planner setting for future battery logic. |
+| Battery SoC sensor | `battery_soc_entity` | — | Retained for future battery planner work. |
 
 When capacity and power are both set:
 - `charging_time_minutes = capacity_kwh / (max_power_w / 1000) × 60`
@@ -37,11 +41,8 @@ The config flow also stores additional planner inputs such as
 `water_heater_power_entity`, `water_heater_power_w`, `water_heater_max_hours`,
 `bathroom_humidity_entity`, `pool_pump_power_entity`, `pool_pump_power_w`,
 `dehumidifier_power_entity`, and `dehumidifier_power_w`. Those fields are for
-the staged optimizer rollout and are not used by the current battery mode
-algorithm yet. `battery_soc_entity` is the first optimizer input now used at
-runtime: together with the configured battery size/power settings it can turn
-impossible discharge slots into `standby` while preserving planned cheap
-charging windows.
+the staged optimizer rollout and are not used by the current summer battery
+mode algorithm yet.
 
 ---
 
@@ -53,23 +54,26 @@ Additional entries receive the usual Home Assistant numeric suffixes, such as
 
 ### State
 
-One of: `charge` | `discharge` | `standby`
+Scheduled slots use `maxuse` or `sell`. `standby` is still used when no price
+data is available or the current time is outside the available horizon.
 
-Icon changes dynamically: `mdi:battery-charging` / `mdi:battery-arrow-down-outline` / `mdi:battery-outline`.
+Icon changes dynamically: `mdi:home-lightning-bolt-outline` for `maxuse`,
+`mdi:battery-arrow-up-outline` for `sell`, and `mdi:battery-outline` for
+`standby`.
 
 ### Attributes
 
 | Attribute | Type | Description |
 |---|---|---|
 | `charge_entries` | list[dict] | Full schedule — one dict per price slot with local `from`, `mode`, and `cost` (`YYYY-MM-DDTHH:MM`) |
-| `margin` | float | Configured or default degradation cost margin |
-| `charging_time_minutes` | int | Computed or default charging duration |
-| `discharging_time_minutes` | int | Computed or default discharging duration |
+| `margin` | float | Retained planner setting for future battery logic |
+| `charging_time_minutes` | int | Retained battery timing value for future battery logic |
+| `discharging_time_minutes` | int | Retained battery timing value for future battery logic |
 | `reason` | str | Human-readable explanation for the currently chosen mode |
 | `next_mode_change` | str \| null | Local time string (`YYYY-MM-DDTHH:MM`) for the next expected mode change |
-| `reserved_kwh` | float | Active reserve floor in `kWh` when SoC constraints are configured, otherwise `0.0` |
-| `required_load_kwh` | float | Load-backed energy target for the current plan; `0.0` until later load-aware steps |
-| `charge_source` | str \| null | `grid` while the current mode is `charge`, otherwise `null` |
+| `reserved_kwh` | float | Currently `0.0` in the summer strategy |
+| `required_load_kwh` | float | Currently `0.0` in the summer strategy |
+| `charge_source` | str \| null | Currently `null` in the summer strategy |
 
 When `exclude_from_recording` is enabled for the integration, the whole sensor
 is excluded from recorder/history. Even when recorder is enabled for the
@@ -80,19 +84,18 @@ attribute storage.
 
 ## Algorithm
 
-The schedule is recomputed whenever the linked price sensor changes (i.e. when new Nordpool prices arrive). It processes the price list in **12-hour windows** sliding from midnight:
+The schedule is recomputed whenever the linked price sensor changes (i.e. when
+new Nordpool prices arrive). The current temporary summer strategy is simple:
 
-1. **Find discharge peaks** (`_find_local_peaks`): locate the most expensive slots in each window. The global price maximum defines the peak; slots around it are widened to fill `discharging_time_minutes` of total discharge. If the peak–valley spread is below `margin`, the window is skipped entirely.
-2. **Find charge valleys** (`_find_local_valleys`): for each discharge block, look back up to 8 hours and pick the cheapest slots that cover `charging_time_minutes`.
-3. **Extend peaks** (`_extend_peaks`): if at least one explicit charge/discharge slot was found, extend discharge before the first scheduled event, after the last, and across standby gaps between a discharge block and the next charge block.
-4. **Apply SoC constraints**: when `battery_soc_entity`, `battery_capacity_kwh`, and `battery_max_charge_power_w` are configured, the helper simulates the remaining slots from the current time forward and converts impossible `discharge` recommendations into `standby` using a 5% reserve floor and 95% charge/discharge efficiency assumptions. Planned cheap charging windows are kept even when the battery is already near full, so minor self-consumption can still be refilled.
-
-If the margin guard rejects all cycles for the day, the schedule remains
-`standby` throughout instead of forcing discharge on flat-price days.
+1. **Parse the compact price schedule** into local start/end datetimes.
+2. **Default every slot to `maxuse`**.
+3. **Pick sell candidates** whose slot starts between `00:00-10:00` or `17:00-24:00`.
+4. **Rank those candidates by export value** (`credit`, falling back to `cost`).
+5. **Mark the top six candidate slots per local day as `sell`**. Ties are kept deterministic by preserving chronological order.
 
 A background task (`_periodic_update`) wakes at each slot boundary to advance the current mode and re-evaluate. The linked price sensor notifies the battery sensor when new rate data arrives, so the schedule is recomputed without relying on fixed entity IDs.
 
-Rate changes are detected via a hash of `(from, cost)` tuples to avoid redundant recomputation.
+Rate changes are detected via a hash of `(from, cost, credit)` tuples to avoid redundant recomputation.
 
 ---
 
@@ -123,5 +126,5 @@ Background task: _periodic_update()
 
 - Battery timing overrides are optional. If `battery_capacity_kwh` and `battery_max_charge_power_w` are both left empty, the integration falls back to the default 160-minute charge and 240-minute discharge timings.
 - `battery_capacity_kwh` and `battery_max_charge_power_w` must be provided together when overriding the defaults.
-- `battery_soc_entity` without capacity/power still blocks obviously empty `discharge` slots for the current period, but full slot-by-slot SoC simulation requires the battery size/power settings.
-- `standby` is intended for holding battery energy for later higher-value periods, not for suppressing cheap charging merely because the battery is already close to full.
+- The current summer strategy does not apply SoC or solar-forecast constraints in the sensor itself. If battery export should stop above a specific floor, configure that limit in the battery/inverter.
+- Battery timing and SoC-related config values are still stored so the richer planner can be brought back later without changing the config flow again.

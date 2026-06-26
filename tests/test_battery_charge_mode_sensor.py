@@ -2,11 +2,18 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from custom_components.energyadvisor.const import (
+    CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_MAX_CHARGE_POWER_W,
+    CONF_BATTERY_SOC_ENTITY,
+    CONF_HOUSEHOLD_BASE_LOAD_W,
+)
 from custom_components.energyadvisor.sensor.batterychargemodesensor import (
     _DEFAULT_CHARGING_TIME_MINUTES as CHARGING_TIME_MINUTES,
     _DEFAULT_DISCHARGING_TIME_MINUTES as DISCHARGING_TIME_MINUTES,
@@ -26,15 +33,43 @@ UTC = timezone.utc
 # ---------------------------------------------------------------------------
 
 
-def make_rates(costs, start=None, slot_hours=1):
+def make_rates(costs, credits=None, start=None, slot_hours=1):
     """Return a list of compact rate dicts (as exposed in attributes)."""
     if start is None:
         start = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    if credits is None:
+        credits = costs
     rates = []
     for i, cost in enumerate(costs):
         s = start + timedelta(hours=i * slot_hours)
-        rates.append({"from": s.strftime("%Y-%m-%dT%H:%M"), "cost": cost})
+        rates.append(
+            {
+                "from": s.strftime("%Y-%m-%dT%H:%M"),
+                "cost": cost,
+                "credit": credits[i],
+            }
+        )
     return rates
+
+
+def make_solar_forecast(daylight_hours, power_kw=4.0, start=None):
+    """Return 15-minute solar forecast entries for the given hour range."""
+    if start is None:
+        start = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    forecast = []
+    for hour in daylight_hours:
+        slot_start = start + timedelta(hours=hour)
+        for quarter in range(1, 5):
+            forecast.append(
+                {
+                    "end": (slot_start + timedelta(minutes=quarter * 15)).isoformat(
+                        timespec="minutes"
+                    ),
+                    "pow": power_kw,
+                    "raw": power_kw,
+                }
+            )
+    return forecast
 
 
 def make_charge_entries(costs, modes_override=None, start=None):
@@ -45,7 +80,15 @@ def make_charge_entries(costs, modes_override=None, start=None):
     for i, cost in enumerate(costs):
         s = start + timedelta(hours=i)
         e = s + timedelta(hours=1)
-        entries.append({"start": s, "end": e, "mode": "standby", "cost": cost})
+        entries.append(
+            {
+                "start": s,
+                "end": e,
+                "mode": "standby",
+                "cost": cost,
+                "credit": cost,
+            }
+        )
     if modes_override:
         for i, m in enumerate(modes_override):
             if m is not None:
@@ -63,6 +106,7 @@ def make_timed_entries(modes_list, start=None):
             "end": start + timedelta(hours=i + 1),
             "mode": m,
             "cost": 1.0,
+            "credit": 1.0,
         }
         for i, m in enumerate(modes_list)
     ]
@@ -268,12 +312,24 @@ class TestComputeChargeModes:
     def test_empty_input_returns_empty(self):
         assert compute_charge_modes([], 0.7, 160, 240) == []
 
-    def test_all_same_price_returns_all_standby(self):
-        # Margin never met → no peaks/valleys → schedule stays in standby
-        rates = make_rates([2.0] * 12)
+    def test_all_same_price_uses_maxuse_except_six_sell_slots(self):
+        rates = make_rates([2.0] * 24)
         result = compute_charge_modes(rates, 0.7, 160, 240)
-        assert len(result) == 12
-        assert all(e["mode"] == "standby" for e in result)
+        mode_map = {e["start"].hour: e["mode"] for e in result}
+
+        assert len(result) == 24
+        assert {hour for hour, mode in mode_map.items() if mode == "sell"} == {
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+        }
+        assert mode_map[0] == "sell"
+        assert mode_map[6] == "maxuse"
+        assert mode_map[12] == "maxuse"
+        assert mode_map[21] == "maxuse"
 
     def test_spring_dst_day_keeps_all_slots_and_positive_durations(self):
         stockholm = ZoneInfo("Europe/Stockholm")
@@ -301,26 +357,102 @@ class TestComputeChargeModes:
         # gap as a two-hour slot on spring-forward days.
         assert result[1]["end"] - result[1]["start"] == timedelta(hours=2)
         assert result[-1]["end"].strftime("%Y-%m-%dT%H:%M") == "2024-04-01T00:00"
-        assert mode_map["00:00"] == "charge"
-        assert mode_map["01:00"] == "charge"
-        assert mode_map["03:00"] == "charge"
-        assert mode_map["04:00"] == "discharge"
-        assert mode_map["23:00"] == "discharge"
+        assert mode_map["00:00"] == "maxuse"
+        assert mode_map["01:00"] == "maxuse"
+        assert mode_map["04:00"] == "sell"
+        assert mode_map["06:00"] == "sell"
+        assert mode_map["09:00"] == "sell"
+        assert mode_map["17:00"] == "maxuse"
+        assert mode_map["19:00"] == "maxuse"
+        assert mode_map["23:00"] == "maxuse"
 
-    def test_cheap_before_expensive_produces_charge_then_discharge(self):
-        # hours 0-2: 1.0 (cheap → should charge)
-        # hours 3-11: 4.0 (expensive → should discharge)
-        costs = [1.0] * 3 + [4.0] * 9
+    def test_sell_uses_highest_candidate_slots_per_day(self):
+        costs = [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            3.0,
+            9.0,
+            4.0,
+            8.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            7.0,
+            6.0,
+            5.0,
+            10.0,
+            2.0,
+            1.0,
+            1.0,
+        ]
         rates = make_rates(costs)
         result = compute_charge_modes(rates, 0.7, 160, 240)
         mode_map = {e["start"].hour: e["mode"] for e in result}
 
-        assert mode_map[0] == "charge"
-        assert mode_map[1] == "charge"
-        assert mode_map[2] == "charge"
-        assert mode_map[3] == "discharge"
-        assert mode_map[7] == "discharge"
-        assert mode_map[11] == "discharge"
+        assert {hour for hour, mode in mode_map.items() if mode == "sell"} == {
+            7,
+            9,
+            17,
+            18,
+            19,
+            20,
+        }
+        assert mode_map[6] == "maxuse"
+        assert mode_map[8] == "maxuse"
+        assert mode_map[21] == "maxuse"
+
+    def test_sell_selection_is_applied_per_day(self):
+        day_one = [1.0] * 24
+        day_two = [1.0] * 24
+        for hour, value in {
+            6: 2.0,
+            7: 9.0,
+            8: 8.0,
+            9: 7.0,
+            17: 6.0,
+            18: 5.0,
+            19: 4.0,
+            20: 3.0,
+            21: 2.5,
+        }.items():
+            day_one[hour] = value
+        for hour, value in {
+            6: 10.0,
+            7: 3.0,
+            8: 9.0,
+            9: 2.0,
+            17: 8.0,
+            18: 7.0,
+            19: 6.0,
+            20: 5.0,
+            21: 4.0,
+        }.items():
+            day_two[hour] = value
+
+        rates = make_rates(day_one + day_two)
+        result = compute_charge_modes(rates, 0.7, 160, 240)
+
+        day_one_sell = {
+            e["start"].hour
+            for e in result
+            if e["start"].day == 1 and e["mode"] == "sell"
+        }
+        day_two_sell = {
+            e["start"].hour
+            for e in result
+            if e["start"].day == 2 and e["mode"] == "sell"
+        }
+
+        assert day_one_sell == {7, 8, 9, 17, 18, 19}
+        assert day_two_sell == {6, 8, 17, 18, 19, 20}
 
     def test_result_entries_have_required_fields(self):
         rates = make_rates([1.0, 3.0, 1.0])
@@ -331,7 +463,8 @@ class TestComputeChargeModes:
             assert "end" in entry
             assert "mode" in entry
             assert "cost" in entry
-            assert entry["mode"] in ("standby", "charge", "discharge")
+            assert "credit" in entry
+            assert entry["mode"] in ("maxuse", "sell")
 
     def test_result_preserves_costs(self):
         costs = [1.0, 2.0, 3.0]
@@ -340,20 +473,11 @@ class TestComputeChargeModes:
         result_costs = [e["cost"] for e in result]
         assert result_costs == costs
 
-    def test_charge_always_before_discharge(self):
-        # Charging must precede discharging — no charge entry should follow all discharge entries
-        costs = [1.0] * 3 + [4.0] * 9
+    def test_summer_strategy_never_schedules_charge_or_discharge(self):
+        costs = [1.0] * 24
         rates = make_rates(costs)
         result = compute_charge_modes(rates, 0.7, 160, 240)
-        last_charge = max(
-            (i for i, e in enumerate(result) if e["mode"] == "charge"),
-            default=-1,
-        )
-        first_discharge = min(
-            (i for i, e in enumerate(result) if e["mode"] == "discharge"),
-            default=len(result),
-        )
-        assert last_charge < first_discharge
+        assert all(entry["mode"] in {"maxuse", "sell"} for entry in result)
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +596,38 @@ async def test_handle_source_update_refreshes_when_running(sensor, hass):
     mock_refresh.assert_awaited_once()
 
 
+@patch(
+    "custom_components.energyadvisor.sensor.batterychargemodesensor.BatteryChargeModeSensor._start_sensor",
+    new_callable=AsyncMock,
+)
+async def test_async_added_to_hass_registers_solar_listener(mock_start, sensor):
+    solar_coordinator = MagicMock()
+    sensor._entry.runtime_data = SimpleNamespace(solar_coordinator=solar_coordinator)
+
+    await sensor.async_added_to_hass()
+
+    mock_start.assert_not_awaited()
+    solar_coordinator.register_update_callback.assert_called_once_with(
+        sensor._handle_solar_forecast_update
+    )
+
+
+async def test_handle_solar_forecast_update_refreshes_when_running(sensor, hass):
+    sensor._waiting_for_first_value = False
+    created_tasks = []
+    hass.async_create_task = lambda coro: created_tasks.append(
+        asyncio.create_task(coro)
+    )
+
+    with patch.object(
+        sensor, "_refresh_from_source", new_callable=AsyncMock
+    ) as mock_refresh:
+        sensor._handle_solar_forecast_update()
+        await asyncio.gather(*created_tasks)
+
+    mock_refresh.assert_awaited_once()
+
+
 async def test_start_sensor_is_idempotent(sensor):
     sensor._waiting_for_first_value = False
     with patch.object(sensor, "_refresh_from_source", new_callable=AsyncMock):
@@ -512,7 +668,9 @@ def test_sensor_uses_suggested_object_id_and_unrecorded_schedule(sensor):
     [
         ("standby", "mdi:battery-outline"),
         ("charge", "mdi:battery-charging"),
+        ("maxuse", "mdi:home-lightning-bolt-outline"),
         ("discharge", "mdi:battery-arrow-down-outline"),
+        ("sell", "mdi:battery-arrow-up-outline"),
     ],
 )
 def test_icon_reflects_mode(mode, expected_icon, sensor):
@@ -611,6 +769,54 @@ def test_update_current_mode_sets_charge_explainability(sensor):
     assert attrs["required_load_kwh"] == 0.0
 
 
+@pytest.mark.parametrize(
+    "mode,expected_reason",
+    [
+        (
+            "maxuse",
+            "Maximizing self-consumption is scheduled because this slot is outside the selected summer sell slots.",
+        ),
+        (
+            "sell",
+            "Selling is scheduled because this slot is one of the six highest-valued periods between 00:00-10:00 and 17:00-24:00.",
+        ),
+    ],
+)
+def test_update_current_mode_sets_step6_mode_explainability(
+    sensor, mode, expected_reason
+):
+    base = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    sensor._charge_entries = [
+        {
+            "start": base,
+            "end": base + timedelta(hours=1),
+            "mode": mode,
+            "cost": 4.0,
+        },
+        {
+            "start": base + timedelta(hours=1),
+            "end": base + timedelta(hours=2),
+            "mode": "charge",
+            "cost": 1.0,
+        },
+    ]
+
+    with patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
+        return_value=base + timedelta(minutes=30),
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_time_zone",
+        return_value=UTC,
+    ):
+        sensor._update_current_mode()
+
+    attrs = sensor.extra_state_attributes
+    assert sensor.state == mode
+    assert attrs["reason"] == expected_reason
+    assert attrs["next_mode_change"] == "2024-01-01T01:00"
+    assert attrs["charge_source"] is None
+
+
 def test_update_current_mode_sets_standby_explainability_when_all_slots_are_standby(
     sensor,
 ):
@@ -697,7 +903,9 @@ def test_recompute_populates_charge_entries(sensor, source_sensor):
     assert len(sensor._charge_entries) == 12
 
 
-def test_recompute_with_flat_prices_keeps_sensor_in_standby(sensor, source_sensor):
+def test_recompute_with_flat_prices_uses_maxuse_outside_sell_windows(
+    sensor, source_sensor
+):
     source_sensor.compact_rates = make_rates([2.0] * 24)
     with patch(
         "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
@@ -712,8 +920,47 @@ def test_recompute_with_flat_prices_keeps_sensor_in_standby(sensor, source_senso
         next_update = sensor._recompute()
 
     assert len(sensor._charge_entries) == 24
-    assert all(entry["mode"] == "standby" for entry in sensor._charge_entries)
-    assert sensor._mode == "standby"
+    assert sum(entry["mode"] == "sell" for entry in sensor._charge_entries) == 6
+    assert sensor._mode == "maxuse"
+    assert sensor.extra_state_attributes["reason"] == (
+        "Maximizing self-consumption is scheduled because this slot is outside the selected summer sell slots."
+    )
+    assert next_update == 1801
+
+
+def test_recompute_marks_current_sell_slot_when_it_is_selected(sensor, source_sensor):
+    costs = [1.0] * 24
+    for hour, value in {
+        6: 3.0,
+        7: 9.0,
+        8: 4.0,
+        9: 8.0,
+        17: 7.0,
+        18: 6.0,
+        19: 5.0,
+        20: 10.0,
+        21: 2.0,
+    }.items():
+        costs[hour] = value
+    source_sensor.compact_rates = make_rates(costs)
+
+    with patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
+        return_value=datetime(2024, 1, 1, 20, 30, tzinfo=UTC),
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_time_zone",
+        return_value=UTC,
+    ), patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.get_default_time_zone",
+        return_value=UTC,
+    ):
+        next_update = sensor._recompute()
+
+    assert sensor._mode == "sell"
+    assert sensor.extra_state_attributes["reason"] == (
+        "Selling is scheduled because this slot is one of the six highest-valued periods between 00:00-10:00 and 17:00-24:00."
+    )
+    assert sensor._charge_entries[20]["mode"] == "sell"
     assert next_update == 1801
 
 
@@ -738,8 +985,8 @@ def test_recompute_handles_today_only_rates_without_tomorrow_data(
         2024, 1, 1, 23, 0, tzinfo=UTC
     )
     assert sensor._charge_entries[-1]["end"] == datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
-    assert sensor._charge_entries[-1]["mode"] == "discharge"
-    assert sensor._mode == "discharge"
+    assert sensor._charge_entries[-1]["mode"] == "maxuse"
+    assert sensor._mode == "maxuse"
     assert next_update == 1801
 
 

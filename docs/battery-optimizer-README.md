@@ -65,9 +65,10 @@ agent or computer restarts.
 
 - Implemented today:
   - `energyadvisor` is now the only shipped integration and carries the evolving planner work
-  - `sensor.energy_advisor_battery_charge_mode` now has explainability plus
-    SoC-aware discharge constraints
-- Wired into config storage and runtime planning in `energyadvisor`:
+  - `sensor.energy_advisor_battery_charge_mode` currently uses a simplified
+    summer strategy: `maxuse` by default, plus `sell` for the top six daily
+    slots that start between `00:00-10:00` and `17:00-24:00`
+- Wired into config storage and not currently used by runtime planning:
   - `battery_soc_entity`
 - Wired into config storage but not yet used by runtime planning:
   - `household_base_load_w`
@@ -126,9 +127,12 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
      with SoC alone, it still blocks obviously empty current-slot discharge actions.
    - **Deploy:** **Yes — R1.** Release step 3 + step 4 + step 5 together to the live system. Then observe that the new attributes are useful and that SoC only blocks impossible states.
 
-6. [ ] Introduce the new mode set in Energy Advisor.
+6. [x] Introduce the new mode set in Energy Advisor.
    - **Deliverable:** compute `standby`, `charge`, `maxuse`, `discharge`, and `sell` as the main battery state in `energyadvisor`.
    - **Verify:** the new mode set behaves sensibly for a few live days of real price and solar data.
+   - **Done:** the live battery helper currently uses a temporary summer strategy:
+     `maxuse` everywhere by default, and `sell` during the six highest-valued
+     slots per local day that start between `00:00-10:00` and `17:00-24:00`.
    - **Note:** after releasing to the live system, let the new mode set soak for at least several days on real
      price and solar data before continuing to step 7. This first live soak is the primary
      quality gate before deeper planner work continues.
@@ -137,6 +141,7 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
 7. [ ] Replace fixed battery duration with required-energy math.
    - **Deliverable:** stop assuming a fixed discharge length and instead compute required energy until the next useful solar window.
    - **Verify:** the same price curve yields different reserve decisions in summer-like and winter-like scenarios.
+   - **Current simplification:** the live helper is temporarily using the fixed summer strategy above instead of reserve math. When this step resumes, start from that simplified baseline rather than the older bridge-to-solar experiment.
    - **Deploy:** not yet; keep in development until step 12 so the advisory planner can be released as a coherent whole.
 
 8. [ ] Add a simple household load model.

@@ -19,7 +19,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
   - Adds support for credits when exporting electricity.
 - Provides a ranking system for prices to help identify the best times to use electricity.
 - Can refine a solar production forecast using your inverter's measured output.
-- Can suggest battery charge, discharge, and standby periods from the same price schedule.
+- Can suggest battery `maxuse` by default and `sell` during the top six morning/evening price slots in the current summer strategy.
 ## Prerequisites
 - Home Assistant (2025.0 or newer recommended)
 - [NordPool integration](https://www.home-assistant.io/integrations/nordpool/) installed and configured in Home Assistant. This integration supplies the electricity prices that this component depends on.
@@ -78,20 +78,19 @@ called differently for other grids and suppliers.
 | `forecast_tomorrow_entity` | Optional solar forecast sensor for tomorrow | `sensor.home_energy_production_tomorrow` |
 | `battery_capacity_kwh`     | Optional battery capacity; provide together with max charge power to override default timings | `10.0` |
 | `battery_max_charge_power_w` | Optional maximum battery charge power; provide together with capacity | `5000` |
-| `battery_degradation_cost` | Optional minimum spread required before cycling the battery | `0.7` |
-| `battery_soc_entity`       | Optional battery state-of-charge sensor in percent; keeps discharge recommendations realistic when configured | `sensor.home_battery_soc` |
+| `battery_degradation_cost` | Optional planner setting kept for future battery logic | `0.7` |
+| `battery_soc_entity`       | Optional battery state-of-charge sensor kept for future battery logic | `sensor.home_battery_soc` |
 
 The config UI also stores optional planner inputs for upcoming optimizer work.
-`battery_soc_entity` is already used together with the battery size/power
-settings to block impossible discharge slots from the current time forward
-while keeping cheap charge windows intact. The remaining stored planner inputs are:
+The current summer battery strategy only uses the linked price schedule. The
+stored planner inputs are:
 `battery_charge_power_entity`, `grid_import_entity`, `grid_export_entity`,
 `outdoor_temperature_entity`, `household_base_load_w`,
 `water_heater_power_entity`, `water_heater_power_w`, `water_heater_max_hours`,
 `bathroom_humidity_entity`, `pool_pump_power_entity`, `pool_pump_power_w`,
 `dehumidifier_power_entity`, and `dehumidifier_power_w`.
 
-Those remaining inputs are preserved in the config entry now, but they do not
+Those inputs are preserved in the config entry now, but they do not
 change the current battery scheduler yet. The rollout plan for using them lives
 in [docs/battery-optimizer-README.md](docs/battery-optimizer-README.md).
 
@@ -107,7 +106,7 @@ In addition, the `rates` attribute on `sensor.energy_advisor_price`, the `charge
 - The integration adds two price sensors, one battery charge mode sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, and `sensor.energy_advisor_solar_forecast` when the optional solar sensor is enabled. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
-  - `sensor.energy_advisor_battery_charge_mode` provides a schedule-based `charge`, `discharge`, or `standby` recommendation for a home battery.
+  - `sensor.energy_advisor_battery_charge_mode` provides the current summer battery recommendation: `maxuse` by default and `sell` during the six highest-valued slots per day that start between 00:00-10:00 and 17:00-24:00.
   - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and inverter power sensors.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).
@@ -165,26 +164,24 @@ The integration also provides `sensor.energy_advisor_compact_levels`, which expo
 See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast description, correction model, and database behavior.
 
 ### `sensor.energy_advisor_battery_charge_mode`
-- **Description:** Energy Advisor's battery schedule recommendation based on the price rates from the linked `sensor.energy_advisor_price` entry, with optional SoC-based feasibility constraints.
+- **Description:** Energy Advisor's current summer battery schedule recommendation based on the price rates from the linked `sensor.energy_advisor_price` entry.
 - **Default Entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
-- **State:** `charge`, `discharge`, or `standby`.
+- **State:** scheduled slots use `maxuse` or `sell`; `standby` is still used when price data is unavailable.
 - **Attributes:**
   - `charge_entries`: Planned per-slot schedule with local `from`, `mode`, and `cost` (`YYYY-MM-DDTHH:MM`).
-  - `margin`: Minimum price spread required before cycling.
-  - `charging_time_minutes`: Charge duration used by the planner.
-  - `discharging_time_minutes`: Discharge duration used by the planner.
+  - `margin`: Retained planner setting for future battery logic.
+  - `charging_time_minutes`: Retained battery timing value for future battery logic.
+  - `discharging_time_minutes`: Retained battery timing value for future battery logic.
   - `reason`: Human-readable explanation for the current recommendation.
   - `next_mode_change`: Local time string (`YYYY-MM-DDTHH:MM`) for the next expected mode change.
-  - `reserved_kwh`: Active reserve floor in `kWh` when SoC constraints are configured, otherwise `0.0`.
-  - `required_load_kwh`: Load-backed energy target, currently `0.0` until later load-aware steps.
-  - `charge_source`: `grid` while charging, otherwise `null`.
+  - `reserved_kwh`: Currently `0.0` in the summer strategy.
+  - `required_load_kwh`: Currently `0.0` in the summer strategy.
+  - `charge_source`: Currently `null` in the summer strategy.
 
-When `battery_soc_entity`, `battery_capacity_kwh`, and
-`battery_max_charge_power_w` are configured in Energy Advisor, the helper runs a second pass from
-the current slot forward and converts impossible `discharge` slots to
-`standby` using a 5% reserve floor and 95% charge/discharge efficiency
-assumptions. Full batteries still keep the planned `charge` recommendation so
-small self-consumption can be refilled during cheap periods.
+For each local calendar day, the helper keeps every slot in `maxuse`, then
+looks only at slots that start between 00:00-10:00 and 17:00-24:00. It ranks
+those candidate slots by export value (`credit`, falling back to `cost`) and
+marks the top six as `sell`. The remaining slots stay in `maxuse`.
 
 See [docs/batterychargemode.md](docs/batterychargemode.md) for the battery scheduling rules and configuration details.
 

@@ -234,7 +234,9 @@
         "state": {
           "standby": "Standby",
           "charge": "Ladda",
-          "discharge": "Urladdning"
+          "maxuse": "Maxanvändning",
+          "discharge": "Urladdning",
+          "sell": "Sälj"
         }
       }
     }
