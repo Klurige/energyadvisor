@@ -17,6 +17,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback, HomeAssistant
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE
+from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 
 
@@ -45,13 +46,15 @@ from .const import (
     CONF_GRID_FIXED_CREDIT,
     CONF_GRID_VARIABLE_CREDIT,
     CONF_GRID_ENERGY_TAX,
-    CONF_HOUSEHOLD_BASE_LOAD_W,
     CONF_ELECTRICITY_VAT,
     CONF_EXCLUDE_FROM_RECORDING,
     CONF_FORECAST_ENTITY,
     CONF_POWER_ENTITY,
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    CONF_POWER_METER_CONSUMPTION,
+    CONF_WATER_HEATER_ACTIVE_ENTITY,
+    CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_POOL_PUMP_POWER_ENTITY,
     CONF_POOL_PUMP_POWER_W,
     CONF_WATER_HEATER_MAX_HOURS,
@@ -88,24 +91,55 @@ LEGACY_DEV_DEFAULT_ALIASES: dict[str, tuple[str, ...]] = {
     CONF_DEHUMIDIFIER_POWER_ENTITY: ("dehumidifier_entity",),
 }
 
-OPTIMIZER_ENTITY_KEYS: tuple[str, ...] = (
+BATTERY_STEP_ENTITY_KEYS: tuple[str, ...] = (
     CONF_BATTERY_SOC_ENTITY,
     CONF_BATTERY_CHARGE_POWER_ENTITY,
+)
+BATTERY_STEP_NUMERIC_KEYS: tuple[str, ...] = (
+    CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_MAX_CHARGE_POWER_W,
+    CONF_BATTERY_DEGRADATION_COST,
+)
+GRID_METERING_ENTITY_KEYS: tuple[str, ...] = (
     CONF_GRID_IMPORT_ENTITY,
     CONF_GRID_EXPORT_ENTITY,
+)
+HOUSEHOLD_SENSOR_ENTITY_KEYS: tuple[str, ...] = (
+    CONF_POWER_METER_CONSUMPTION,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
-    CONF_BATHROOM_HUMIDITY_ENTITY,
+)
+HOUSEHOLD_BINARY_ENTITY_KEYS: tuple[str, ...] = (
+    CONF_WATER_HEATER_ACTIVE_ENTITY,
+    CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
+)
+HOT_WATER_ENTITY_KEYS: tuple[str, ...] = (
     CONF_WATER_HEATER_POWER_ENTITY,
+    CONF_BATHROOM_HUMIDITY_ENTITY,
+)
+HOT_WATER_NUMERIC_KEYS: tuple[str, ...] = (
+    CONF_WATER_HEATER_POWER_W,
+    CONF_WATER_HEATER_MAX_HOURS,
+)
+FLEXIBLE_LOADS_ENTITY_KEYS: tuple[str, ...] = (
     CONF_POOL_PUMP_POWER_ENTITY,
     CONF_DEHUMIDIFIER_POWER_ENTITY,
 )
-
-OPTIMIZER_NUMERIC_KEYS: tuple[str, ...] = (
-    CONF_HOUSEHOLD_BASE_LOAD_W,
-    CONF_WATER_HEATER_POWER_W,
-    CONF_WATER_HEATER_MAX_HOURS,
+FLEXIBLE_LOADS_NUMERIC_KEYS: tuple[str, ...] = (
     CONF_POOL_PUMP_POWER_W,
     CONF_DEHUMIDIFIER_POWER_W,
+)
+
+ALL_OPTIMIZER_ENTITY_KEYS: tuple[str, ...] = (
+    *BATTERY_STEP_ENTITY_KEYS,
+    *GRID_METERING_ENTITY_KEYS,
+    *HOUSEHOLD_SENSOR_ENTITY_KEYS,
+    *HOUSEHOLD_BINARY_ENTITY_KEYS,
+    *HOT_WATER_ENTITY_KEYS,
+    *FLEXIBLE_LOADS_ENTITY_KEYS,
+)
+ALL_OPTIMIZER_NUMERIC_KEYS: tuple[str, ...] = (
+    *HOT_WATER_NUMERIC_KEYS,
+    *FLEXIBLE_LOADS_NUMERIC_KEYS,
 )
 
 
@@ -134,11 +168,31 @@ def _validate_optional_sensor_entities(
     return errors
 
 
-def _build_battery_and_optimizer_schema(
-    values: dict[str, Any],
-    unit_of_measurement: str,
+def _build_solar_forecast_schema(values: dict[str, Any]) -> dict[Any, Any]:
+    """Build the config schema for optional solar forecast inputs."""
+    return {
+        vol.Optional(
+            CONF_FORECAST_ENTITY,
+            default=_schema_default(values.get(CONF_FORECAST_ENTITY)),
+            description={"suggested_value": values.get(CONF_FORECAST_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_POWER_ENTITY,
+            default=_schema_default(values.get(CONF_POWER_ENTITY)),
+            description={"suggested_value": values.get(CONF_POWER_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_FORECAST_TOMORROW_ENTITY,
+            default=_schema_default(values.get(CONF_FORECAST_TOMORROW_ENTITY)),
+            description={"suggested_value": values.get(CONF_FORECAST_TOMORROW_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+    }
+
+
+def _build_battery_schema(
+    values: dict[str, Any], unit_of_measurement: str
 ) -> dict[Any, Any]:
-    """Build the config schema for battery and optimizer inputs."""
+    """Build the config schema for battery hardware inputs."""
     return {
         vol.Optional(
             CONF_BATTERY_CAPACITY_KWH,
@@ -163,10 +217,14 @@ def _build_battery_and_optimizer_schema(
         vol.Optional(
             CONF_BATTERY_CHARGE_POWER_ENTITY,
             default=_schema_default(values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)),
-            description={
-                "suggested_value": values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)
-            },
+            description={"suggested_value": values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)},
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+    }
+
+
+def _build_grid_metering_schema(values: dict[str, Any]) -> dict[Any, Any]:
+    """Build the config schema for grid metering inputs."""
+    return {
         vol.Optional(
             CONF_GRID_IMPORT_ENTITY,
             default=_schema_default(values.get(CONF_GRID_IMPORT_ENTITY)),
@@ -177,18 +235,38 @@ def _build_battery_and_optimizer_schema(
             default=_schema_default(values.get(CONF_GRID_EXPORT_ENTITY)),
             description={"suggested_value": values.get(CONF_GRID_EXPORT_ENTITY)},
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+    }
+
+
+def _build_household_schema(values: dict[str, Any]) -> dict[Any, Any]:
+    """Build the config schema for household load inputs."""
+    return {
+        vol.Optional(
+            CONF_POWER_METER_CONSUMPTION,
+            default=_schema_default(values.get(CONF_POWER_METER_CONSUMPTION)),
+            description={"suggested_value": values.get(CONF_POWER_METER_CONSUMPTION)},
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
         vol.Optional(
             CONF_OUTDOOR_TEMPERATURE_ENTITY,
             default=_schema_default(values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)),
-            description={
-                "suggested_value": values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)
-            },
+            description={"suggested_value": values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)},
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
         vol.Optional(
-            CONF_HOUSEHOLD_BASE_LOAD_W,
-            default=_schema_default(values.get(CONF_HOUSEHOLD_BASE_LOAD_W)),
-            description={"suffix": "W"},
-        ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+            CONF_WATER_HEATER_ACTIVE_ENTITY,
+            default=_schema_default(values.get(CONF_WATER_HEATER_ACTIVE_ENTITY)),
+            description={"suggested_value": values.get(CONF_WATER_HEATER_ACTIVE_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain=BINARY_SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
+            default=_schema_default(values.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)),
+            description={"suggested_value": values.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain=BINARY_SENSOR_DOMAIN)),
+    }
+
+
+def _build_hot_water_schema(values: dict[str, Any]) -> dict[Any, Any]:
+    """Build the config schema for hot-water planner inputs."""
+    return {
         vol.Optional(
             CONF_WATER_HEATER_POWER_ENTITY,
             default=_schema_default(values.get(CONF_WATER_HEATER_POWER_ENTITY)),
@@ -209,6 +287,12 @@ def _build_battery_and_optimizer_schema(
             default=_schema_default(values.get(CONF_BATHROOM_HUMIDITY_ENTITY)),
             description={"suggested_value": values.get(CONF_BATHROOM_HUMIDITY_ENTITY)},
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+    }
+
+
+def _build_flexible_loads_schema(values: dict[str, Any]) -> dict[Any, Any]:
+    """Build the config schema for flexible-load inputs."""
+    return {
         vol.Optional(
             CONF_POOL_PUMP_POWER_ENTITY,
             default=_schema_default(values.get(CONF_POOL_PUMP_POWER_ENTITY)),
@@ -727,32 +811,125 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
         errors = {}
         unit_of_measurement = self.data.get("unit_of_measurement", "")
         if user_input is not None:
-            battery_capacity_kwh = user_input.get(CONF_BATTERY_CAPACITY_KWH)
-            battery_max_charge_power_w = user_input.get(CONF_BATTERY_MAX_CHARGE_POWER_W)
-            battery_degradation_cost = user_input.get(CONF_BATTERY_DEGRADATION_COST)
-            optimizer_entities = {
-                key: user_input.get(key) for key in OPTIMIZER_ENTITY_KEYS
+            battery_entities = {
+                key: user_input.get(key) for key in BATTERY_STEP_ENTITY_KEYS
             }
-
             errors.update(
                 _validate_battery_settings(
-                    battery_capacity_kwh,
-                    battery_max_charge_power_w,
+                    user_input.get(CONF_BATTERY_CAPACITY_KWH),
+                    user_input.get(CONF_BATTERY_MAX_CHARGE_POWER_W),
                 )
             )
-
             if not errors:
                 errors.update(
-                    _validate_optional_sensor_entities(self.hass, optimizer_entities)
+                    _validate_optional_sensor_entities(self.hass, battery_entities)
                 )
-
             if not errors:
-                self.data[CONF_BATTERY_CAPACITY_KWH] = battery_capacity_kwh
-                self.data[CONF_BATTERY_MAX_CHARGE_POWER_W] = battery_max_charge_power_w
-                self.data[CONF_BATTERY_DEGRADATION_COST] = battery_degradation_cost
-                for key, entity_id in optimizer_entities.items():
+                for key in BATTERY_STEP_NUMERIC_KEYS:
+                    self.data[key] = user_input.get(key)
+                for key, entity_id in battery_entities.items():
                     self.data[key] = entity_id or None
-                for key in OPTIMIZER_NUMERIC_KEYS:
+                return await self.async_step_grid_metering()
+
+        form_values = {
+            key: _form_value(self.data, key)
+            for key in (*BATTERY_STEP_NUMERIC_KEYS, *BATTERY_STEP_ENTITY_KEYS)
+        }
+        return self.async_show_form(
+            step_id="battery",
+            data_schema=vol.Schema(
+                _build_battery_schema(form_values, unit_of_measurement)
+            ),
+            errors=errors,
+        )
+
+    async def async_step_grid_metering(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            grid_entities = {key: user_input.get(key) for key in GRID_METERING_ENTITY_KEYS}
+            errors.update(_validate_optional_sensor_entities(self.hass, grid_entities))
+            if not errors:
+                for key, entity_id in grid_entities.items():
+                    self.data[key] = entity_id or None
+                return await self.async_step_household()
+
+        form_values = {key: _form_value(self.data, key) for key in GRID_METERING_ENTITY_KEYS}
+        return self.async_show_form(
+            step_id="grid_metering",
+            data_schema=vol.Schema(_build_grid_metering_schema(form_values)),
+            errors=errors,
+        )
+
+    async def async_step_household(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            household_entities = {
+                key: user_input.get(key)
+                for key in (*HOUSEHOLD_SENSOR_ENTITY_KEYS, *HOUSEHOLD_BINARY_ENTITY_KEYS)
+            }
+            errors.update(
+                _validate_optional_sensor_entities(self.hass, household_entities)
+            )
+            if not errors:
+                for key, entity_id in household_entities.items():
+                    self.data[key] = entity_id or None
+                return await self.async_step_hot_water()
+
+        form_values = {
+            key: _form_value(self.data, key)
+            for key in (*HOUSEHOLD_SENSOR_ENTITY_KEYS, *HOUSEHOLD_BINARY_ENTITY_KEYS)
+        }
+        return self.async_show_form(
+            step_id="household",
+            data_schema=vol.Schema(_build_household_schema(form_values)),
+            errors=errors,
+        )
+
+    async def async_step_hot_water(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            hot_water_entities = {key: user_input.get(key) for key in HOT_WATER_ENTITY_KEYS}
+            errors.update(
+                _validate_optional_sensor_entities(self.hass, hot_water_entities)
+            )
+            if not errors:
+                for key, entity_id in hot_water_entities.items():
+                    self.data[key] = entity_id or None
+                for key in HOT_WATER_NUMERIC_KEYS:
+                    self.data[key] = user_input.get(key)
+                return await self.async_step_flexible_loads()
+
+        form_values = {
+            key: _form_value(self.data, key)
+            for key in (*HOT_WATER_ENTITY_KEYS, *HOT_WATER_NUMERIC_KEYS)
+        }
+        return self.async_show_form(
+            step_id="hot_water",
+            data_schema=vol.Schema(_build_hot_water_schema(form_values)),
+            errors=errors,
+        )
+
+    async def async_step_flexible_loads(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            flexible_entities = {
+                key: user_input.get(key) for key in FLEXIBLE_LOADS_ENTITY_KEYS
+            }
+            errors.update(
+                _validate_optional_sensor_entities(self.hass, flexible_entities)
+            )
+            if not errors:
+                for key, entity_id in flexible_entities.items():
+                    self.data[key] = entity_id or None
+                for key in FLEXIBLE_LOADS_NUMERIC_KEYS:
                     self.data[key] = user_input.get(key)
                 return self.async_create_entry(
                     title="Energy Advisor",
@@ -802,54 +979,54 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
                         CONF_BATTERY_DEGRADATION_COST: self.data.get(
                             CONF_BATTERY_DEGRADATION_COST
                         ),
-                        **{
-                            key: self.data.get(key)
-                            for key in (*OPTIMIZER_ENTITY_KEYS, *OPTIMIZER_NUMERIC_KEYS)
-                        },
+                        **{key: self.data.get(key) for key in ALL_OPTIMIZER_ENTITY_KEYS},
+                        **{key: self.data.get(key) for key in ALL_OPTIMIZER_NUMERIC_KEYS},
                     },
                 )
 
         form_values = {
             key: _form_value(self.data, key)
-            for key in (
-                CONF_BATTERY_CAPACITY_KWH,
-                CONF_BATTERY_MAX_CHARGE_POWER_W,
-                CONF_BATTERY_DEGRADATION_COST,
-                *OPTIMIZER_ENTITY_KEYS,
-                *OPTIMIZER_NUMERIC_KEYS,
-            )
+            for key in (*FLEXIBLE_LOADS_ENTITY_KEYS, *FLEXIBLE_LOADS_NUMERIC_KEYS)
         }
-
         return self.async_show_form(
-            step_id="battery",
-            data_schema=vol.Schema(
-                _build_battery_and_optimizer_schema(form_values, unit_of_measurement)
-            ),
+            step_id="flexible_loads",
+            data_schema=vol.Schema(_build_flexible_loads_schema(form_values)),
             errors=errors,
         )
 
 
 class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
+    def __init__(self) -> None:
+        self.current_options: dict[str, Any] = {}
+        self.unit_of_measurement = ""
+
+    def _update_price_sensor_attributes(self, sensor_attributes: dict[str, Any] | None) -> None:
+        """Persist display metadata for the selected price sensor."""
+        if sensor_attributes:
+            self.current_options["unit_of_measurement"] = sensor_attributes.get(
+                "unit_of_measurement", ""
+            )
+            self.current_options["currency"] = sensor_attributes.get("currency", "")
+            self.current_options["energy_unit"] = sensor_attributes.get(
+                "energy_unit", ""
+            )
+            self.current_options["price_divisor"] = sensor_attributes.get(
+                "price_divisor", 100
+            )
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors = {}
-        self.current_options = dict(self.config_entry.options)
-        # Determine unit_of_measurement based on currently saved (or about to be saved) prices sensor
-        # This is primarily for display in the form. Validation of new sensor happens below.
-        current_prices_sensor = self.current_options.get(
-            CONF_NORDPOOL_PRICES_SENSOR, ""
-        )
-        if (
-            user_input and CONF_NORDPOOL_PRICES_SENSOR in user_input
-        ):  # If user is changing it
+        if not self.current_options:
+            self.current_options = dict(self.config_entry.options)
+
+        current_prices_sensor = self.current_options.get(CONF_NORDPOOL_PRICES_SENSOR, "")
+        if user_input and CONF_NORDPOOL_PRICES_SENSOR in user_input:
             current_prices_sensor = user_input[CONF_NORDPOOL_PRICES_SENSOR]
 
-        # Fetch attributes for the current prices sensor to display suffixes correctly
-        # This doesn't validate it yet, just for display. Validation is on submit.
-        _is_valid_for_display, display_attributes = (
-            await _validate_nordpool_prices_sensor(self.hass, current_prices_sensor)
+        _is_valid_for_display, display_attributes = await _validate_nordpool_prices_sensor(
+            self.hass, current_prices_sensor
         )
         self.unit_of_measurement = (
             display_attributes.get("unit_of_measurement", "")
@@ -858,26 +1035,20 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
         )
 
         if user_input is not None:
-            # Validate the submitted Nordpool prices sensor
             submitted_prices_sensor = user_input[CONF_NORDPOOL_PRICES_SENSOR]
             is_valid_sensor, sensor_attributes = await _validate_nordpool_prices_sensor(
                 self.hass, submitted_prices_sensor
             )
-
             if not is_valid_sensor:
                 errors[CONF_NORDPOOL_PRICES_SENSOR] = "invalid_sensor"
             else:
-                # Prices sensor is valid, update unit_of_measurement based on potentially new valid sensor
                 self.unit_of_measurement = (
                     sensor_attributes.get("unit_of_measurement", "")
                     if sensor_attributes
                     else ""
                 )
-
-                # Validate thresholds
                 low_threshold = user_input.get(CONF_LOW_THRESHOLD)
                 high_threshold = user_input.get(CONF_HIGH_THRESHOLD)
-
                 if (
                     low_threshold is not None
                     and high_threshold is not None
@@ -886,245 +1057,338 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
                     errors["base"] = "low_threshold_higher_than_high_threshold"
 
                 if not errors:
-                    errors.update(
-                        _validate_solar_forecast_entities(
-                            self.hass,
-                            user_input.get(CONF_FORECAST_ENTITY),
-                            user_input.get(CONF_POWER_ENTITY),
-                            user_input.get(CONF_FORECAST_TOMORROW_ENTITY),
-                        )
-                    )
-
-                if not errors:
-                    errors.update(
-                        _validate_battery_settings(
-                            user_input.get(CONF_BATTERY_CAPACITY_KWH),
-                            user_input.get(CONF_BATTERY_MAX_CHARGE_POWER_W),
-                        )
-                    )
-
-                if not errors:
-                    errors.update(
-                        _validate_optional_sensor_entities(
-                            self.hass,
-                            {key: user_input.get(key) for key in OPTIMIZER_ENTITY_KEYS},
-                        )
-                    )
-
-                if not errors:
-                    # All validations passed, create/update the options entry
                     self.current_options.update(user_input)
-                    # Ensure unit_of_measurement, currency, and energy_unit are updated if sensor changed
-                    if sensor_attributes:
-                        self.current_options["unit_of_measurement"] = (
-                            sensor_attributes.get("unit_of_measurement", "")
-                        )
-                        self.current_options["currency"] = sensor_attributes.get(
-                            "currency", ""
-                        )
-                        self.current_options["energy_unit"] = sensor_attributes.get(
-                            "energy_unit", ""
-                        )
-                        self.current_options["price_divisor"] = sensor_attributes.get(
-                            "price_divisor", 100
-                        )
-                    # Normalise optional solar forecast entity fields (empty = None)
-                    for key in (
-                        CONF_FORECAST_ENTITY,
-                        CONF_POWER_ENTITY,
-                        CONF_FORECAST_TOMORROW_ENTITY,
-                        *OPTIMIZER_ENTITY_KEYS,
-                    ):
-                        self.current_options[key] = user_input.get(key) or None
-                    for key in (
-                        CONF_BATTERY_CAPACITY_KWH,
-                        CONF_BATTERY_MAX_CHARGE_POWER_W,
-                        CONF_BATTERY_DEGRADATION_COST,
-                        *OPTIMIZER_NUMERIC_KEYS,
-                    ):
-                        self.current_options[key] = (
-                            user_input[key] if key in user_input else None
-                        )
-                    return self.async_create_entry(title="", data=self.current_options)
+                    self._update_price_sensor_attributes(sensor_attributes)
+                    return await self.async_step_supplier_fees_and_credits()
 
-        # Populate schema with current/suggested values
-        schema_dict = {
-            vol.Required(
-                CONF_NORDPOOL_PRICES_SENSOR,
-                default=self.current_options.get(CONF_NORDPOOL_PRICES_SENSOR, ""),
-            ): EntitySelector(
-                EntitySelectorConfig(
-                    domain=SENSOR_DOMAIN,
-                )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_NORDPOOL_PRICES_SENSOR,
+                        default=self.current_options.get(CONF_NORDPOOL_PRICES_SENSOR, ""),
+                    ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+                    vol.Optional(
+                        CONF_LOW_THRESHOLD,
+                        description={
+                            "suggested_value": self.current_options.get(CONF_LOW_THRESHOLD),
+                            "suffix": self.unit_of_measurement,
+                        },
+                        default=self.current_options.get(CONF_LOW_THRESHOLD),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_HIGH_THRESHOLD,
+                        description={
+                            "suggested_value": self.current_options.get(CONF_HIGH_THRESHOLD),
+                            "suffix": self.unit_of_measurement,
+                        },
+                        default=self.current_options.get(CONF_HIGH_THRESHOLD),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                }
             ),
-            vol.Optional(
-                CONF_LOW_THRESHOLD,
-                description={
-                    "suggested_value": self.current_options.get(CONF_LOW_THRESHOLD),
-                    "suffix": self.unit_of_measurement,
-                },
-                default=self.current_options.get(CONF_LOW_THRESHOLD),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_HIGH_THRESHOLD,
-                description={
-                    "suggested_value": self.current_options.get(CONF_HIGH_THRESHOLD),
-                    "suffix": self.unit_of_measurement,
-                },
-                default=self.current_options.get(CONF_HIGH_THRESHOLD),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_SUPPLIER_NOTE,
-                description={
-                    "suggested_value": self.current_options.get(CONF_SUPPLIER_NOTE)
-                },
-                default=self.current_options.get(CONF_SUPPLIER_NOTE),
-            ): vol.Coerce(str),
-            vol.Optional(
-                CONF_SUPPLIER_FIXED_FEE,
-                description={
-                    "suggested_value": self.current_options.get(
-                        CONF_SUPPLIER_FIXED_FEE
-                    ),
-                    "suffix": self.unit_of_measurement,
-                },
-                default=self.current_options.get(CONF_SUPPLIER_FIXED_FEE),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_SUPPLIER_VARIABLE_FEE,
-                description={
-                    "suggested_value": self.current_options.get(
-                        CONF_SUPPLIER_VARIABLE_FEE
-                    ),
-                    "suffix": "%",
-                },
-                default=self.current_options.get(CONF_SUPPLIER_VARIABLE_FEE),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_SUPPLIER_FIXED_CREDIT,
-                description={
-                    "suggested_value": self.current_options.get(
-                        CONF_SUPPLIER_FIXED_CREDIT
-                    ),
-                    "suffix": self.unit_of_measurement,
-                },
-                default=self.current_options.get(CONF_SUPPLIER_FIXED_CREDIT),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_SUPPLIER_VARIABLE_CREDIT,
-                description={
-                    "suggested_value": self.current_options.get(
-                        CONF_SUPPLIER_VARIABLE_CREDIT
-                    ),
-                    "suffix": "%",
-                },
-                default=self.current_options.get(CONF_SUPPLIER_VARIABLE_CREDIT),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_GRID_NOTE,
-                description={
-                    "suggested_value": self.current_options.get(CONF_GRID_NOTE)
-                },
-                default=self.current_options.get(CONF_GRID_NOTE),
-            ): vol.Coerce(str),
-            vol.Optional(
-                CONF_GRID_FIXED_FEE,
-                description={
-                    "suggested_value": self.current_options.get(CONF_GRID_FIXED_FEE),
-                    "suffix": self.unit_of_measurement,
-                },
-                default=self.current_options.get(CONF_GRID_FIXED_FEE),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_GRID_VARIABLE_FEE,
-                description={
-                    "suggested_value": self.current_options.get(CONF_GRID_VARIABLE_FEE),
-                    "suffix": "%",
-                },
-                default=self.current_options.get(CONF_GRID_VARIABLE_FEE),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_GRID_FIXED_CREDIT,
-                description={
-                    "suggested_value": self.current_options.get(CONF_GRID_FIXED_CREDIT),
-                    "suffix": self.unit_of_measurement,
-                },
-                default=self.current_options.get(CONF_GRID_FIXED_CREDIT),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_GRID_VARIABLE_CREDIT,
-                description={
-                    "suggested_value": self.current_options.get(
-                        CONF_GRID_VARIABLE_CREDIT
-                    ),
-                    "suffix": "%",
-                },
-                default=self.current_options.get(CONF_GRID_VARIABLE_CREDIT),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_GRID_ENERGY_TAX,
-                description={
-                    "suggested_value": self.current_options.get(CONF_GRID_ENERGY_TAX),
-                    "suffix": self.unit_of_measurement,
-                },
-                default=self.current_options.get(CONF_GRID_ENERGY_TAX),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_ELECTRICITY_VAT,
-                description={
-                    "suggested_value": self.current_options.get(CONF_ELECTRICITY_VAT),
-                    "suffix": "%",
-                },
-                default=self.current_options.get(CONF_ELECTRICITY_VAT),
-            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Optional(
-                CONF_FORECAST_ENTITY,
-                default=_schema_default(
-                    _form_value(self.current_options, CONF_FORECAST_ENTITY)
-                ),
-                description={
-                    "suggested_value": self.current_options.get(CONF_FORECAST_ENTITY)
-                },
-            ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
-            vol.Optional(
-                CONF_POWER_ENTITY,
-                default=_schema_default(
-                    _form_value(self.current_options, CONF_POWER_ENTITY)
-                ),
-                description={
-                    "suggested_value": self.current_options.get(CONF_POWER_ENTITY)
-                },
-            ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
-            vol.Optional(
-                CONF_FORECAST_TOMORROW_ENTITY,
-                default=_schema_default(
-                    _form_value(self.current_options, CONF_FORECAST_TOMORROW_ENTITY)
-                ),
-                description={
-                    "suggested_value": self.current_options.get(
-                        CONF_FORECAST_TOMORROW_ENTITY
-                    )
-                },
-            ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
-        }
+            errors=errors,
+        )
+
+    async def async_step_supplier_fees_and_credits(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            self.current_options.update(user_input)
+            return await self.async_step_grid_fees_and_credits()
+
+        return self.async_show_form(
+            step_id="supplier_fees_and_credits",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_SUPPLIER_NOTE,
+                        default=_schema_default(self.current_options.get(CONF_SUPPLIER_NOTE)),
+                    ): vol.Coerce(str),
+                    vol.Optional(
+                        CONF_SUPPLIER_FIXED_FEE,
+                        default=_schema_default(
+                            self.current_options.get(CONF_SUPPLIER_FIXED_FEE)
+                        ),
+                        description={"suffix": self.unit_of_measurement},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_SUPPLIER_VARIABLE_FEE,
+                        default=_schema_default(
+                            self.current_options.get(CONF_SUPPLIER_VARIABLE_FEE)
+                        ),
+                        description={"suffix": "%"},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_SUPPLIER_FIXED_CREDIT,
+                        default=_schema_default(
+                            self.current_options.get(CONF_SUPPLIER_FIXED_CREDIT)
+                        ),
+                        description={"suffix": self.unit_of_measurement},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_SUPPLIER_VARIABLE_CREDIT,
+                        default=_schema_default(
+                            self.current_options.get(CONF_SUPPLIER_VARIABLE_CREDIT)
+                        ),
+                        description={"suffix": "%"},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_grid_fees_and_credits(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            self.current_options.update(user_input)
+            return await self.async_step_taxes_and_vat()
+
+        return self.async_show_form(
+            step_id="grid_fees_and_credits",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_GRID_NOTE,
+                        default=_schema_default(self.current_options.get(CONF_GRID_NOTE)),
+                    ): vol.Coerce(str),
+                    vol.Optional(
+                        CONF_GRID_FIXED_FEE,
+                        default=_schema_default(self.current_options.get(CONF_GRID_FIXED_FEE)),
+                        description={"suffix": self.unit_of_measurement},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_GRID_VARIABLE_FEE,
+                        default=_schema_default(
+                            self.current_options.get(CONF_GRID_VARIABLE_FEE)
+                        ),
+                        description={"suffix": "%"},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_GRID_FIXED_CREDIT,
+                        default=_schema_default(
+                            self.current_options.get(CONF_GRID_FIXED_CREDIT)
+                        ),
+                        description={"suffix": self.unit_of_measurement},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_GRID_VARIABLE_CREDIT,
+                        default=_schema_default(
+                            self.current_options.get(CONF_GRID_VARIABLE_CREDIT)
+                        ),
+                        description={"suffix": "%"},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_taxes_and_vat(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            self.current_options.update(user_input)
+            return await self.async_step_solar_forecast()
+
+        return self.async_show_form(
+            step_id="taxes_and_vat",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_GRID_ENERGY_TAX,
+                        default=_schema_default(
+                            self.current_options.get(CONF_GRID_ENERGY_TAX)
+                        ),
+                        description={"suffix": self.unit_of_measurement},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_ELECTRICITY_VAT,
+                        default=_schema_default(
+                            self.current_options.get(CONF_ELECTRICITY_VAT)
+                        ),
+                        description={"suffix": "%"},
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_solar_forecast(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            errors.update(
+                _validate_solar_forecast_entities(
+                    self.hass,
+                    user_input.get(CONF_FORECAST_ENTITY),
+                    user_input.get(CONF_POWER_ENTITY),
+                    user_input.get(CONF_FORECAST_TOMORROW_ENTITY),
+                )
+            )
+            if not errors:
+                self.current_options.update(user_input)
+                return await self.async_step_battery()
 
         form_values = {
             key: _form_value(self.current_options, key)
             for key in (
-                CONF_BATTERY_CAPACITY_KWH,
-                CONF_BATTERY_MAX_CHARGE_POWER_W,
-                CONF_BATTERY_DEGRADATION_COST,
-                *OPTIMIZER_ENTITY_KEYS,
-                *OPTIMIZER_NUMERIC_KEYS,
+                CONF_FORECAST_ENTITY,
+                CONF_POWER_ENTITY,
+                CONF_FORECAST_TOMORROW_ENTITY,
             )
         }
-        schema_dict.update(
-            _build_battery_and_optimizer_schema(form_values, self.unit_of_measurement)
+        return self.async_show_form(
+            step_id="solar_forecast",
+            data_schema=vol.Schema(_build_solar_forecast_schema(form_values)),
+            errors=errors,
         )
 
+    async def async_step_battery(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            battery_entities = {
+                key: user_input.get(key) for key in BATTERY_STEP_ENTITY_KEYS
+            }
+            errors.update(
+                _validate_battery_settings(
+                    user_input.get(CONF_BATTERY_CAPACITY_KWH),
+                    user_input.get(CONF_BATTERY_MAX_CHARGE_POWER_W),
+                )
+            )
+            if not errors:
+                errors.update(
+                    _validate_optional_sensor_entities(self.hass, battery_entities)
+                )
+            if not errors:
+                self.current_options.update(user_input)
+                return await self.async_step_grid_metering()
+
+        form_values = {
+            key: _form_value(self.current_options, key)
+            for key in (*BATTERY_STEP_NUMERIC_KEYS, *BATTERY_STEP_ENTITY_KEYS)
+        }
         return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(schema_dict),
+            step_id="battery",
+            data_schema=vol.Schema(
+                _build_battery_schema(form_values, self.unit_of_measurement)
+            ),
+            errors=errors,
+        )
+
+    async def async_step_grid_metering(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            grid_entities = {key: user_input.get(key) for key in GRID_METERING_ENTITY_KEYS}
+            errors.update(_validate_optional_sensor_entities(self.hass, grid_entities))
+            if not errors:
+                self.current_options.update(user_input)
+                return await self.async_step_household()
+
+        form_values = {
+            key: _form_value(self.current_options, key) for key in GRID_METERING_ENTITY_KEYS
+        }
+        return self.async_show_form(
+            step_id="grid_metering",
+            data_schema=vol.Schema(_build_grid_metering_schema(form_values)),
+            errors=errors,
+        )
+
+    async def async_step_household(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            household_entities = {
+                key: user_input.get(key)
+                for key in (*HOUSEHOLD_SENSOR_ENTITY_KEYS, *HOUSEHOLD_BINARY_ENTITY_KEYS)
+            }
+            errors.update(
+                _validate_optional_sensor_entities(self.hass, household_entities)
+            )
+            if not errors:
+                self.current_options.update(user_input)
+                return await self.async_step_hot_water()
+
+        form_values = {
+            key: _form_value(self.current_options, key)
+            for key in (*HOUSEHOLD_SENSOR_ENTITY_KEYS, *HOUSEHOLD_BINARY_ENTITY_KEYS)
+        }
+        return self.async_show_form(
+            step_id="household",
+            data_schema=vol.Schema(_build_household_schema(form_values)),
+            errors=errors,
+        )
+
+    async def async_step_hot_water(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            hot_water_entities = {key: user_input.get(key) for key in HOT_WATER_ENTITY_KEYS}
+            errors.update(
+                _validate_optional_sensor_entities(self.hass, hot_water_entities)
+            )
+            if not errors:
+                self.current_options.update(user_input)
+                return await self.async_step_flexible_loads()
+
+        form_values = {
+            key: _form_value(self.current_options, key)
+            for key in (*HOT_WATER_ENTITY_KEYS, *HOT_WATER_NUMERIC_KEYS)
+        }
+        return self.async_show_form(
+            step_id="hot_water",
+            data_schema=vol.Schema(_build_hot_water_schema(form_values)),
+            errors=errors,
+        )
+
+    async def async_step_flexible_loads(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            flexible_entities = {
+                key: user_input.get(key) for key in FLEXIBLE_LOADS_ENTITY_KEYS
+            }
+            errors.update(
+                _validate_optional_sensor_entities(self.hass, flexible_entities)
+            )
+            if not errors:
+                self.current_options.update(user_input)
+                for key in (
+                    CONF_FORECAST_ENTITY,
+                    CONF_POWER_ENTITY,
+                    CONF_FORECAST_TOMORROW_ENTITY,
+                    *ALL_OPTIMIZER_ENTITY_KEYS,
+                ):
+                    self.current_options[key] = self.current_options.get(key) or None
+                for key in (
+                    *BATTERY_STEP_NUMERIC_KEYS,
+                    *ALL_OPTIMIZER_NUMERIC_KEYS,
+                ):
+                    self.current_options[key] = (
+                        self.current_options[key]
+                        if key in self.current_options
+                        else None
+                    )
+                return self.async_create_entry(title="", data=self.current_options)
+
+        form_values = {
+            key: _form_value(self.current_options, key)
+            for key in (*FLEXIBLE_LOADS_ENTITY_KEYS, *FLEXIBLE_LOADS_NUMERIC_KEYS)
+        }
+        return self.async_show_form(
+            step_id="flexible_loads",
+            data_schema=vol.Schema(_build_flexible_loads_schema(form_values)),
             errors=errors,
         )
 

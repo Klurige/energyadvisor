@@ -30,7 +30,6 @@ from ..const import (
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
-    CONF_HOUSEHOLD_BASE_LOAD_W,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
 )
@@ -473,7 +472,6 @@ class BatteryChargeModeSensor(SensorEntity):
         max_power_w = entry.options.get(CONF_BATTERY_MAX_CHARGE_POWER_W)
         self._battery_soc_entity = entry.options.get(CONF_BATTERY_SOC_ENTITY)
         self._battery_capacity_kwh = capacity_kwh if capacity_kwh is not None else None
-        household_base_load_w = entry.options.get(CONF_HOUSEHOLD_BASE_LOAD_W)
         self._charge_power_kw: float | None = None
         self._discharge_power_kw: float | None = None
         self._household_base_load_kw: float | None = None
@@ -481,8 +479,6 @@ class BatteryChargeModeSensor(SensorEntity):
         self._margin = (
             degradation_cost if degradation_cost is not None else _DEFAULT_MARGIN
         )
-        if household_base_load_w is not None and household_base_load_w > 0:
-            self._household_base_load_kw = household_base_load_w / 1000.0
 
         if capacity_kwh is not None and max_power_w is not None:
             max_power_kw = max_power_w / 1000.0
