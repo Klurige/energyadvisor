@@ -17,7 +17,6 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback, HomeAssistant
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE
-from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 
 
@@ -255,12 +254,16 @@ def _build_household_schema(values: dict[str, Any]) -> dict[Any, Any]:
             CONF_WATER_HEATER_ACTIVE_ENTITY,
             default=_schema_default(values.get(CONF_WATER_HEATER_ACTIVE_ENTITY)),
             description={"suggested_value": values.get(CONF_WATER_HEATER_ACTIVE_ENTITY)},
-        ): EntitySelector(EntitySelectorConfig(domain=BINARY_SENSOR_DOMAIN)),
+        ): EntitySelector(
+            EntitySelectorConfig(domain=["binary_sensor", "switch", "input_boolean"])
+        ),
         vol.Optional(
             CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
             default=_schema_default(values.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)),
             description={"suggested_value": values.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)},
-        ): EntitySelector(EntitySelectorConfig(domain=BINARY_SENSOR_DOMAIN)),
+        ): EntitySelector(
+            EntitySelectorConfig(domain=["binary_sensor", "switch", "input_boolean"])
+        ),
     }
 
 
