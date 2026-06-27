@@ -255,14 +255,14 @@ def _build_household_schema(values: dict[str, Any]) -> dict[Any, Any]:
             default=_schema_default(values.get(CONF_WATER_HEATER_ACTIVE_ENTITY)),
             description={"suggested_value": values.get(CONF_WATER_HEATER_ACTIVE_ENTITY)},
         ): EntitySelector(
-            EntitySelectorConfig(domain=["binary_sensor", "switch", "input_boolean"])
+            EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "sensor", "switch"])
         ),
         vol.Optional(
             CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
             default=_schema_default(values.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)),
             description={"suggested_value": values.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)},
         ): EntitySelector(
-            EntitySelectorConfig(domain=["binary_sensor", "switch", "input_boolean"])
+            EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "sensor", "switch"])
         ),
     }
 
