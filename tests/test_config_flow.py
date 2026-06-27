@@ -18,6 +18,7 @@ from custom_components.energyadvisor.const import (
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_SOC_ENTITY,
+    CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_DEHUMIDIFIER_POWER_ENTITY,
     CONF_DEHUMIDIFIER_POWER_W,
     CONF_FORECAST_ENTITY,
@@ -25,13 +26,14 @@ from custom_components.energyadvisor.const import (
     CONF_GRID_EXPORT_ENTITY,
     CONF_GRID_IMPORT_ENTITY,
     CONF_HIGH_THRESHOLD,
-    CONF_HOUSEHOLD_BASE_LOAD_W,
     CONF_LOW_THRESHOLD,
     CONF_NORDPOOL_PRICES_SENSOR,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
     CONF_POWER_ENTITY,
     CONF_POOL_PUMP_POWER_ENTITY,
     CONF_POOL_PUMP_POWER_W,
+    CONF_POWER_METER_CONSUMPTION,
+    CONF_WATER_HEATER_ACTIVE_ENTITY,
     CONF_WATER_HEATER_MAX_HOURS,
     CONF_WATER_HEATER_POWER_ENTITY,
     CONF_WATER_HEATER_POWER_W,
@@ -165,8 +167,8 @@ async def test_validate_nordpool_prices_sensor_defaults():
 
 
 @pytest.mark.asyncio
-async def test_options_flow_contains_solar_and_battery_fields() -> None:
-    """Test options flow includes solar and battery configuration fields."""
+async def test_options_flow_init_step_contains_price_and_threshold_fields() -> None:
+    """Test options flow init step only contains price source and threshold fields."""
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
@@ -180,26 +182,36 @@ async def test_options_flow_contains_solar_and_battery_fields() -> None:
     schema = result["data_schema"].schema
     schema_keys = [getattr(k, "schema", k) for k in schema]
 
-    assert CONF_FORECAST_ENTITY in schema_keys
-    assert CONF_POWER_ENTITY in schema_keys
-    assert CONF_FORECAST_TOMORROW_ENTITY in schema_keys
-    assert CONF_BATTERY_CAPACITY_KWH in schema_keys
-    assert CONF_BATTERY_MAX_CHARGE_POWER_W in schema_keys
-    assert CONF_BATTERY_DEGRADATION_COST in schema_keys
-    assert CONF_BATTERY_SOC_ENTITY in schema_keys
-    assert CONF_BATTERY_CHARGE_POWER_ENTITY in schema_keys
-    assert CONF_GRID_IMPORT_ENTITY in schema_keys
-    assert CONF_GRID_EXPORT_ENTITY in schema_keys
+    assert CONF_NORDPOOL_PRICES_SENSOR in schema_keys
+    assert CONF_LOW_THRESHOLD in schema_keys
+    assert CONF_HIGH_THRESHOLD in schema_keys
+    # Battery and solar fields belong to later steps, not init.
+    assert CONF_FORECAST_ENTITY not in schema_keys
+    assert CONF_BATTERY_CAPACITY_KWH not in schema_keys
+
+
+@pytest.mark.asyncio
+async def test_options_flow_household_step_contains_new_load_fields() -> None:
+    """Test options flow household step contains the base-load learning entities."""
+    config_entry = MagicMock()
+    config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
+
+    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler._config_entry = config_entry
+    handler.current_options = dict(config_entry.options)
+    handler.unit_of_measurement = "EUR/kWh"
+    hass = MagicMock()
+    hass.states.get.return_value = None
+    handler.hass = hass
+
+    result = await handler.async_step_household()
+    schema = result["data_schema"].schema
+    schema_keys = [getattr(k, "schema", k) for k in schema]
+
+    assert CONF_POWER_METER_CONSUMPTION in schema_keys
     assert CONF_OUTDOOR_TEMPERATURE_ENTITY in schema_keys
-    assert CONF_HOUSEHOLD_BASE_LOAD_W in schema_keys
-    assert CONF_WATER_HEATER_POWER_ENTITY in schema_keys
-    assert CONF_WATER_HEATER_POWER_W in schema_keys
-    assert CONF_WATER_HEATER_MAX_HOURS in schema_keys
-    assert CONF_BATHROOM_HUMIDITY_ENTITY in schema_keys
-    assert CONF_POOL_PUMP_POWER_ENTITY in schema_keys
-    assert CONF_POOL_PUMP_POWER_W in schema_keys
-    assert CONF_DEHUMIDIFIER_POWER_ENTITY in schema_keys
-    assert CONF_DEHUMIDIFIER_POWER_W in schema_keys
+    assert CONF_WATER_HEATER_ACTIVE_ENTITY in schema_keys
+    assert CONF_CENTRAL_HEATING_ACTIVE_ENTITY in schema_keys
 
 
 @pytest.mark.asyncio
@@ -355,7 +367,7 @@ async def test_main_flow_valid_solar_forecast_proceeds_to_battery() -> None:
 async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
     monkeypatch,
 ) -> None:
-    """Test battery step uses dev defaults for new optimizer inputs."""
+    """Test battery step uses dev defaults for battery hardware inputs."""
     monkeypatch.setattr(config_flow_module, "DEV_DEFAULTS_ENABLED", True)
     monkeypatch.setattr(
         config_flow_module,
@@ -363,17 +375,6 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
         {
             CONF_BATTERY_SOC_ENTITY: "sensor.remote_batterysoc",
             CONF_BATTERY_CHARGE_POWER_ENTITY: "sensor.remote_batterychargepower",
-            CONF_GRID_IMPORT_ENTITY: "sensor.remote_gridimport",
-            CONF_GRID_EXPORT_ENTITY: "sensor.remote_gridexport",
-            CONF_HOUSEHOLD_BASE_LOAD_W: 600.0,
-            CONF_WATER_HEATER_POWER_ENTITY: "sensor.remote_waterheaterpower",
-            CONF_WATER_HEATER_POWER_W: 3500.0,
-            CONF_WATER_HEATER_MAX_HOURS: 4.0,
-            CONF_BATHROOM_HUMIDITY_ENTITY: "sensor.remote_bathroomhumidity",
-            CONF_POOL_PUMP_POWER_ENTITY: "sensor.remote_poolpumppower",
-            CONF_POOL_PUMP_POWER_W: 500.0,
-            CONF_DEHUMIDIFIER_POWER_ENTITY: "sensor.remote_dehumidifierpower",
-            CONF_DEHUMIDIFIER_POWER_W: 1500.0,
         },
     )
 
@@ -393,19 +394,6 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
         validated[CONF_BATTERY_CHARGE_POWER_ENTITY]
         == "sensor.remote_batterychargepower"
     )
-    assert validated[CONF_GRID_IMPORT_ENTITY] == "sensor.remote_gridimport"
-    assert validated[CONF_GRID_EXPORT_ENTITY] == "sensor.remote_gridexport"
-    assert validated[CONF_HOUSEHOLD_BASE_LOAD_W] == 600.0
-    assert validated[CONF_WATER_HEATER_POWER_ENTITY] == "sensor.remote_waterheaterpower"
-    assert validated[CONF_WATER_HEATER_POWER_W] == 3500.0
-    assert validated[CONF_WATER_HEATER_MAX_HOURS] == 4.0
-    assert validated[CONF_BATHROOM_HUMIDITY_ENTITY] == "sensor.remote_bathroomhumidity"
-    assert validated[CONF_POOL_PUMP_POWER_ENTITY] == "sensor.remote_poolpumppower"
-    assert validated[CONF_POOL_PUMP_POWER_W] == 500.0
-    assert (
-        validated[CONF_DEHUMIDIFIER_POWER_ENTITY] == "sensor.remote_dehumidifierpower"
-    )
-    assert validated[CONF_DEHUMIDIFIER_POWER_W] == 1500.0
 
 
 @pytest.mark.asyncio
@@ -448,9 +436,8 @@ async def test_main_flow_battery_rejects_missing_optimizer_entity() -> None:
 
 @pytest.mark.asyncio
 async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() -> None:
-    """Test battery step creates the entry and keeps a zero degradation margin."""
-    handler = ElectricityPriceLevelFlowHandler()
-    handler.data = {
+    """Test the full battery→flexible_loads chain creates an entry with zero margin."""
+    base_data = {
         CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
         "unit_of_measurement": "EUR/kWh",
         "currency": "EUR",
@@ -463,13 +450,21 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
         "sensor.battery_charge_power": _make_state("1200"),
         "sensor.grid_import": _make_state("200"),
         "sensor.grid_export": _make_state("50"),
+        "sensor.power_meter": _make_state("12.5"),
+        "sensor.outdoor_temp": _make_state("15"),
+        "binary_sensor.water_heater_active": _make_state("off"),
+        "binary_sensor.heating_active": _make_state("off"),
         "sensor.water_heater_power": _make_state("0"),
         "sensor.bathroom_humidity": _make_state("65"),
         "sensor.pool_pump_power": _make_state("0"),
         "sensor.dehumidifier_power": _make_state("0"),
     }.get(entity_id)
+
+    handler = ElectricityPriceLevelFlowHandler()
+    handler.data = dict(base_data)
     handler.hass = hass
 
+    # Step: battery hardware
     result = await handler.async_step_battery(
         {
             CONF_BATTERY_CAPACITY_KWH: 10.0,
@@ -477,72 +472,82 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
             CONF_BATTERY_DEGRADATION_COST: 0.0,
             CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
             CONF_BATTERY_CHARGE_POWER_ENTITY: "sensor.battery_charge_power",
+        }
+    )
+    assert result["step_id"] == "grid_metering"
+
+    # Step: grid metering
+    result = await handler.async_step_grid_metering(
+        {
             CONF_GRID_IMPORT_ENTITY: "sensor.grid_import",
             CONF_GRID_EXPORT_ENTITY: "sensor.grid_export",
-            CONF_HOUSEHOLD_BASE_LOAD_W: 600.0,
+        }
+    )
+    assert result["step_id"] == "household"
+
+    # Step: household load
+    result = await handler.async_step_household(
+        {
+            CONF_POWER_METER_CONSUMPTION: "sensor.power_meter",
+            CONF_OUTDOOR_TEMPERATURE_ENTITY: "sensor.outdoor_temp",
+            CONF_WATER_HEATER_ACTIVE_ENTITY: "binary_sensor.water_heater_active",
+            CONF_CENTRAL_HEATING_ACTIVE_ENTITY: "binary_sensor.heating_active",
+        }
+    )
+    assert result["step_id"] == "hot_water"
+
+    # Step: water heater
+    result = await handler.async_step_hot_water(
+        {
             CONF_WATER_HEATER_POWER_ENTITY: "sensor.water_heater_power",
             CONF_WATER_HEATER_POWER_W: 3500.0,
             CONF_WATER_HEATER_MAX_HOURS: 4.0,
             CONF_BATHROOM_HUMIDITY_ENTITY: "sensor.bathroom_humidity",
+        }
+    )
+    assert result["step_id"] == "flexible_loads"
+
+    # Step: flexible loads — creates the entry
+    result = await handler.async_step_flexible_loads(
+        {
             CONF_POOL_PUMP_POWER_ENTITY: "sensor.pool_pump_power",
             CONF_POOL_PUMP_POWER_W: 500.0,
             CONF_DEHUMIDIFIER_POWER_ENTITY: "sensor.dehumidifier_power",
             CONF_DEHUMIDIFIER_POWER_W: 1500.0,
         }
     )
-
     assert result["type"] == "create_entry"
     assert result["options"][CONF_BATTERY_CAPACITY_KWH] == 10.0
-    assert result["options"][CONF_BATTERY_MAX_CHARGE_POWER_W] == 5000.0
     assert result["options"][CONF_BATTERY_DEGRADATION_COST] == 0.0
     assert result["options"][CONF_BATTERY_SOC_ENTITY] == "sensor.battery_soc"
-    assert (
-        result["options"][CONF_BATTERY_CHARGE_POWER_ENTITY]
-        == "sensor.battery_charge_power"
-    )
     assert result["options"][CONF_GRID_IMPORT_ENTITY] == "sensor.grid_import"
-    assert result["options"][CONF_GRID_EXPORT_ENTITY] == "sensor.grid_export"
-    assert result["options"][CONF_HOUSEHOLD_BASE_LOAD_W] == 600.0
-    assert (
-        result["options"][CONF_WATER_HEATER_POWER_ENTITY] == "sensor.water_heater_power"
-    )
+    assert result["options"][CONF_POWER_METER_CONSUMPTION] == "sensor.power_meter"
+    assert result["options"][CONF_WATER_HEATER_ACTIVE_ENTITY] == "binary_sensor.water_heater_active"
+    assert result["options"][CONF_CENTRAL_HEATING_ACTIVE_ENTITY] == "binary_sensor.heating_active"
     assert result["options"][CONF_WATER_HEATER_POWER_W] == 3500.0
-    assert result["options"][CONF_WATER_HEATER_MAX_HOURS] == 4.0
-    assert (
-        result["options"][CONF_BATHROOM_HUMIDITY_ENTITY] == "sensor.bathroom_humidity"
-    )
-    assert result["options"][CONF_POOL_PUMP_POWER_ENTITY] == "sensor.pool_pump_power"
     assert result["options"][CONF_POOL_PUMP_POWER_W] == 500.0
-    assert (
-        result["options"][CONF_DEHUMIDIFIER_POWER_ENTITY] == "sensor.dehumidifier_power"
-    )
     assert result["options"][CONF_DEHUMIDIFIER_POWER_W] == 1500.0
 
 
 @pytest.mark.asyncio
 async def test_options_flow_requires_solar_power_pair() -> None:
-    """Test options flow requires forecast and power entities together."""
+    """Test options flow solar step requires forecast and power entities together."""
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
     handler = ElectricityPriceLevelOptionFlowHandler()
     handler._config_entry = config_entry
+    handler.current_options = dict(config_entry.options)
+    handler.unit_of_measurement = "EUR/kWh"
 
     hass = MagicMock()
     hass.states.get.side_effect = lambda entity_id: {
-        "sensor.nordpool_prices": _make_state(
-            attributes={
-                "unit_of_measurement": "EUR/kWh",
-                "currency": "EUR",
-            }
-        ),
         "sensor.solar_today": _make_state("500"),
     }.get(entity_id)
     handler.hass = hass
 
-    result = await handler.async_step_init(
+    result = await handler.async_step_solar_forecast(
         {
-            CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
             CONF_FORECAST_ENTITY: "sensor.solar_today",
         }
     )
@@ -553,29 +558,24 @@ async def test_options_flow_requires_solar_power_pair() -> None:
 
 @pytest.mark.asyncio
 async def test_options_flow_rejects_missing_tomorrow_entity() -> None:
-    """Test options flow validates the optional tomorrow forecast entity."""
+    """Test options flow solar step validates the optional tomorrow forecast entity."""
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
     handler = ElectricityPriceLevelOptionFlowHandler()
     handler._config_entry = config_entry
+    handler.current_options = dict(config_entry.options)
+    handler.unit_of_measurement = "EUR/kWh"
 
     hass = MagicMock()
     hass.states.get.side_effect = lambda entity_id: {
-        "sensor.nordpool_prices": _make_state(
-            attributes={
-                "unit_of_measurement": "EUR/kWh",
-                "currency": "EUR",
-            }
-        ),
         "sensor.solar_today": _make_state("500"),
         "sensor.inverter_power": _make_state("1500"),
     }.get(entity_id)
     handler.hass = hass
 
-    result = await handler.async_step_init(
+    result = await handler.async_step_solar_forecast(
         {
-            CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
             CONF_FORECAST_ENTITY: "sensor.solar_today",
             CONF_POWER_ENTITY: "sensor.inverter_power",
             CONF_FORECAST_TOMORROW_ENTITY: "sensor.solar_tomorrow",
@@ -588,27 +588,21 @@ async def test_options_flow_rejects_missing_tomorrow_entity() -> None:
 
 @pytest.mark.asyncio
 async def test_options_flow_requires_battery_capacity_and_power_together() -> None:
-    """Test options flow requires battery capacity and max power together."""
+    """Test options flow battery step requires capacity and max power together."""
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
     handler = ElectricityPriceLevelOptionFlowHandler()
     handler._config_entry = config_entry
+    handler.current_options = dict(config_entry.options)
+    handler.unit_of_measurement = "EUR/kWh"
 
     hass = MagicMock()
-    hass.states.get.side_effect = lambda entity_id: {
-        "sensor.nordpool_prices": _make_state(
-            attributes={
-                "unit_of_measurement": "EUR/kWh",
-                "currency": "EUR",
-            }
-        ),
-    }.get(entity_id)
+    hass.states.get.return_value = None
     handler.hass = hass
 
-    result = await handler.async_step_init(
+    result = await handler.async_step_battery(
         {
-            CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
             CONF_BATTERY_CAPACITY_KWH: 10.0,
         }
     )
@@ -621,27 +615,21 @@ async def test_options_flow_requires_battery_capacity_and_power_together() -> No
 
 @pytest.mark.asyncio
 async def test_options_flow_rejects_missing_optimizer_entity() -> None:
-    """Test options flow validates optional optimizer entities when provided."""
+    """Test options flow battery step validates optional optimizer entities when provided."""
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
     handler = ElectricityPriceLevelOptionFlowHandler()
     handler._config_entry = config_entry
+    handler.current_options = dict(config_entry.options)
+    handler.unit_of_measurement = "EUR/kWh"
 
     hass = MagicMock()
-    hass.states.get.side_effect = lambda entity_id: {
-        "sensor.nordpool_prices": _make_state(
-            attributes={
-                "unit_of_measurement": "EUR/kWh",
-                "currency": "EUR",
-            }
-        ),
-    }.get(entity_id)
+    hass.states.get.return_value = None
     handler.hass = hass
 
-    result = await handler.async_step_init(
+    result = await handler.async_step_battery(
         {
-            CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
             CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
         }
     )
@@ -673,27 +661,55 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
     }.get(entity_id)
     handler.hass = hass
 
+    # Step through the full options flow to reach create_entry.
     result = await handler.async_step_init(
+        {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
+    )
+    assert result["step_id"] == "supplier_fees_and_credits"
+
+    result = await handler.async_step_supplier_fees_and_credits({})
+    assert result["step_id"] == "grid_fees_and_credits"
+
+    result = await handler.async_step_grid_fees_and_credits({})
+    assert result["step_id"] == "taxes_and_vat"
+
+    result = await handler.async_step_taxes_and_vat({})
+    assert result["step_id"] == "solar_forecast"
+
+    result = await handler.async_step_solar_forecast({})
+    assert result["step_id"] == "battery"
+
+    result = await handler.async_step_battery(
         {
-            CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
             CONF_BATTERY_CAPACITY_KWH: 10.0,
             CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
             CONF_BATTERY_DEGRADATION_COST: 0.0,
-            CONF_OUTDOOR_TEMPERATURE_ENTITY: "sensor.outdoor_temperature",
-            CONF_HOUSEHOLD_BASE_LOAD_W: 600.0,
+        }
+    )
+    assert result["step_id"] == "grid_metering"
+
+    result = await handler.async_step_grid_metering({})
+    assert result["step_id"] == "household"
+
+    result = await handler.async_step_household(
+        {CONF_OUTDOOR_TEMPERATURE_ENTITY: "sensor.outdoor_temperature"}
+    )
+    assert result["step_id"] == "hot_water"
+
+    result = await handler.async_step_hot_water(
+        {
             CONF_WATER_HEATER_POWER_ENTITY: "sensor.water_heater_power",
             CONF_WATER_HEATER_POWER_W: 3500.0,
             CONF_WATER_HEATER_MAX_HOURS: 4.0,
             CONF_BATHROOM_HUMIDITY_ENTITY: "sensor.bathroom_humidity",
         }
     )
+    assert result["step_id"] == "flexible_loads"
 
+    result = await handler.async_step_flexible_loads({})
     assert result["type"] == "create_entry"
     assert result["data"][CONF_BATTERY_DEGRADATION_COST] == 0.0
-    assert (
-        result["data"][CONF_OUTDOOR_TEMPERATURE_ENTITY] == "sensor.outdoor_temperature"
-    )
-    assert result["data"][CONF_HOUSEHOLD_BASE_LOAD_W] == 600.0
+    assert result["data"][CONF_OUTDOOR_TEMPERATURE_ENTITY] == "sensor.outdoor_temperature"
     assert result["data"][CONF_WATER_HEATER_POWER_ENTITY] == "sensor.water_heater_power"
     assert result["data"][CONF_WATER_HEATER_POWER_W] == 3500.0
     assert result["data"][CONF_WATER_HEATER_MAX_HOURS] == 4.0

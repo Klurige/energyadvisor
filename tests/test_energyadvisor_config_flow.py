@@ -80,6 +80,17 @@ async def test_battery_step_creates_energy_advisor_entry_title():
             CONF_BATTERY_DEGRADATION_COST: None,
         }
     )
+    assert result["step_id"] == "grid_metering"
 
+    result = await handler.async_step_grid_metering({})
+    assert result["step_id"] == "household"
+
+    result = await handler.async_step_household({})
+    assert result["step_id"] == "hot_water"
+
+    result = await handler.async_step_hot_water({})
+    assert result["step_id"] == "flexible_loads"
+
+    result = await handler.async_step_flexible_loads({})
     assert result["type"] == "create_entry"
     assert result["title"] == "Energy Advisor"

@@ -21,7 +21,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_change,
+)
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from ..const import (
@@ -29,7 +33,10 @@ from ..const import (
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_SOC_ENTITY,
+    CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
+    CONF_POWER_METER_CONSUMPTION,
+    CONF_WATER_HEATER_ACTIVE_ENTITY,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
 )
@@ -56,8 +63,18 @@ _DEFAULT_DISCHARGE_EFFICIENCY = 0.95
 _ENERGY_EPSILON_KWH = 0.05
 _FORECAST_SLOT_MINUTES = 15
 _MIN_USEFUL_SOLAR_KW = 0.05
+_MIN_SOLAR_DOMINANT_KWH = 1.0  # Daily solar threshold to select solar-aware strategy.
 _SUMMER_SELL_WINDOWS = ((0, 10 * 60), (17 * 60, 24 * 60))
 _SUMMER_SELL_SLOTS_PER_DAY = 6
+
+# Base-load learning: quiet-night window is 01:00–04:00.
+_LEARNING_WINDOW_START_HOUR = 1
+_LEARNING_WINDOW_END_HOUR = 4
+_LEARNING_WINDOW_HOURS = float(_LEARNING_WINDOW_END_HOUR - _LEARNING_WINDOW_START_HOUR)
+_MAX_LEARNING_HISTORY = 30  # Rolling average over the last 30 valid nights.
+
+_STORAGE_KEY = "energyadvisor_battery_base_load"
+_STORAGE_VERSION = 1
 
 _WAITING_FOR_RATES_REASON = "Waiting for electricity price data."
 _OUTSIDE_HORIZON_REASON = (
@@ -79,6 +96,13 @@ _BATTERY_OUTPUT_BLOCKED_RESERVE_REASON = (
     "Battery output is blocked because the battery is already at its reserve floor."
 )
 _BATTERY_OUTPUT_BLOCKED_ENERGY_REASON = "Battery output is blocked because the usable battery energy above reserve cannot cover the remaining slot."
+_SELL_FLOOR_BLOCKED_REASON = (
+    "Sell downgraded to maxuse — not enough energy to reach the next solar window."
+)
+_NO_BASE_LOAD_REASON = (
+    "Waiting for the first quiet night (01:00–04:00 with water heater and central heating "
+    "both off) to learn household base load. Battery floor is not enforced yet."
+)
 _BATTERY_OUTPUT_MODES = frozenset({"maxuse", "discharge", "sell"})
 
 
@@ -355,6 +379,136 @@ def _classify_output_modes(charge_entries: list[dict], margin: float) -> None:
             entry["mode"] = "maxuse"
 
 
+def _is_solar_dominant(solar_entries: list[dict]) -> bool:
+    """Return True when today's solar forecast exceeds the awareness threshold."""
+    if not solar_entries:
+        return False
+    total_kwh = sum(
+        e.get("pow", 0.0) * (_FORECAST_SLOT_MINUTES / 60.0)
+        for e in solar_entries
+        if e.get("pow", 0.0) > _MIN_USEFUL_SOLAR_KW
+    )
+    return total_kwh >= _MIN_SOLAR_DOMINANT_KWH
+
+
+def _find_solar_window(
+    solar_entries: list[dict], now: datetime
+) -> tuple[datetime | None, datetime | None]:
+    """Return (solar_start, solar_end) of today's future production window."""
+    today = now.date()
+    local_tz = now.tzinfo
+    solar_start: datetime | None = None
+    solar_end: datetime | None = None
+    for entry in solar_entries:
+        end_str = entry.get("end")
+        if not end_str:
+            continue
+        try:
+            entry_end = datetime.fromisoformat(end_str)
+            if entry_end.tzinfo is None and local_tz is not None:
+                entry_end = entry_end.replace(tzinfo=local_tz)
+        except ValueError:
+            continue
+        entry_start = entry_end - timedelta(minutes=_FORECAST_SLOT_MINUTES)
+        if entry_start.date() != today:
+            continue
+        if entry_end <= now:
+            continue
+        if entry.get("pow", 0.0) <= _MIN_USEFUL_SOLAR_KW:
+            continue
+        if solar_start is None:
+            solar_start = entry_start
+        solar_end = entry_end
+    return solar_start, solar_end
+
+
+def _compute_floor_kwh(
+    charge_entries: list[dict],
+    solar_entries: list[dict],
+    now: datetime,
+    base_load_kw: float,
+    battery_capacity_kwh: float,
+    reserve_fraction: float,
+) -> tuple[float, float]:
+    """Return (floor_kwh, required_load_kwh) for the current moment.
+
+    floor_kwh = reserve + nighttime_load + daytime_solar_deficit
+
+    The battery should not go below floor_kwh so there is enough energy to
+    cover house load until solar can take over, plus any daytime deficit on
+    weak-solar days.
+    """
+    reserve_kwh = battery_capacity_kwh * reserve_fraction
+    solar_start, solar_end = _find_solar_window(solar_entries, now)
+
+    # Nighttime load: sum base load from now until the solar window opens.
+    horizon = solar_start if solar_start is not None else (
+        charge_entries[-1]["end"] if charge_entries else now
+    )
+    nighttime_load_kwh = 0.0
+    for entry in charge_entries:
+        if entry["end"] <= now:
+            continue
+        if entry["start"] >= horizon:
+            break
+        effective_start = max(entry["start"], now)
+        effective_end = min(entry["end"], horizon)
+        hours = max(0.0, (effective_end - effective_start).total_seconds() / 3600.0)
+        nighttime_load_kwh += base_load_kw * hours
+
+    # Daytime deficit: how much of the daytime load solar won't cover.
+    daytime_deficit_kwh = 0.0
+    if solar_start is not None and solar_end is not None:
+        daytime_hours = max(0.0, (solar_end - solar_start).total_seconds() / 3600.0)
+        daytime_load_kwh = base_load_kw * daytime_hours
+
+        expected_solar_kwh = 0.0
+        for entry in solar_entries:
+            end_str = entry.get("end")
+            if not end_str:
+                continue
+            try:
+                entry_end = datetime.fromisoformat(end_str)
+                if entry_end.tzinfo is None and now.tzinfo is not None:
+                    entry_end = entry_end.replace(tzinfo=now.tzinfo)
+            except ValueError:
+                continue
+            entry_start = entry_end - timedelta(minutes=_FORECAST_SLOT_MINUTES)
+            if entry_start < solar_start or entry_end > solar_end:
+                continue
+            if entry.get("pow", 0.0) > _MIN_USEFUL_SOLAR_KW:
+                expected_solar_kwh += entry["pow"] * (_FORECAST_SLOT_MINUTES / 60.0)
+
+        daytime_deficit_kwh = max(0.0, daytime_load_kwh - expected_solar_kwh)
+
+    required_load_kwh = nighttime_load_kwh + daytime_deficit_kwh
+    floor_kwh = reserve_kwh + required_load_kwh
+    return min(floor_kwh, battery_capacity_kwh), required_load_kwh
+
+
+def _apply_price_arbitrage_strategy(
+    charge_entries: list[dict],
+    margin: float,
+    charging_time_minutes: int,
+    discharging_time_minutes: int,
+) -> None:
+    """Apply price-based charge/discharge scheduling for low-solar days.
+
+    Re-uses the existing peak/valley/extend/classify pipeline that was the
+    original battery algorithm. On days with minimal solar the battery is
+    treated as a pure price-arbitrage asset: charge cheap, sell/discharge
+    at expensive peaks.
+    """
+    if not charge_entries:
+        return
+    range_start = charge_entries[0]["start"]
+    range_end = charge_entries[-1]["end"]
+    _find_local_peaks(charge_entries, range_start, range_end, margin, discharging_time_minutes)
+    _find_local_valleys(charge_entries, margin, charging_time_minutes)
+    _extend_peaks(charge_entries)
+    _classify_output_modes(charge_entries, margin)
+
+
 def _parse_compact_rates(rates: list[dict]) -> list[dict]:
     """Parse compact rate dicts (from attributes) into datetime-based dicts.
 
@@ -398,20 +552,26 @@ def compute_charge_modes(
     margin,
     charging_time_minutes,
     discharging_time_minutes,
+    solar_entries=None,
 ):
-    """Compute the current summer battery mode for every price slot.
+    """Compute battery modes for every price slot.
+
+    Selects between two strategies based on the daily solar forecast:
+
+    - **Solar-aware** (expected solar ≥ threshold): default to `maxuse`,
+      mark the six highest-valued morning/evening slots as `sell`.
+    - **Price-arbitrage** (minimal solar): find cheap charge windows and
+      expensive discharge/sell windows using the price-spread algorithm.
 
     Args:
-        prices_arr: List of compact rate dicts with 'from' (ISO string) and 'cost' (float)
-                    — typically from the linked Electricity Price Levels sensor attributes.
-        margin: Minimum cost difference between peak and valley to justify a cycle.
-        charging_time_minutes: How long a full charge takes (minutes).
-        discharging_time_minutes: Expected discharge duration (minutes).
+        prices_arr: List of compact rate dicts with 'from', 'cost', 'credit'.
+        margin: Minimum cost spread to justify a charge/discharge cycle.
+        charging_time_minutes: Full-charge duration in minutes.
+        discharging_time_minutes: Expected discharge duration in minutes.
+        solar_entries: Optional refined solar forecast (15-min slots from the
+                       solar coordinator). Used to select the strategy.
     Returns:
-        List of dicts with 'start', 'end', 'mode', 'cost', and 'credit' keys.
-        Scheduled slots use `maxuse` by default, with the six highest-valued
-        slots per day inside the 00:00-10:00 and 17:00-24:00 windows marked as
-        `sell`.
+        List of dicts with 'start', 'end', 'mode', 'cost', 'credit'.
     """
     parsed = _parse_compact_rates(prices_arr)
     if not parsed:
@@ -428,7 +588,12 @@ def compute_charge_modes(
         for e in parsed
     ]
 
-    _apply_summer_sell_strategy(charge_entries)
+    if _is_solar_dominant(solar_entries or []):
+        _apply_summer_sell_strategy(charge_entries)
+    else:
+        _apply_price_arbitrage_strategy(
+            charge_entries, margin, charging_time_minutes, discharging_time_minutes
+        )
 
     return charge_entries
 
@@ -480,6 +645,18 @@ class BatteryChargeModeSensor(SensorEntity):
             degradation_cost if degradation_cost is not None else _DEFAULT_MARGIN
         )
 
+        # Entities for base-load learning.
+        self._power_meter_entity: str | None = entry.options.get(CONF_POWER_METER_CONSUMPTION)
+        self._water_heater_active_entity: str | None = entry.options.get(CONF_WATER_HEATER_ACTIVE_ENTITY)
+        self._central_heating_active_entity: str | None = entry.options.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)
+
+        # Learning state (populated from storage and updated nightly).
+        self._base_load_history: list[float] = []
+        self._meter_reading_at_01: float | None = None
+        self._learning_window_active: bool = False
+        self._quiet_night: bool = False
+        self._store: Store | None = None
+
         if capacity_kwh is not None and max_power_w is not None:
             max_power_kw = max_power_w / 1000.0
             self._charge_power_kw = max_power_kw
@@ -529,6 +706,42 @@ class BatteryChargeModeSensor(SensorEntity):
                     self._handle_constraint_source_update,
                 )
             )
+
+        # Base-load learning: snapshot meter at 01:00, evaluate at 04:00.
+        await self._load_learned_data()
+        if self._power_meter_entity:
+            self.async_on_remove(
+                async_track_time_change(
+                    self.hass,
+                    self._async_on_learning_window_start,
+                    hour=_LEARNING_WINDOW_START_HOUR,
+                    minute=0,
+                    second=0,
+                )
+            )
+            self.async_on_remove(
+                async_track_time_change(
+                    self.hass,
+                    self._async_on_learning_window_end,
+                    hour=_LEARNING_WINDOW_END_HOUR,
+                    minute=0,
+                    second=0,
+                )
+            )
+        big_consumers = [
+            e
+            for e in [self._water_heater_active_entity, self._central_heating_active_entity]
+            if e
+        ]
+        if big_consumers:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass,
+                    big_consumers,
+                    self._handle_big_consumer_change,
+                )
+            )
+
         if self._source_sensor.has_rates:
             await self._start_sensor()
 
@@ -554,6 +767,93 @@ class BatteryChargeModeSensor(SensorEntity):
         if self.hass is None or self._waiting_for_first_value:
             return
         self.hass.async_create_task(self._refresh_from_source())
+
+    # ------------------------------------------------------------------
+    # Base-load learning
+    # ------------------------------------------------------------------
+
+    async def _load_learned_data(self) -> None:
+        """Restore the base-load rolling average from HA storage."""
+        self._store = Store(self.hass, _STORAGE_VERSION, _STORAGE_KEY)
+        data = await self._store.async_load()
+        if data and isinstance(data.get("base_load_history"), list):
+            self._base_load_history = [
+                float(v)
+                for v in data["base_load_history"]
+                if isinstance(v, (int, float)) and math.isfinite(float(v)) and float(v) > 0
+            ]
+            if self._base_load_history:
+                self._household_base_load_kw = (
+                    sum(self._base_load_history) / len(self._base_load_history)
+                )
+                _LOGGER.debug(
+                    "Base load restored: %.3f kW from %d nights.",
+                    self._household_base_load_kw,
+                    len(self._base_load_history),
+                )
+
+    async def _save_learned_data(self) -> None:
+        """Persist the base-load rolling average to HA storage."""
+        if self._store is None:
+            return
+        await self._store.async_save({"base_load_history": self._base_load_history})
+
+    @callback
+    def _async_on_learning_window_start(self, now: datetime) -> None:
+        """At 01:00: snapshot the energy meter and open the quiet window."""
+        reading = self._read_entity_float_state(self._power_meter_entity)
+        if reading is None:
+            self._learning_window_active = False
+            return
+        self._meter_reading_at_01 = reading
+        self._learning_window_active = True
+        self._quiet_night = True
+
+    @callback
+    def _handle_big_consumer_change(self, event) -> None:
+        """Invalidate the quiet window if a big consumer turns on during it."""
+        if not self._learning_window_active:
+            return
+        new_state = event.data.get("new_state")
+        if new_state is not None and new_state.state in ("on", "true", "1"):
+            self._quiet_night = False
+
+    async def _async_on_learning_window_end(self, now: datetime) -> None:
+        """At 04:00: update base-load rolling average if the window was quiet."""
+        if not self._learning_window_active or self._meter_reading_at_01 is None:
+            self._learning_window_active = False
+            return
+
+        self._learning_window_active = False
+
+        if not self._quiet_night:
+            _LOGGER.debug("Base load learning: skipping — big consumer was active during 01:00–04:00.")
+            return
+
+        reading_04 = self._read_entity_float_state(self._power_meter_entity)
+        if reading_04 is None:
+            return
+
+        diff_kwh = reading_04 - self._meter_reading_at_01
+        if diff_kwh <= 0:
+            _LOGGER.debug("Base load learning: non-positive diff (%.3f kWh), skipping.", diff_kwh)
+            return
+
+        base_load_kw = diff_kwh / _LEARNING_WINDOW_HOURS
+        self._base_load_history.append(base_load_kw)
+        if len(self._base_load_history) > _MAX_LEARNING_HISTORY:
+            self._base_load_history.pop(0)
+
+        self._household_base_load_kw = (
+            sum(self._base_load_history) / len(self._base_load_history)
+        )
+        _LOGGER.info(
+            "Base load learning: updated to %.3f kW (%.3f kWh over 3 h, %d nights in average).",
+            self._household_base_load_kw,
+            diff_kwh,
+            len(self._base_load_history),
+        )
+        await self._save_learned_data()
 
     async def _start_sensor(self) -> None:
         if not self._waiting_for_first_value:
@@ -692,10 +992,57 @@ class BatteryChargeModeSensor(SensorEntity):
     def _apply_battery_constraints(
         self, planned_entries: list[dict], now: datetime
     ) -> list[dict]:
-        """Return the planned entries unchanged for the temporary summer strategy."""
+        """Apply SoC and battery-floor constraints to the planned schedule.
+
+        When base load is known:
+        - Compute a dynamic floor = reserve + nighttime load + daytime solar deficit.
+        - If battery is below the floor, downgrade sell → maxuse (stop exporting
+          but keep self-consuming) until the floor is met.
+        - If battery is at or below reserve, block all output → standby.
+
+        When base load is not yet learned:
+        - Only enforce the reserve floor on the current slot.
+        """
         adjusted = [entry.copy() for entry in planned_entries]
         self._reserved_kwh = 0.0
         self._required_load_kwh = 0.0
+
+        solar_entries = self._solar_forecast_entries()
+        soc_percent = self._battery_soc_percent()
+
+        # --- Floor calculation when we have both base load and battery size ---
+        if (
+            self._household_base_load_kw is not None
+            and self._battery_capacity_kwh is not None
+        ):
+            floor_kwh, self._required_load_kwh = _compute_floor_kwh(
+                adjusted,
+                solar_entries,
+                now,
+                self._household_base_load_kw,
+                self._battery_capacity_kwh,
+                _DEFAULT_RESERVE_FRACTION,
+            )
+            self._reserved_kwh = self._battery_capacity_kwh * _DEFAULT_RESERVE_FRACTION
+
+            if soc_percent is not None:
+                battery_kwh = self._battery_capacity_kwh * soc_percent / 100.0
+                reserve_kwh = self._battery_capacity_kwh * _DEFAULT_RESERVE_FRACTION
+                for entry in adjusted:
+                    if entry["mode"] not in _BATTERY_OUTPUT_MODES:
+                        continue
+                    if battery_kwh <= reserve_kwh:
+                        entry["mode"] = "standby"
+                        entry["constraint_reason"] = _BATTERY_OUTPUT_BLOCKED_RESERVE_REASON
+                    elif battery_kwh < floor_kwh and entry["mode"] == "sell":
+                        entry["mode"] = "maxuse"
+                        entry["constraint_reason"] = _SELL_FLOOR_BLOCKED_REASON
+            return adjusted
+
+        # --- Fallback: only SoC reserve check on current slot ---
+        if soc_percent is not None:
+            self._apply_threshold_constraint(adjusted, now, soc_percent)
+
         return adjusted
 
     def _recompute(self) -> int:
@@ -703,6 +1050,8 @@ class BatteryChargeModeSensor(SensorEntity):
         local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
         now = dt_util.now().astimezone(local_tz)
         rates = self._source_sensor.compact_rates
+        solar_entries = self._solar_forecast_entries()
+
         if not rates:
             self._last_plan_inputs_hash = None
             self._planned_charge_entries = []
@@ -711,9 +1060,14 @@ class BatteryChargeModeSensor(SensorEntity):
             self._required_load_kwh = 0.0
             return self._update_current_mode(now)
 
-        # Skip full recomputation if the price schedule has not changed.
+        # Include solar dominance in the hash so strategy re-selects when solar
+        # flips between dominant and minimal (e.g. morning forecast update).
+        solar_dominant = _is_solar_dominant(solar_entries)
         plan_inputs_hash = hash(
-            tuple((r.get("from"), r.get("cost"), r.get("credit")) for r in rates)
+            (
+                tuple((r.get("from"), r.get("cost"), r.get("credit")) for r in rates),
+                solar_dominant,
+            )
         )
         if plan_inputs_hash != self._last_plan_inputs_hash:
             self._last_plan_inputs_hash = plan_inputs_hash
@@ -722,6 +1076,7 @@ class BatteryChargeModeSensor(SensorEntity):
                 self._margin,
                 self._charging_time_minutes,
                 self._discharging_time_minutes,
+                solar_entries=solar_entries,
             )
 
         self._charge_entries = self._apply_battery_constraints(
@@ -790,6 +1145,8 @@ class BatteryChargeModeSensor(SensorEntity):
         if current_entry["mode"] == "charge":
             return _CHARGE_REASON
         if current_entry["mode"] == "maxuse":
+            if self._household_base_load_kw is None and self._power_meter_entity:
+                return _NO_BASE_LOAD_REASON
             return _MAXUSE_REASON
         if current_entry["mode"] == "discharge":
             return _DISCHARGE_REASON
@@ -884,6 +1241,11 @@ class BatteryChargeModeSensor(SensorEntity):
             ),
             "reserved_kwh": round(self._reserved_kwh, 3),
             "required_load_kwh": round(self._required_load_kwh, 3),
+            "base_load_kw": (
+                round(self._household_base_load_kw, 3)
+                if self._household_base_load_kw is not None
+                else None
+            ),
             "charge_source": "grid" if self._mode == "charge" else None,
         }
 

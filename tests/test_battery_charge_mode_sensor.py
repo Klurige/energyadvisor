@@ -12,7 +12,6 @@ from custom_components.energyadvisor.const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_SOC_ENTITY,
-    CONF_HOUSEHOLD_BASE_LOAD_W,
 )
 from custom_components.energyadvisor.sensor.batterychargemodesensor import (
     _DEFAULT_CHARGING_TIME_MINUTES as CHARGING_TIME_MINUTES,
@@ -26,6 +25,31 @@ from custom_components.energyadvisor.sensor.batterychargemodesensor import (
 )
 
 UTC = timezone.utc
+
+
+# ---------------------------------------------------------------------------
+# Module-level fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _always_solar_dominant():
+    """Make all tests default to the solar-aware strategy (no solar entries needed)."""
+    with patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor._is_solar_dominant",
+        return_value=True,
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_store():
+    """Prevent tests from touching HA persistent storage."""
+    with patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.BatteryChargeModeSensor._load_learned_data",
+        new_callable=AsyncMock,
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
