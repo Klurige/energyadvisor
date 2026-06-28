@@ -722,9 +722,17 @@ class SolarForecastCoordinator:
         available; callers can filter by the ``end`` timestamp if needed.
         """
         if not om_data:
-            _LOGGER.warning(
-                "No OM forecast data available from %s", self._forecast_entity
-            )
+            if self.forecast:
+                # Had data before — entity became unavailable or broken.
+                _LOGGER.warning(
+                    "No OM forecast data available from %s", self._forecast_entity
+                )
+            else:
+                # First attempt; likely a startup timing issue — retry is already scheduled.
+                _LOGGER.debug(
+                    "No OM forecast data yet from %s (startup timing — retry scheduled)",
+                    self._forecast_entity,
+                )
             return []
 
         now_utc = datetime.now(timezone.utc)
