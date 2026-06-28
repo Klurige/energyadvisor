@@ -350,6 +350,22 @@
           "discharge": "Urladdning",
           "sell": "Sälj"
         }
+      },
+      "base_load": {
+        "name": "Grundlast"
+      },
+      "strategy": {
+        "name": "Strategi",
+        "state": {
+          "solar_aware": "Solmedveten",
+          "price_arbitrage": "Prisarbitrage"
+        }
+      },
+      "battery_floor": {
+        "name": "Batterigolv"
+      },
+      "learning_nights": {
+        "name": "Inlärningsnätter"
       }
     }
   }

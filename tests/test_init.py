@@ -170,6 +170,11 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
         "compactlevels": "sensor.energy_advisor_compact_levels",
         "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
         "solarforecast": "sensor.energy_advisor_solar_forecast_refined",
+        # Diagnostic sensors are new — no legacy ID to migrate from.
+        "base_load": "sensor.energy_advisor_base_load",
+        "strategy": "sensor.energy_advisor_strategy",
+        "battery_floor": "sensor.energy_advisor_battery_floor",
+        "learning_nights": "sensor.energy_advisor_learning_nights",
     }
 
     for sensor_key, current_entity_id in current_entity_ids.items():

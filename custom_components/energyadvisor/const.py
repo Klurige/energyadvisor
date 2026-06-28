@@ -80,6 +80,10 @@ PREFERRED_SENSOR_ENTITY_IDS: dict[str, str] = {
     "compactlevels": "sensor.energy_advisor_compact_levels",
     "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
     "solarforecast": "sensor.energy_advisor_solar_forecast",
+    "base_load": "sensor.energy_advisor_base_load",
+    "strategy": "sensor.energy_advisor_strategy",
+    "battery_floor": "sensor.energy_advisor_battery_floor",
+    "learning_nights": "sensor.energy_advisor_learning_nights",
 }
 
 

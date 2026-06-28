@@ -350,6 +350,22 @@
           "discharge": "Discharge",
           "sell": "Sell"
         }
+      },
+      "base_load": {
+        "name": "Base Load"
+      },
+      "strategy": {
+        "name": "Strategy",
+        "state": {
+          "solar_aware": "Solar aware",
+          "price_arbitrage": "Price arbitrage"
+        }
+      },
+      "battery_floor": {
+        "name": "Battery Floor"
+      },
+      "learning_nights": {
+        "name": "Learning Nights"
       }
     }
   }

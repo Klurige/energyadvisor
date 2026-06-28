@@ -677,10 +677,12 @@ class BatteryChargeModeSensor(SensorEntity):
         self._cached_attributes: dict = {}
         self._reserved_kwh = 0.0
         self._required_load_kwh = 0.0
+        self._solar_dominant: bool = False
         self._last_plan_inputs_hash: int | None = None
         self._task: asyncio.Task | None = None
         self._remove_source_listener = None
         self._waiting_for_first_value = True
+        self._update_listeners: list = []
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -878,6 +880,46 @@ class BatteryChargeModeSensor(SensorEntity):
             self._task.cancel()
         await super().async_will_remove_from_hass()
 
+    # ------------------------------------------------------------------
+    # Public accessors for diagnostic sensors
+    # ------------------------------------------------------------------
+
+    def async_add_update_listener(self, listener) -> callable:
+        """Register a callback fired after every recomputation."""
+        self._update_listeners.append(listener)
+
+        def _remove():
+            if listener in self._update_listeners:
+                self._update_listeners.remove(listener)
+
+        return _remove
+
+    def _notify_update_listeners(self) -> None:
+        for listener in tuple(self._update_listeners):
+            listener()
+
+    @property
+    def household_base_load_w(self) -> float | None:
+        """Learned household base load in Watts, or None if not yet known."""
+        if self._household_base_load_kw is None:
+            return None
+        return self._household_base_load_kw * 1000.0
+
+    @property
+    def learning_nights(self) -> int:
+        """Number of quiet nights used in the rolling base-load average."""
+        return len(self._base_load_history)
+
+    @property
+    def solar_dominant(self) -> bool:
+        """True when today's solar forecast exceeds the awareness threshold."""
+        return self._solar_dominant
+
+    @property
+    def battery_floor_kwh(self) -> float:
+        """Energy (kWh) that must stay in the battery to cover load until solar."""
+        return self._required_load_kwh
+
     def _read_entity_float_state(self, entity_id: str | None) -> float | None:
         """Return a finite float state for the configured entity, if available."""
         if not entity_id or self.hass is None:
@@ -1063,6 +1105,7 @@ class BatteryChargeModeSensor(SensorEntity):
         # Include solar dominance in the hash so strategy re-selects when solar
         # flips between dominant and minimal (e.g. morning forecast update).
         solar_dominant = _is_solar_dominant(solar_entries)
+        self._solar_dominant = solar_dominant
         plan_inputs_hash = hash(
             (
                 tuple((r.get("from"), r.get("cost"), r.get("credit")) for r in rates),
@@ -1082,7 +1125,9 @@ class BatteryChargeModeSensor(SensorEntity):
         self._charge_entries = self._apply_battery_constraints(
             self._planned_charge_entries, now
         )
-        return self._update_current_mode(now)
+        result = self._update_current_mode(now)
+        self._notify_update_listeners()
+        return result
 
     def _find_current_entry(
         self, now: datetime, entries: list[dict] | None = None
