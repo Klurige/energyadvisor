@@ -149,7 +149,6 @@ class BatteryFloorSensor(_DiagnosticBase):
                 key="battery_floor",
                 translation_key="battery_floor",
                 native_unit_of_measurement="kWh",
-                device_class=SensorDeviceClass.ENERGY,
                 state_class=SensorStateClass.MEASUREMENT,
             ),
         )
