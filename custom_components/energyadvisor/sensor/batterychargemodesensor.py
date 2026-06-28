@@ -839,10 +839,14 @@ class BatteryChargeModeSensor(SensorEntity):
             return
 
         local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
-        today = dt_util.now().astimezone(local_tz).date()
+        now_local = dt_util.now().astimezone(local_tz)
+        today = now_local.date()
         bootstrapped: list[float] = []
 
-        for days_ago in range(1, _MAX_LEARNING_HISTORY + 1):
+        # Include today's window if it has already closed (current hour ≥ 04:00).
+        start_days_ago = 0 if now_local.hour >= _LEARNING_WINDOW_END_HOUR else 1
+
+        for days_ago in range(start_days_ago, _MAX_LEARNING_HISTORY + 1):
             night = today - timedelta(days=days_ago)
             window_start = datetime(
                 night.year, night.month, night.day,
@@ -869,6 +873,7 @@ class BatteryChargeModeSensor(SensorEntity):
                     quiet = False
                     break
             if not quiet:
+                _LOGGER.debug("Bootstrap: skipping %s — big consumer was active.", night)
                 continue
 
             # Query meter with a small buffer so we capture the reading
@@ -885,17 +890,27 @@ class BatteryChargeModeSensor(SensorEntity):
             reading_start = _last_float_state_at_or_before(states, window_start + timedelta(minutes=5))
             reading_end = _last_float_state_at_or_before(states, window_end + timedelta(minutes=5))
             if reading_start is None or reading_end is None:
+                _LOGGER.debug(
+                    "Bootstrap: skipping %s — no meter data (start=%s, end=%s, %d states).",
+                    night, reading_start, reading_end, len(states),
+                )
                 continue
 
             diff_kwh = reading_end - reading_start
             if not (0 < diff_kwh < 5.0):  # sanity: max ~1.67 kW average
+                _LOGGER.debug(
+                    "Bootstrap: skipping %s — diff %.3f kWh outside sanity band.",
+                    night, diff_kwh,
+                )
                 continue
 
+            _LOGGER.debug("Bootstrap: %s  base load %.3f kW (diff %.3f kWh).", night, diff_kwh / _LEARNING_WINDOW_HOURS, diff_kwh)
             bootstrapped.append(diff_kwh / _LEARNING_WINDOW_HOURS)
             if len(bootstrapped) >= _MAX_LEARNING_HISTORY:
                 break
 
         if not bootstrapped:
+            _LOGGER.debug("Bootstrap: no quiet nights found in recorder history.")
             return
 
         # Store in chronological order (oldest first, matching nightly appends).
