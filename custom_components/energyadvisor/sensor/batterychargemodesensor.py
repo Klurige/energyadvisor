@@ -547,6 +547,27 @@ def _parse_compact_rates(rates: list[dict]) -> list[dict]:
     return parsed
 
 
+def _last_float_state_at_or_before(states: list, cutoff: datetime) -> float | None:
+    """Return the float value of the last state recorded at or before *cutoff*.
+
+    States are assumed to be in chronological order (as returned by the recorder).
+    Returns None if no suitable state is found or the state value is not numeric.
+    """
+    best = None
+    for state in states:
+        if state.last_updated <= cutoff:
+            best = state
+        else:
+            break
+    if best is None:
+        return None
+    try:
+        value = float(str(best.state).replace(",", "."))
+        return value if math.isfinite(value) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def compute_charge_modes(
     prices_arr,
     margin,
@@ -793,6 +814,101 @@ class BatteryChargeModeSensor(SensorEntity):
                     self._household_base_load_kw,
                     len(self._base_load_history),
                 )
+
+        if not self._base_load_history:
+            await self._bootstrap_base_load_from_history()
+
+    async def _bootstrap_base_load_from_history(self) -> None:
+        """Pre-populate base-load history from the recorder on first run.
+
+        Queries the past 30 nights and for each quiet night (no big consumer
+        active during 01:00–04:00) computes base load from the energy meter
+        diff.  Runs only once; subsequent nights are added by the nightly hook.
+        """
+        if not self._power_meter_entity:
+            return
+
+        try:
+            from homeassistant.helpers.recorder import get_instance
+            from homeassistant.components.recorder import history as recorder_history
+        except ImportError:
+            return
+
+        recorder = get_instance(self.hass)
+        if recorder is None:
+            return
+
+        local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        today = dt_util.now().astimezone(local_tz).date()
+        bootstrapped: list[float] = []
+
+        for days_ago in range(1, _MAX_LEARNING_HISTORY + 1):
+            night = today - timedelta(days=days_ago)
+            window_start = datetime(
+                night.year, night.month, night.day,
+                _LEARNING_WINDOW_START_HOUR, 0, 0, tzinfo=local_tz,
+            )
+            window_end = datetime(
+                night.year, night.month, night.day,
+                _LEARNING_WINDOW_END_HOUR, 0, 0, tzinfo=local_tz,
+            )
+
+            # Check big consumers were off the whole window.
+            quiet = True
+            for consumer in [self._water_heater_active_entity, self._central_heating_active_entity]:
+                if not consumer:
+                    continue
+                consumer_states = await recorder.async_add_executor_job(
+                    recorder_history.state_changes_during_period,
+                    self.hass, window_start, window_end, consumer,
+                )
+                if any(
+                    s.state in ("on", "true", "1")
+                    for s in consumer_states.get(consumer, [])
+                ):
+                    quiet = False
+                    break
+            if not quiet:
+                continue
+
+            # Query meter with a small buffer so we capture the reading
+            # that was active at the start/end of the window.
+            meter_states = await recorder.async_add_executor_job(
+                recorder_history.state_changes_during_period,
+                self.hass,
+                window_start - timedelta(minutes=10),
+                window_end + timedelta(minutes=10),
+                self._power_meter_entity,
+            )
+            states = meter_states.get(self._power_meter_entity, [])
+
+            reading_start = _last_float_state_at_or_before(states, window_start + timedelta(minutes=5))
+            reading_end = _last_float_state_at_or_before(states, window_end + timedelta(minutes=5))
+            if reading_start is None or reading_end is None:
+                continue
+
+            diff_kwh = reading_end - reading_start
+            if not (0 < diff_kwh < 5.0):  # sanity: max ~1.67 kW average
+                continue
+
+            bootstrapped.append(diff_kwh / _LEARNING_WINDOW_HOURS)
+            if len(bootstrapped) >= _MAX_LEARNING_HISTORY:
+                break
+
+        if not bootstrapped:
+            return
+
+        # Store in chronological order (oldest first, matching nightly appends).
+        self._base_load_history = list(reversed(bootstrapped))
+        self._household_base_load_kw = (
+            sum(self._base_load_history) / len(self._base_load_history)
+        )
+        await self._save_learned_data()
+        _LOGGER.info(
+            "Base load bootstrapped from %d nights of recorder history: %.3f kW.",
+            len(self._base_load_history),
+            self._household_base_load_kw,
+        )
 
     async def _save_learned_data(self) -> None:
         """Persist the base-load rolling average to HA storage."""
