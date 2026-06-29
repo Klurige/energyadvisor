@@ -1302,9 +1302,10 @@ class BatteryChargeModeSensor(SensorEntity):
         """Forecast battery SoC% over the planned charge schedule.
 
         Simulates energy flows forward from the current actual SoC through every
-        planned charge slot. Solar forecast offsets discharge in maxuse slots.
+        FUTURE planned charge slot. Past slots are skipped; the current
+        partially-elapsed slot uses only its remaining duration.
 
-        Returns a list of {end: str, soc_pct: float}, one per planned slot.
+        Returns a list of {end: str, soc_pct: float}, one per future slot.
         Returns an empty list when required inputs (SoC reading, capacity, plan)
         are not available.
         """
@@ -1313,7 +1314,10 @@ class BatteryChargeModeSensor(SensorEntity):
         soc_pct = self._battery_soc_percent()
         if soc_pct is None:
             return []
+        if self.hass is None:
+            return []
 
+        now = dt_util.now()
         capacity_kwh = self._battery_capacity_kwh
         base_load_kw = self._household_base_load_kw or 0.0
         charge_power_kw = self._charge_power_kw or 0.0
@@ -1324,8 +1328,16 @@ class BatteryChargeModeSensor(SensorEntity):
         result: list[dict] = []
 
         for entry in self._charge_entries:
+            if entry["end"] <= now:
+                continue  # skip fully elapsed slots
+
+            # For the current partially-elapsed slot, use only remaining time.
+            slot_start = max(entry["start"], now)
+            slot_hours = (entry["end"] - slot_start).total_seconds() / 3600.0
+            if slot_hours <= 0:
+                continue
+
             mode = entry["mode"]
-            slot_hours = (entry["end"] - entry["start"]).total_seconds() / 3600.0
             solar_kw = _solar_kw_for_slot(solar_entries, entry["start"], entry["end"])
 
             if mode == "charge":
