@@ -35,6 +35,8 @@ from ..const import (
     CONF_BATTERY_SOC_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
+    CONF_GRID_EXPORT_ENTITY,
+    CONF_GRID_IMPORT_ENTITY,
     CONF_POWER_ENTITY,
     CONF_POWER_METER_CONSUMPTION,
     CONF_WATER_HEATER_ACTIVE_ENTITY,
@@ -670,6 +672,8 @@ class BatteryChargeModeSensor(SensorEntity):
         # Entities for base-load learning.
         self._power_entity: str | None = entry.options.get(CONF_POWER_ENTITY)
         self._power_meter_entity: str | None = entry.options.get(CONF_POWER_METER_CONSUMPTION)
+        self._grid_import_entity: str | None = entry.options.get(CONF_GRID_IMPORT_ENTITY)
+        self._grid_export_entity: str | None = entry.options.get(CONF_GRID_EXPORT_ENTITY)
         self._water_heater_active_entity: str | None = entry.options.get(CONF_WATER_HEATER_ACTIVE_ENTITY)
         self._central_heating_active_entity: str | None = entry.options.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)
 
@@ -1002,13 +1006,15 @@ class BatteryChargeModeSensor(SensorEntity):
         window_start: datetime,
         window_end: datetime,
     ) -> float | None:
-        """Return the trimmed-mean power (kW) from recorder history over [window_start, window_end].
+        """Compute average household power draw (kW) over the window.
 
-        Reads ``_power_entity`` (inverter/house power in W) from the recorder and
-        computes a robust average: readings above 2.5× the median are dropped as
-        big-consumer spikes before averaging.  Returns None if fewer than 6 valid
-        readings exist, if more than half are filtered out (persistent large load),
-        or if the result falls outside the 50 W – 3000 W sanity band.
+        household_kW = trimmed_avg(power_entity W)/1000 + avg(grid_import kW) - avg(grid_export kW)
+
+        power_entity is the inverter AC output (solar + battery net), in Watts.
+        grid_import and grid_export are the net grid flows, in kW.
+        Readings of power_entity above 2.5× the median are dropped as big-consumer
+        spikes before averaging.  Returns None if fewer than 6 valid readings exist,
+        more than half are filtered, or the result falls outside 50 W – 3000 W.
         """
         if not self._power_entity:
             return None
@@ -1022,14 +1028,13 @@ class BatteryChargeModeSensor(SensorEntity):
         if rec is None:
             return None
 
+        # --- Inverter power (W): outlier-filtered trimmed mean ---
         states_dict = await rec.async_add_executor_job(
             recorder_history.state_changes_during_period,
             self.hass, window_start, window_end, self._power_entity,
         )
-        raw_states = states_dict.get(self._power_entity, [])
-
         values: list[float] = []
-        for s in raw_states:
+        for s in states_dict.get(self._power_entity, []):
             try:
                 v = float(s.state)
                 if v >= 0:
@@ -1055,12 +1060,38 @@ class BatteryChargeModeSensor(SensorEntity):
             )
             return None
 
-        avg_w = sum(filtered) / len(filtered)
-        if not (50.0 < avg_w < 3000.0):
-            _LOGGER.debug("Power averaging: result %.0f W outside sanity band.", avg_w)
+        avg_inverter_kw = sum(filtered) / len(filtered) / 1000.0
+
+        # --- Grid import/export correction (kW) ---
+        # house_use = inverter_output + grid_import - grid_export
+        grid_correction_kw = 0.0
+        for entity, sign in [
+            (self._grid_import_entity, +1.0),
+            (self._grid_export_entity, -1.0),
+        ]:
+            if not entity:
+                continue
+            states_dict = await rec.async_add_executor_job(
+                recorder_history.state_changes_during_period,
+                self.hass, window_start, window_end, entity,
+            )
+            grid_vals: list[float] = []
+            for s in states_dict.get(entity, []):
+                try:
+                    v = float(s.state)
+                    if v >= 0:
+                        grid_vals.append(v)
+                except (TypeError, ValueError):
+                    pass
+            if grid_vals:
+                grid_correction_kw += sign * (sum(grid_vals) / len(grid_vals))
+
+        result_kw = avg_inverter_kw + grid_correction_kw
+        if not (0.05 < result_kw < 3.0):
+            _LOGGER.debug("Power averaging: result %.3f kW outside sanity band.", result_kw)
             return None
 
-        return avg_w / 1000.0  # W → kW
+        return result_kw
 
     @callback
     def _async_on_learning_window_start(self, now: datetime) -> None:
