@@ -61,6 +61,7 @@ _DEFAULT_DISCHARGING_TIME_MINUTES = (
     240  # Expected battery discharge duration, in minutes.
 )
 _DEFAULT_RESERVE_FRACTION = 0.05
+_DEFAULT_OVERNIGHT_HOURS = 7.0  # fallback overnight duration when no tomorrow forecast
 _DEFAULT_CHARGE_EFFICIENCY = 0.95
 _DEFAULT_DISCHARGE_EFFICIENCY = 0.95
 _ENERGY_EPSILON_KWH = 0.05
@@ -396,12 +397,23 @@ def _is_solar_dominant(solar_entries: list[dict]) -> bool:
 
 def _find_solar_window(
     solar_entries: list[dict], now: datetime
-) -> tuple[datetime | None, datetime | None]:
-    """Return (solar_start, solar_end) of today's future production window."""
+) -> tuple[datetime | None, datetime | None, datetime | None]:
+    """Return (solar_start_today, solar_end_today, solar_start_tomorrow).
+
+    solar_start_today:    start of the first useful solar slot for today's calendar day
+                          (may be in the past if we are already in the solar window)
+    solar_end_today:      end of the last useful solar slot for today's calendar day
+    solar_start_tomorrow: start of the first useful solar slot for tomorrow
+
+    The overnight gap the battery must cover is:
+        solar_end_today → solar_start_tomorrow
+    """
     today = now.date()
+    tomorrow = today + timedelta(days=1)
     local_tz = now.tzinfo
-    solar_start: datetime | None = None
-    solar_end: datetime | None = None
+    solar_start_today: datetime | None = None
+    solar_end_today: datetime | None = None
+    solar_start_tomorrow: datetime | None = None
     for entry in solar_entries:
         end_str = entry.get("end")
         if not end_str:
@@ -413,20 +425,18 @@ def _find_solar_window(
         except ValueError:
             continue
         entry_start = entry_end - timedelta(minutes=_FORECAST_SLOT_MINUTES)
-        if entry_start.date() != today:
-            continue
-        if entry_end <= now:
-            continue
         if entry.get("pow", 0.0) <= _MIN_USEFUL_SOLAR_KW:
             continue
-        if solar_start is None:
-            solar_start = entry_start
-        solar_end = entry_end
-    return solar_start, solar_end
+        if entry_start.date() == today:
+            if solar_start_today is None:
+                solar_start_today = entry_start
+            solar_end_today = entry_end  # keep updating to capture the last useful slot
+        elif entry_start.date() == tomorrow and solar_start_tomorrow is None:
+            solar_start_tomorrow = entry_start
+    return solar_start_today, solar_end_today, solar_start_tomorrow
 
 
 def _compute_floor_kwh(
-    charge_entries: list[dict],
     solar_entries: list[dict],
     now: datetime,
     base_load_kw: float,
@@ -435,37 +445,38 @@ def _compute_floor_kwh(
 ) -> tuple[float, float]:
     """Return (floor_kwh, required_load_kwh) for the current moment.
 
-    floor_kwh = reserve + nighttime_load + daytime_solar_deficit
+    floor_kwh = reserve + overnight_load + daytime_deficit
 
-    The battery should not go below floor_kwh so there is enough energy to
-    cover house load until solar can take over, plus any daytime deficit on
-    weak-solar days.
+    During daytime (solar producing), overnight_load is the energy needed for
+    the upcoming darkness window (today's last solar slot through tomorrow's
+    first solar slot). During nighttime, overnight_load decreases linearly as
+    we approach the next sunrise.
     """
     reserve_kwh = battery_capacity_kwh * reserve_fraction
-    solar_start, solar_end = _find_solar_window(solar_entries, now)
-
-    # Nighttime load: sum base load from now until the solar window opens.
-    horizon = solar_start if solar_start is not None else (
-        charge_entries[-1]["end"] if charge_entries else now
+    solar_start_today, solar_end_today, solar_start_tomorrow = _find_solar_window(
+        solar_entries, now
     )
-    nighttime_load_kwh = 0.0
-    for entry in charge_entries:
-        if entry["end"] <= now:
-            continue
-        if entry["start"] >= horizon:
-            break
-        effective_start = max(entry["start"], now)
-        effective_end = min(entry["end"], horizon)
-        hours = max(0.0, (effective_end - effective_start).total_seconds() / 3600.0)
-        nighttime_load_kwh += base_load_kw * hours
 
-    # Daytime deficit: how much of the daytime load solar won't cover.
-    daytime_deficit_kwh = 0.0
-    if solar_start is not None and solar_end is not None:
-        daytime_hours = max(0.0, (solar_end - solar_start).total_seconds() / 3600.0)
-        daytime_load_kwh = base_load_kw * daytime_hours
+    in_daytime = (
+        solar_start_today is not None
+        and solar_end_today is not None
+        and solar_start_today <= now < solar_end_today
+    )
 
-        expected_solar_kwh = 0.0
+    if in_daytime:
+        # Reserve battery for tonight: solar_end_today → solar_start_tomorrow
+        if solar_start_tomorrow is not None:
+            overnight_hours = max(
+                0.0,
+                (solar_start_tomorrow - solar_end_today).total_seconds() / 3600.0,
+            )
+        else:
+            # No tomorrow forecast yet; use a conservative default
+            overnight_hours = _DEFAULT_OVERNIGHT_HOURS
+        nighttime_load_kwh = base_load_kw * overnight_hours
+
+        # Daytime deficit: remaining solar today may not cover remaining house load
+        remaining_solar_kwh = 0.0
         for entry in solar_entries:
             end_str = entry.get("end")
             if not end_str:
@@ -476,13 +487,37 @@ def _compute_floor_kwh(
                     entry_end = entry_end.replace(tzinfo=now.tzinfo)
             except ValueError:
                 continue
+            if entry_end <= now:
+                continue
             entry_start = entry_end - timedelta(minutes=_FORECAST_SLOT_MINUTES)
-            if entry_start < solar_start or entry_end > solar_end:
+            if entry_start.date() != now.date():
                 continue
             if entry.get("pow", 0.0) > _MIN_USEFUL_SOLAR_KW:
-                expected_solar_kwh += entry["pow"] * (_FORECAST_SLOT_MINUTES / 60.0)
+                remaining_solar_kwh += entry["pow"] * (_FORECAST_SLOT_MINUTES / 60.0)
 
-        daytime_deficit_kwh = max(0.0, daytime_load_kwh - expected_solar_kwh)
+        remaining_daylight_hours = max(
+            0.0, (solar_end_today - now).total_seconds() / 3600.0
+        )
+        daytime_deficit_kwh = max(
+            0.0, base_load_kw * remaining_daylight_hours - remaining_solar_kwh
+        )
+    else:
+        # Nighttime: protect the battery until the next sunrise
+        if solar_start_today is not None and now < solar_start_today:
+            # Pre-dawn: sunrise is still today
+            next_sunrise = solar_start_today
+        elif solar_start_tomorrow is not None:
+            # Post-sunset: sunrise is tomorrow
+            next_sunrise = solar_start_tomorrow
+        else:
+            next_sunrise = None
+
+        nighttime_load_kwh = (
+            base_load_kw * max(0.0, (next_sunrise - now).total_seconds() / 3600.0)
+            if next_sunrise is not None
+            else 0.0
+        )
+        daytime_deficit_kwh = 0.0
 
     required_load_kwh = nighttime_load_kwh + daytime_deficit_kwh
     floor_kwh = reserve_kwh + required_load_kwh
@@ -1379,7 +1414,6 @@ class BatteryChargeModeSensor(SensorEntity):
             and self._battery_capacity_kwh is not None
         ):
             floor_kwh, self._required_load_kwh = _compute_floor_kwh(
-                adjusted,
                 solar_entries,
                 now,
                 self._household_base_load_kw,
