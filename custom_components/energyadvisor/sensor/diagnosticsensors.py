@@ -154,6 +154,11 @@ class BatteryFloorSensor(_DiagnosticBase):
                 state_class=SensorStateClass.MEASUREMENT,
             ),
         )
+        # Always record the state so dashboard charts load without the
+        # "Loading" spinner. The state value (kWh) is small and useful for
+        # historical analysis regardless of the global exclude_from_recording
+        # integration option.
+        self._attr_exclude_from_recording = False
 
     @property
     def native_value(self) -> float:
@@ -217,6 +222,10 @@ class BatterySocForecastSensor(_DiagnosticBase):
                 state_class=SensorStateClass.MEASUREMENT,
             ),
         )
+        # Always record the state (a single % value) so dashboard charts load
+        # without the "Loading" spinner. The large forecasts attribute is
+        # excluded from recording via _unrecorded_attributes.
+        self._attr_exclude_from_recording = False
 
     @property
     def native_value(self) -> float | None:
