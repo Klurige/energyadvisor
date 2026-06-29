@@ -1050,13 +1050,14 @@ class BatteryChargeModeSensor(SensorEntity):
 
         sorted_vals = sorted(values)
         median = sorted_vals[len(sorted_vals) // 2]
-        threshold = median * 2.5
+        lo = median / 3.0   # drop-out / brief-disconnect floor
+        hi = median * 2.5   # big-consumer spike ceiling
 
-        filtered = [v for v in values if v <= threshold]
+        filtered = [v for v in values if lo <= v <= hi]
         if len(filtered) < len(values) // 2:
             _LOGGER.debug(
-                "Power averaging: %d/%d readings above threshold (%.0f W) — big consumer dominant, skipping.",
-                len(values) - len(filtered), len(values), threshold,
+                "Power averaging: %d/%d readings outside [%.0f W, %.0f W] — noisy data, skipping.",
+                len(values) - len(filtered), len(values), lo, hi,
             )
             return None
 
