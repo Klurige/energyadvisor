@@ -366,6 +366,9 @@
       },
       "learning_nights": {
         "name": "Inlärningsnätter"
+      },
+      "battery_soc_forecast": {
+        "name": "Batteri SoC-prognos"
       }
     }
   }

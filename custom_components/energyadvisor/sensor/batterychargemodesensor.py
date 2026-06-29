@@ -395,6 +395,27 @@ def _is_solar_dominant(solar_entries: list[dict]) -> bool:
     return total_kwh >= _MIN_SOLAR_DOMINANT_KWH
 
 
+def _solar_kw_for_slot(
+    solar_entries: list[dict], slot_start: datetime, slot_end: datetime
+) -> float:
+    """Return the forecast solar power (kW) for the 15-min slot [slot_start, slot_end)."""
+    slot_tz = slot_end.tzinfo
+    for entry in solar_entries:
+        end_str = entry.get("end")
+        if not end_str:
+            continue
+        try:
+            entry_end = datetime.fromisoformat(end_str)
+            if entry_end.tzinfo is None and slot_tz is not None:
+                entry_end = entry_end.replace(tzinfo=slot_tz)
+        except ValueError:
+            continue
+        entry_start = entry_end - timedelta(minutes=_FORECAST_SLOT_MINUTES)
+        if abs((entry_start - slot_start).total_seconds()) < 60:
+            return max(0.0, entry.get("pow", 0.0))
+    return 0.0
+
+
 def _find_solar_window(
     solar_entries: list[dict], now: datetime
 ) -> tuple[datetime | None, datetime | None, datetime | None]:
@@ -1276,8 +1297,58 @@ class BatteryChargeModeSensor(SensorEntity):
         """Energy (kWh) that must stay in the battery to cover load until solar."""
         return self._required_load_kwh
 
+    @property
+    def battery_soc_forecast(self) -> list[dict]:
+        """Forecast battery SoC% over the planned charge schedule.
+
+        Simulates energy flows forward from the current actual SoC through every
+        planned charge slot. Solar forecast offsets discharge in maxuse slots.
+
+        Returns a list of {end: str, soc_pct: float}, one per planned slot.
+        Returns an empty list when required inputs (SoC reading, capacity, plan)
+        are not available.
+        """
+        if not self._charge_entries or self._battery_capacity_kwh is None:
+            return []
+        soc_pct = self._battery_soc_percent()
+        if soc_pct is None:
+            return []
+
+        capacity_kwh = self._battery_capacity_kwh
+        base_load_kw = self._household_base_load_kw or 0.0
+        charge_power_kw = self._charge_power_kw or 0.0
+        discharge_power_kw = self._discharge_power_kw or base_load_kw
+        solar_entries = self._solar_forecast_entries()
+
+        current_kwh = capacity_kwh * soc_pct / 100.0
+        result: list[dict] = []
+
+        for entry in self._charge_entries:
+            mode = entry["mode"]
+            slot_hours = (entry["end"] - entry["start"]).total_seconds() / 3600.0
+            solar_kw = _solar_kw_for_slot(solar_entries, entry["start"], entry["end"])
+
+            if mode == "charge":
+                delta_kwh = charge_power_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
+            elif mode == "sell":
+                delta_kwh = -discharge_power_kw * slot_hours
+            elif mode == "maxuse":
+                net_discharge_kw = max(0.0, base_load_kw - solar_kw)
+                delta_kwh = -net_discharge_kw * slot_hours / _DEFAULT_DISCHARGE_EFFICIENCY
+            else:  # standby: grid covers house load, battery stays flat
+                delta_kwh = 0.0
+
+            current_kwh = max(0.0, min(capacity_kwh, current_kwh + delta_kwh))
+            result.append(
+                {
+                    "end": entry["end"].isoformat(),
+                    "soc_pct": round(current_kwh / capacity_kwh * 100.0, 1),
+                }
+            )
+
+        return result
+
     def _read_entity_float_state(self, entity_id: str | None) -> float | None:
-        """Return a finite float state for the configured entity, if available."""
         if not entity_id or self.hass is None:
             return None
 

@@ -6,10 +6,11 @@ requiring template sensors.
 
 Sensors
 -------
-- base_load       House base load in Watts learned from quiet nights.
-- strategy        Which daily strategy is active: solar_aware / price_arbitrage.
-- battery_floor   Energy (kWh) that must stay in the battery until solar starts.
-- learning_nights Number of quiet nights used in the rolling base-load average.
+- base_load            House base load in Watts learned from quiet nights.
+- strategy             Which daily strategy is active: solar_aware / price_arbitrage.
+- battery_floor        Energy (kWh) that must stay in the battery until solar starts.
+- learning_nights      Number of quiet nights used in the rolling base-load average.
+- battery_soc_forecast Forecasted battery SoC% over the planned charge schedule.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 
 from ..const import (
+    ATTR_FORECASTS,
     CONF_EXCLUDE_FROM_RECORDING,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
@@ -182,3 +184,53 @@ class LearningNightsSensor(_DiagnosticBase):
     @property
     def native_value(self) -> int:
         return self._battery_sensor.learning_nights
+
+
+class BatterySocForecastSensor(_DiagnosticBase):
+    """Forecasted battery SoC% over the planned charge schedule.
+
+    State      : forecasted SoC% for the current 15-min slot (= actual SoC at
+                 recompute time; drifts between recomputes as time passes).
+    Attributes :
+        forecasts    – list of {end: str, soc_pct: float} covering the full
+                       planned schedule (same time horizon as charge_entries).
+        min_soc_pct  – lowest SoC% expected anywhere in the forecast window.
+        min_soc_time – ISO timestamp when the minimum SoC is reached.
+    """
+
+    _unrecorded_attributes = frozenset({ATTR_FORECASTS})
+
+    def __init__(
+        self,
+        entry: ConfigEntry,
+        device_info: DeviceInfo,
+        battery_sensor: "BatteryChargeModeSensor",
+    ) -> None:
+        super().__init__(
+            entry,
+            device_info,
+            battery_sensor,
+            SensorEntityDescription(
+                key="battery_soc_forecast",
+                translation_key="battery_soc_forecast",
+                native_unit_of_measurement="%",
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        forecast = self._battery_sensor.battery_soc_forecast
+        return forecast[0]["soc_pct"] if forecast else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        forecast = self._battery_sensor.battery_soc_forecast
+        if not forecast:
+            return {ATTR_FORECASTS: [], "min_soc_pct": None, "min_soc_time": None}
+        min_entry = min(forecast, key=lambda e: e["soc_pct"])
+        return {
+            ATTR_FORECASTS: forecast,
+            "min_soc_pct": min_entry["soc_pct"],
+            "min_soc_time": min_entry["end"],
+        }

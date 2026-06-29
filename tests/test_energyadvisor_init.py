@@ -175,6 +175,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
         "strategy": "sensor.energy_advisor_strategy",
         "battery_floor": "sensor.energy_advisor_battery_floor",
         "learning_nights": "sensor.energy_advisor_learning_nights",
+        "battery_soc_forecast": "sensor.energy_advisor_battery_soc_forecast",
     }
 
     for sensor_key, current_entity_id in current_entity_ids.items():

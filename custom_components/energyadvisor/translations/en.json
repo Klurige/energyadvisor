@@ -366,6 +366,9 @@
       },
       "learning_nights": {
         "name": "Learning Nights"
+      },
+      "battery_soc_forecast": {
+        "name": "Battery SoC Forecast"
       }
     }
   }
