@@ -1355,6 +1355,7 @@ class BatteryChargeModeSensor(SensorEntity):
                 {
                     "end": entry["end"].isoformat(),
                     "soc_pct": round(current_kwh / capacity_kwh * 100.0, 1),
+                    "mode": mode,
                 }
             )
 
