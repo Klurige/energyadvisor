@@ -35,6 +35,7 @@ from ..const import (
     CONF_BATTERY_SOC_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
+    CONF_POWER_ENTITY,
     CONF_POWER_METER_CONSUMPTION,
     CONF_WATER_HEATER_ACTIVE_ENTITY,
     PREFERRED_SENSOR_ENTITY_IDS,
@@ -667,6 +668,7 @@ class BatteryChargeModeSensor(SensorEntity):
         )
 
         # Entities for base-load learning.
+        self._power_entity: str | None = entry.options.get(CONF_POWER_ENTITY)
         self._power_meter_entity: str | None = entry.options.get(CONF_POWER_METER_CONSUMPTION)
         self._water_heater_active_entity: str | None = entry.options.get(CONF_WATER_HEATER_ACTIVE_ENTITY)
         self._central_heating_active_entity: str | None = entry.options.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)
@@ -732,7 +734,7 @@ class BatteryChargeModeSensor(SensorEntity):
 
         # Base-load learning: snapshot meter at 01:00, evaluate at 04:00.
         await self._load_learned_data()
-        if self._power_meter_entity:
+        if self._power_entity or self._power_meter_entity:
             self.async_on_remove(
                 async_track_time_change(
                     self.hass,
@@ -821,13 +823,76 @@ class BatteryChargeModeSensor(SensorEntity):
     async def _bootstrap_base_load_from_history(self) -> None:
         """Pre-populate base-load history from the recorder on first run.
 
-        Queries the past 30 nights and for each quiet night (no big consumer
-        active during 01:00–04:00) computes base load from the energy meter
-        diff.  Runs only once; subsequent nights are added by the nightly hook.
+        Tries the power-entity approach first (inverter/house power W, averaged
+        per night with outlier filtering), then falls back to the energy-meter
+        diff approach.  Runs only once; subsequent nights are added nightly.
         """
-        if not self._power_meter_entity:
+        if self._power_entity:
+            await self._bootstrap_from_power_entity()
+        elif self._power_meter_entity:
+            await self._bootstrap_from_energy_meter()
+
+    async def _bootstrap_from_power_entity(self) -> None:
+        """Bootstrap base load by averaging power_entity recorder history per night."""
+        try:
+            from homeassistant.helpers.recorder import get_instance
+        except ImportError:
             return
 
+        recorder = get_instance(self.hass)
+        if recorder is None:
+            return
+
+        local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        now_local = dt_util.now().astimezone(local_tz)
+        today = now_local.date()
+        bootstrapped: list[float] = []
+
+        start_days_ago = 0 if now_local.hour >= _LEARNING_WINDOW_END_HOUR else 1
+
+        for days_ago in range(start_days_ago, _MAX_LEARNING_HISTORY + 1):
+            night = today - timedelta(days=days_ago)
+            window_start = datetime(
+                night.year, night.month, night.day,
+                _LEARNING_WINDOW_START_HOUR, 0, 0, tzinfo=local_tz,
+            )
+            window_end = datetime(
+                night.year, night.month, night.day,
+                _LEARNING_WINDOW_END_HOUR, 0, 0, tzinfo=local_tz,
+            )
+            base_load_kw = await self._average_power_kw_from_recorder(window_start, window_end)
+            if base_load_kw is None:
+                _LOGGER.debug("Bootstrap (power): skipping %s — no valid average.", night)
+                continue
+            _LOGGER.debug(
+                "Bootstrap (power): %s  base load %.3f kW.", night, base_load_kw
+            )
+            bootstrapped.append(base_load_kw)
+            if len(bootstrapped) >= _MAX_LEARNING_HISTORY:
+                break
+
+        if not bootstrapped:
+            _LOGGER.debug("Bootstrap (power): no valid nights found in recorder history.")
+            return
+
+        self._base_load_history = list(reversed(bootstrapped))
+        self._household_base_load_kw = (
+            sum(self._base_load_history) / len(self._base_load_history)
+        )
+        await self._save_learned_data()
+        _LOGGER.info(
+            "Base load bootstrapped from %d nights of recorder history: %.3f kW.",
+            len(self._base_load_history),
+            self._household_base_load_kw,
+        )
+
+    async def _bootstrap_from_energy_meter(self) -> None:
+        """Bootstrap base load from energy-meter (grid import) kWh diff per night.
+
+        Only valid when the house has no battery or solar — i.e. when grid import
+        equals total consumption during the quiet window.  Checks big-consumer
+        activity sensors and compares meter readings at window start/end.
+        """
         try:
             from homeassistant.helpers.recorder import get_instance
             from homeassistant.components.recorder import history as recorder_history
@@ -843,7 +908,6 @@ class BatteryChargeModeSensor(SensorEntity):
         today = now_local.date()
         bootstrapped: list[float] = []
 
-        # Include today's window if it has already closed (current hour ≥ 04:00).
         start_days_ago = 0 if now_local.hour >= _LEARNING_WINDOW_END_HOUR else 1
 
         for days_ago in range(start_days_ago, _MAX_LEARNING_HISTORY + 1):
@@ -873,7 +937,7 @@ class BatteryChargeModeSensor(SensorEntity):
                     quiet = False
                     break
             if not quiet:
-                _LOGGER.debug("Bootstrap: skipping %s — big consumer was active.", night)
+                _LOGGER.debug("Bootstrap (meter): skipping %s — big consumer was active.", night)
                 continue
 
             # Query meter with a small buffer so we capture the reading
@@ -891,7 +955,7 @@ class BatteryChargeModeSensor(SensorEntity):
             reading_end = _last_float_state_at_or_before(states, window_end + timedelta(minutes=5))
             if reading_start is None or reading_end is None:
                 _LOGGER.debug(
-                    "Bootstrap: skipping %s — no meter data (start=%s, end=%s, %d states).",
+                    "Bootstrap (meter): skipping %s — no meter data (start=%s, end=%s, %d states).",
                     night, reading_start, reading_end, len(states),
                 )
                 continue
@@ -899,21 +963,23 @@ class BatteryChargeModeSensor(SensorEntity):
             diff_kwh = reading_end - reading_start
             if not (0 < diff_kwh < 5.0):  # sanity: max ~1.67 kW average
                 _LOGGER.debug(
-                    "Bootstrap: skipping %s — diff %.3f kWh outside sanity band.",
+                    "Bootstrap (meter): skipping %s — diff %.3f kWh outside sanity band.",
                     night, diff_kwh,
                 )
                 continue
 
-            _LOGGER.debug("Bootstrap: %s  base load %.3f kW (diff %.3f kWh).", night, diff_kwh / _LEARNING_WINDOW_HOURS, diff_kwh)
+            _LOGGER.debug(
+                "Bootstrap (meter): %s  base load %.3f kW (diff %.3f kWh).",
+                night, diff_kwh / _LEARNING_WINDOW_HOURS, diff_kwh,
+            )
             bootstrapped.append(diff_kwh / _LEARNING_WINDOW_HOURS)
             if len(bootstrapped) >= _MAX_LEARNING_HISTORY:
                 break
 
         if not bootstrapped:
-            _LOGGER.debug("Bootstrap: no quiet nights found in recorder history.")
+            _LOGGER.debug("Bootstrap (meter): no quiet nights found in recorder history.")
             return
 
-        # Store in chronological order (oldest first, matching nightly appends).
         self._base_load_history = list(reversed(bootstrapped))
         self._household_base_load_kw = (
             sum(self._base_load_history) / len(self._base_load_history)
@@ -931,16 +997,88 @@ class BatteryChargeModeSensor(SensorEntity):
             return
         await self._store.async_save({"base_load_history": self._base_load_history})
 
+    async def _average_power_kw_from_recorder(
+        self,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> float | None:
+        """Return the trimmed-mean power (kW) from recorder history over [window_start, window_end].
+
+        Reads ``_power_entity`` (inverter/house power in W) from the recorder and
+        computes a robust average: readings above 2.5× the median are dropped as
+        big-consumer spikes before averaging.  Returns None if fewer than 6 valid
+        readings exist, if more than half are filtered out (persistent large load),
+        or if the result falls outside the 50 W – 3000 W sanity band.
+        """
+        if not self._power_entity:
+            return None
+        try:
+            from homeassistant.helpers.recorder import get_instance
+            from homeassistant.components.recorder import history as recorder_history
+        except ImportError:
+            return None
+
+        rec = get_instance(self.hass)
+        if rec is None:
+            return None
+
+        states_dict = await rec.async_add_executor_job(
+            recorder_history.state_changes_during_period,
+            self.hass, window_start, window_end, self._power_entity,
+        )
+        raw_states = states_dict.get(self._power_entity, [])
+
+        values: list[float] = []
+        for s in raw_states:
+            try:
+                v = float(s.state)
+                if v >= 0:
+                    values.append(v)
+            except (TypeError, ValueError):
+                pass
+
+        if len(values) < 6:
+            _LOGGER.debug(
+                "Power averaging: only %d valid readings in window — not enough data.", len(values)
+            )
+            return None
+
+        sorted_vals = sorted(values)
+        median = sorted_vals[len(sorted_vals) // 2]
+        threshold = median * 2.5
+
+        filtered = [v for v in values if v <= threshold]
+        if len(filtered) < len(values) // 2:
+            _LOGGER.debug(
+                "Power averaging: %d/%d readings above threshold (%.0f W) — big consumer dominant, skipping.",
+                len(values) - len(filtered), len(values), threshold,
+            )
+            return None
+
+        avg_w = sum(filtered) / len(filtered)
+        if not (50.0 < avg_w < 3000.0):
+            _LOGGER.debug("Power averaging: result %.0f W outside sanity band.", avg_w)
+            return None
+
+        return avg_w / 1000.0  # W → kW
+
     @callback
     def _async_on_learning_window_start(self, now: datetime) -> None:
-        """At 01:00: snapshot the energy meter and open the quiet window."""
-        reading = self._read_entity_float_state(self._power_meter_entity)
-        if reading is None:
+        """At 01:00: open the quiet window (snapshot energy meter if using diff approach)."""
+        if self._power_entity:
+            # Power-averaging approach: nothing to snapshot; recorder query happens at 04:00.
+            self._learning_window_active = True
+            self._quiet_night = True
+        elif self._power_meter_entity:
+            reading = self._read_entity_float_state(self._power_meter_entity)
+            if reading is None:
+                self._learning_window_active = False
+                return
+            self._meter_reading_at_01 = reading
+            self._learning_window_active = True
+            self._quiet_night = True
+        else:
             self._learning_window_active = False
-            return
-        self._meter_reading_at_01 = reading
-        self._learning_window_active = True
-        self._quiet_night = True
 
     @callback
     def _handle_big_consumer_change(self, event) -> None:
@@ -953,7 +1091,7 @@ class BatteryChargeModeSensor(SensorEntity):
 
     async def _async_on_learning_window_end(self, now: datetime) -> None:
         """At 04:00: update base-load rolling average if the window was quiet."""
-        if not self._learning_window_active or self._meter_reading_at_01 is None:
+        if not self._learning_window_active:
             self._learning_window_active = False
             return
 
@@ -963,16 +1101,37 @@ class BatteryChargeModeSensor(SensorEntity):
             _LOGGER.debug("Base load learning: skipping — big consumer was active during 01:00–04:00.")
             return
 
-        reading_04 = self._read_entity_float_state(self._power_meter_entity)
-        if reading_04 is None:
+        local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        today_local = dt_util.now().astimezone(local_tz).date()
+
+        if self._power_entity:
+            # Power-averaging approach: query recorder for the just-closed window.
+            window_start = datetime(
+                today_local.year, today_local.month, today_local.day,
+                _LEARNING_WINDOW_START_HOUR, 0, 0, tzinfo=local_tz,
+            )
+            window_end = datetime(
+                today_local.year, today_local.month, today_local.day,
+                _LEARNING_WINDOW_END_HOUR, 0, 0, tzinfo=local_tz,
+            )
+            base_load_kw = await self._average_power_kw_from_recorder(window_start, window_end)
+            if base_load_kw is None:
+                _LOGGER.debug("Base load learning: power averaging yielded no valid result.")
+                return
+        elif self._power_meter_entity:
+            if self._meter_reading_at_01 is None:
+                return
+            reading_04 = self._read_entity_float_state(self._power_meter_entity)
+            if reading_04 is None:
+                return
+            diff_kwh = reading_04 - self._meter_reading_at_01
+            if diff_kwh <= 0:
+                _LOGGER.debug("Base load learning: non-positive diff (%.3f kWh), skipping.", diff_kwh)
+                return
+            base_load_kw = diff_kwh / _LEARNING_WINDOW_HOURS
+        else:
             return
 
-        diff_kwh = reading_04 - self._meter_reading_at_01
-        if diff_kwh <= 0:
-            _LOGGER.debug("Base load learning: non-positive diff (%.3f kWh), skipping.", diff_kwh)
-            return
-
-        base_load_kw = diff_kwh / _LEARNING_WINDOW_HOURS
         self._base_load_history.append(base_load_kw)
         if len(self._base_load_history) > _MAX_LEARNING_HISTORY:
             self._base_load_history.pop(0)
@@ -981,9 +1140,8 @@ class BatteryChargeModeSensor(SensorEntity):
             sum(self._base_load_history) / len(self._base_load_history)
         )
         _LOGGER.info(
-            "Base load learning: updated to %.3f kW (%.3f kWh over 3 h, %d nights in average).",
+            "Base load learning: updated to %.3f kW (%d nights in average).",
             self._household_base_load_kw,
-            diff_kwh,
             len(self._base_load_history),
         )
         await self._save_learned_data()
