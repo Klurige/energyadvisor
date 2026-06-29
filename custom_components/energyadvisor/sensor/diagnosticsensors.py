@@ -19,6 +19,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -134,7 +135,7 @@ class StrategySensor(_DiagnosticBase):
         return "solar_aware" if self._battery_sensor.solar_dominant else "price_arbitrage"
 
 
-class BatteryFloorSensor(_DiagnosticBase):
+class BatteryFloorSensor(_DiagnosticBase, RestoreSensor):
     """Reports how much energy must stay in the battery until solar starts."""
 
     def __init__(
@@ -154,15 +155,25 @@ class BatteryFloorSensor(_DiagnosticBase):
                 state_class=SensorStateClass.MEASUREMENT,
             ),
         )
-        # Always record the state so dashboard charts load without the
-        # "Loading" spinner. The state value (kWh) is small and useful for
-        # historical analysis regardless of the global exclude_from_recording
-        # integration option.
         self._attr_exclude_from_recording = False
+        self._restored_value: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_sensor_data()
+        if last is not None and last.native_value is not None:
+            try:
+                self._restored_value = float(last.native_value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                pass
 
     @property
     def native_value(self) -> float:
-        return round(self._battery_sensor.battery_floor_kwh, 3)
+        live = self._battery_sensor.battery_floor_kwh
+        if live:
+            self._restored_value = None
+            return round(live, 3)
+        return round(self._restored_value, 3) if self._restored_value is not None else 0.0
 
 
 class LearningNightsSensor(_DiagnosticBase):
@@ -191,11 +202,12 @@ class LearningNightsSensor(_DiagnosticBase):
         return self._battery_sensor.learning_nights
 
 
-class BatterySocForecastSensor(_DiagnosticBase):
+class BatterySocForecastSensor(_DiagnosticBase, RestoreSensor):
     """Forecasted battery SoC% over the planned charge schedule.
 
-    State      : forecasted SoC% for the current 15-min slot (= actual SoC at
-                 recompute time; drifts between recomputes as time passes).
+    State      : forecasted SoC% for the first future 15-min slot (anchored to
+                 actual SoC at each recompute). Restored from storage on restart
+                 so dashboard charts load immediately without "Loading" delay.
     Attributes :
         forecasts    – list of {end: str, soc_pct: float} covering the full
                        planned schedule (same time horizon as charge_entries).
@@ -222,15 +234,25 @@ class BatterySocForecastSensor(_DiagnosticBase):
                 state_class=SensorStateClass.MEASUREMENT,
             ),
         )
-        # Always record the state (a single % value) so dashboard charts load
-        # without the "Loading" spinner. The large forecasts attribute is
-        # excluded from recording via _unrecorded_attributes.
         self._attr_exclude_from_recording = False
+        self._restored_value: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_sensor_data()
+        if last is not None and last.native_value is not None:
+            try:
+                self._restored_value = float(last.native_value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                pass
 
     @property
     def native_value(self) -> float | None:
         forecast = self._battery_sensor.battery_soc_forecast
-        return forecast[0]["soc_pct"] if forecast else None
+        if forecast:
+            self._restored_value = None
+            return forecast[0]["soc_pct"]
+        return self._restored_value
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -243,3 +265,4 @@ class BatterySocForecastSensor(_DiagnosticBase):
             "min_soc_pct": min_entry["soc_pct"],
             "min_soc_time": min_entry["end"],
         }
+
