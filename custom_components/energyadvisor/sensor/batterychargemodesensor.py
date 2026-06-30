@@ -1301,13 +1301,18 @@ class BatteryChargeModeSensor(SensorEntity):
     def battery_soc_forecast(self) -> list[dict]:
         """Forecast battery SoC% over the planned charge schedule.
 
-        Simulates energy flows forward from the current actual SoC through every
-        FUTURE planned charge slot. Past slots are skipped; the current
-        partially-elapsed slot uses only its remaining duration.
+        Returns two concatenated segments:
+        1. Future slots (now → end of charge_entries): forward simulation from
+           current actual SoC using planned modes and solar forecast.
+        2. Extension (end of charge_entries → now+24h): continued simulation
+           using solar forecast in maxuse mode when tomorrow's prices are not
+           yet available.
 
-        Returns a list of {end: str, soc_pct: float}, one per future slot.
-        Returns an empty list when required inputs (SoC reading, capacity, plan)
-        are not available.
+        The anchor point (last completed slot boundary, up to 15 min in the
+        past) is prepended so apexcharts-card always has a recent data point.
+
+        Returns a list of {end, soc_pct, mode} dicts, one per 15-min slot.
+        Returns an empty list when required inputs are not available.
         """
         if not self._charge_entries or self._battery_capacity_kwh is None:
             return []
@@ -1323,61 +1328,77 @@ class BatteryChargeModeSensor(SensorEntity):
         charge_power_kw = self._charge_power_kw or 0.0
         discharge_power_kw = self._discharge_power_kw or base_load_kw
         solar_entries = self._solar_forecast_entries()
+        current_kwh = capacity_kwh * soc_pct / 100.0
 
-        initial_kwh = capacity_kwh * soc_pct / 100.0
-        current_kwh = initial_kwh
+        def _delta(mode: str, slot_hours: float, solar_kw: float) -> float:
+            if mode == "charge":
+                return charge_power_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
+            if mode == "sell":
+                return -discharge_power_kw * slot_hours
+            if mode in {"maxuse", "discharge"}:
+                net_kw = solar_kw - base_load_kw
+                if net_kw >= 0:
+                    return net_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
+                return net_kw * slot_hours / _DEFAULT_DISCHARGE_EFFICIENCY
+            return 0.0  # standby: battery idle
+
         result: list[dict] = []
-
-        # Track the last completed slot so we can prepend it as an anchor point.
-        # This gives apexcharts-card a data point just before "now" so the chart
-        # renders immediately rather than showing "Loading" with all-future data.
         last_completed_entry: dict | None = None
 
+        # --- Forward simulation from current SoC through planned slots ---
+        sim_kwh = current_kwh
+        last_entry_end: datetime | None = None
         for entry in self._charge_entries:
             if entry["end"] <= now:
                 last_completed_entry = entry
-                continue  # skip fully elapsed slots
-
-            # For the current partially-elapsed slot, use only remaining time.
+                continue
             slot_start = max(entry["start"], now)
             slot_hours = (entry["end"] - slot_start).total_seconds() / 3600.0
             if slot_hours <= 0:
                 continue
-
-            mode = entry["mode"]
             solar_kw = _solar_kw_for_slot(solar_entries, entry["start"], entry["end"])
-
-            if mode == "charge":
-                delta_kwh = charge_power_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
-            elif mode == "sell":
-                delta_kwh = -discharge_power_kw * slot_hours
-            elif mode in {"maxuse", "discharge"}:
-                # Excess solar charges battery; deficit draws from battery
-                net_kw = solar_kw - base_load_kw
-                if net_kw >= 0:
-                    delta_kwh = net_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
-                else:
-                    delta_kwh = net_kw * slot_hours / _DEFAULT_DISCHARGE_EFFICIENCY
-            else:  # standby: battery explicitly idle, grid covers load
-                delta_kwh = 0.0
-
-            current_kwh = max(0.0, min(capacity_kwh, current_kwh + delta_kwh))
+            mode = entry["mode"]
+            sim_kwh = max(0.0, min(capacity_kwh, sim_kwh + _delta(mode, slot_hours, solar_kw)))
             result.append(
                 {
                     "end": entry["end"].isoformat(),
-                    "soc_pct": round(current_kwh / capacity_kwh * 100.0, 1),
+                    "soc_pct": round(sim_kwh / capacity_kwh * 100.0, 1),
                     "mode": mode,
                 }
             )
+            last_entry_end = entry["end"]
 
-        # Prepend an anchor at the last slot boundary (up to 15 min in the past)
-        # so apexcharts-card always sees at least one historical data point.
+        # --- Extension: simulate forward until now+24h ---
+        target_end = now + timedelta(hours=24)
+        ext_start = last_entry_end if last_entry_end is not None else now
+        if ext_start < target_end:
+            slot_duration = timedelta(minutes=_FORECAST_SLOT_MINUTES)
+            ext_kwh = sim_kwh if result else current_kwh
+            t = ext_start
+            while t < target_end:
+                slot_end = t + slot_duration
+                solar_kw = _solar_kw_for_slot(solar_entries, t, slot_end)
+                slot_hours = slot_duration.total_seconds() / 3600.0
+                ext_kwh = max(
+                    0.0,
+                    min(capacity_kwh, ext_kwh + _delta("maxuse", slot_hours, solar_kw)),
+                )
+                result.append(
+                    {
+                        "end": slot_end.isoformat(),
+                        "soc_pct": round(ext_kwh / capacity_kwh * 100.0, 1),
+                        "mode": "maxuse",
+                    }
+                )
+                t = slot_end
+
+        # Prepend anchor (last completed slot boundary) for apexcharts-card
         if last_completed_entry is not None:
             result.insert(
                 0,
                 {
                     "end": last_completed_entry["end"].isoformat(),
-                    "soc_pct": round(initial_kwh / capacity_kwh * 100.0, 1),
+                    "soc_pct": round(current_kwh / capacity_kwh * 100.0, 1),
                     "mode": last_completed_entry.get("mode", "standby"),
                 },
             )
