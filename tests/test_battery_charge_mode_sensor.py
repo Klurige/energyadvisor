@@ -422,7 +422,7 @@ class TestComputeChargeModes:
         mode_map = {e["start"].hour: e["mode"] for e in result}
 
         assert {hour for hour, mode in mode_map.items() if mode == "sell"} == {
-            7,
+            8,
             9,
             17,
             18,
@@ -430,7 +430,7 @@ class TestComputeChargeModes:
             20,
         }
         assert mode_map[6] == "maxuse"
-        assert mode_map[8] == "maxuse"
+        assert mode_map[7] == "maxuse"
         assert mode_map[21] == "maxuse"
 
     def test_sell_selection_is_applied_per_day(self):
@@ -476,7 +476,7 @@ class TestComputeChargeModes:
         }
 
         assert day_one_sell == {7, 8, 9, 17, 18, 19}
-        assert day_two_sell == {6, 8, 17, 18, 19, 20}
+        assert day_two_sell == {6, 7, 8, 9, 17, 18}
 
     def test_result_entries_have_required_fields(self):
         rates = make_rates([1.0, 3.0, 1.0])

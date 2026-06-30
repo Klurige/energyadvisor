@@ -342,8 +342,30 @@ def _entry_sell_value(entry: dict) -> float:
     return 0.0
 
 
+def _slot_sell_score(entry: dict) -> tuple[float, float]:
+    """Compound sort key for ranking summer sell candidates.
+
+    Primary: export credit (or 0 when no credit is provided).
+    Secondary: raw electricity cost, used as an avoidance-value proxy when
+    credit values are equal or absent (e.g. in test fixtures without credits).
+    Ties are therefore broken by which slot has the highest spot price.
+    """
+    return (_entry_sell_value(entry), entry.get("cost", 0.0))
+
+
 def _apply_summer_sell_strategy(charge_entries: list[dict]) -> None:
-    """Default to maxuse and mark the best summer-window slots as sell."""
+    """Default to maxuse and mark sell slots using a peak-and-expand strategy.
+
+    Instead of picking the N highest-valued slots independently (which
+    scatters sell periods across the day), this finds the single highest-priced
+    slot and expands outward — always choosing the higher-valued adjacent
+    candidate — until `_SUMMER_SELL_SLOTS_PER_DAY` slots are selected.
+
+    This produces a near-contiguous sell window anchored at the price peak.
+    A contiguous block of sell slots reduces warm-up overhead from frequent
+    battery mode switches at the cost of occasionally skipping isolated
+    high-value slots that lie outside the growing window.
+    """
     entries_by_day: dict = {}
     for entry in charge_entries:
         entry["mode"] = "maxuse"
@@ -351,13 +373,42 @@ def _apply_summer_sell_strategy(charge_entries: list[dict]) -> None:
 
     for day_entries in entries_by_day.values():
         candidates = [e for e in day_entries if _is_summer_sell_candidate(e["start"])]
+        if not candidates:
+            continue
+
         candidates.sort(key=lambda entry: entry["start"])
-        candidates.sort(
-            key=lambda entry: (_entry_sell_value(entry), entry.get("cost", 0.0)),
-            reverse=True,
+        target = min(_SUMMER_SELL_SLOTS_PER_DAY, len(candidates))
+
+        # Seed: highest-ranked slot; ties (same credit and cost) broken by
+        # earliest time.
+        peak_idx = max(
+            range(len(candidates)),
+            key=lambda i: (*_slot_sell_score(candidates[i]), -i),
         )
-        for entry in candidates[:_SUMMER_SELL_SLOTS_PER_DAY]:
-            entry["mode"] = "sell"
+        candidates[peak_idx]["mode"] = "sell"
+        left = peak_idx
+        right = peak_idx
+
+        # Expand outward one slot at a time, always picking the higher-ranked
+        # adjacent candidate (left or right in time order).
+        _EMPTY_SCORE: tuple[float, float] = (-math.inf, -math.inf)
+        while (right - left + 1) < target:
+            left_score = (
+                _slot_sell_score(candidates[left - 1]) if left > 0 else _EMPTY_SCORE
+            )
+            right_score = (
+                _slot_sell_score(candidates[right + 1])
+                if right < len(candidates) - 1
+                else _EMPTY_SCORE
+            )
+            if left_score == _EMPTY_SCORE and right_score == _EMPTY_SCORE:
+                break
+            if left_score >= right_score:
+                left -= 1
+                candidates[left]["mode"] = "sell"
+            else:
+                right += 1
+                candidates[right]["mode"] = "sell"
 
 
 def _classify_output_modes(charge_entries: list[dict], margin: float) -> None:
