@@ -1351,10 +1351,14 @@ class BatteryChargeModeSensor(SensorEntity):
                 delta_kwh = charge_power_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
             elif mode == "sell":
                 delta_kwh = -discharge_power_kw * slot_hours
-            elif mode == "maxuse":
-                net_discharge_kw = max(0.0, base_load_kw - solar_kw)
-                delta_kwh = -net_discharge_kw * slot_hours / _DEFAULT_DISCHARGE_EFFICIENCY
-            else:  # standby: grid covers house load, battery stays flat
+            elif mode in {"maxuse", "discharge"}:
+                # Excess solar charges battery; deficit draws from battery
+                net_kw = solar_kw - base_load_kw
+                if net_kw >= 0:
+                    delta_kwh = net_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
+                else:
+                    delta_kwh = net_kw * slot_hours / _DEFAULT_DISCHARGE_EFFICIENCY
+            else:  # standby: battery explicitly idle, grid covers load
                 delta_kwh = 0.0
 
             current_kwh = max(0.0, min(capacity_kwh, current_kwh + delta_kwh))
