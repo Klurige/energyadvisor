@@ -382,7 +382,16 @@ def _apply_summer_sell_strategy(
     """
     entries_by_day: dict = {}
     for entry in charge_entries:
-        entry["mode"] = "maxuse"
+        # Sell-candidate windows (00:00–10:00, 17:00–24:00): default to
+        # discharge so any solar surplus is exported to the grid at the
+        # higher morning/evening prices.  The mid-day window (10:00–17:00)
+        # defaults to maxuse so cheap solar charges the battery ready for
+        # the evening sell.  The peak-and-expand pass below upgrades the
+        # best discharge slots to sell.
+        if _is_summer_sell_candidate(entry["start"]):
+            entry["mode"] = "discharge"
+        else:
+            entry["mode"] = "maxuse"
         entries_by_day.setdefault(entry["start"].date(), []).append(entry)
 
     for day_entries in entries_by_day.values():
@@ -1918,10 +1927,11 @@ class BatteryChargeModeSensor(SensorEntity):
                     else:  # standby: battery explicitly idle
                         delta_kwh = 0.0
 
-                    # For maxuse, the hardware 5% reserve is a hard floor; clamp
-                    # the simulation there so that subsequent daytime solar
-                    # recharge is modelled correctly from reserve, not from zero.
-                    sim_floor = reserve_kwh if mode == "maxuse" else 0.0
+                    # For maxuse and discharge, the hardware 5% reserve is a
+                    # hard floor; clamp the simulation there so that
+                    # subsequent daytime solar recharge is modelled correctly
+                    # from reserve rather than from zero.
+                    sim_floor = reserve_kwh if mode in {"maxuse", "discharge"} else 0.0
                     simulated_kwh = max(
                         sim_floor, min(capacity_kwh, simulated_kwh + delta_kwh)
                     )

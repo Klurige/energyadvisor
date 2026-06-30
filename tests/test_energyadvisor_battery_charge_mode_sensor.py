@@ -351,9 +351,9 @@ class TestComputeChargeModes:
             5,
         }
         assert mode_map[0] == "sell"
-        assert mode_map[6] == "maxuse"
+        assert mode_map[6] == "discharge"
         assert mode_map[12] == "maxuse"
-        assert mode_map[21] == "maxuse"
+        assert mode_map[21] == "discharge"
 
     def test_spring_dst_day_keeps_all_slots_and_positive_durations(self):
         stockholm = ZoneInfo("Europe/Stockholm")
@@ -381,14 +381,14 @@ class TestComputeChargeModes:
         # gap as a two-hour slot on spring-forward days.
         assert result[1]["end"] - result[1]["start"] == timedelta(hours=2)
         assert result[-1]["end"].strftime("%Y-%m-%dT%H:%M") == "2024-04-01T00:00"
-        assert mode_map["00:00"] == "maxuse"
-        assert mode_map["01:00"] == "maxuse"
+        assert mode_map["00:00"] == "discharge"
+        assert mode_map["01:00"] == "discharge"
         assert mode_map["04:00"] == "sell"
         assert mode_map["06:00"] == "sell"
         assert mode_map["09:00"] == "sell"
-        assert mode_map["17:00"] == "maxuse"
-        assert mode_map["19:00"] == "maxuse"
-        assert mode_map["23:00"] == "maxuse"
+        assert mode_map["17:00"] == "discharge"
+        assert mode_map["19:00"] == "discharge"
+        assert mode_map["23:00"] == "discharge"
 
     def test_sell_uses_highest_candidate_slots_per_day(self):
         costs = [
@@ -429,9 +429,9 @@ class TestComputeChargeModes:
             19,
             20,
         }
-        assert mode_map[6] == "maxuse"
-        assert mode_map[7] == "maxuse"
-        assert mode_map[21] == "maxuse"
+        assert mode_map[6] == "discharge"
+        assert mode_map[7] == "discharge"
+        assert mode_map[21] == "discharge"
 
     def test_sell_selection_is_applied_per_day(self):
         day_one = [1.0] * 24
@@ -488,7 +488,7 @@ class TestComputeChargeModes:
             assert "mode" in entry
             assert "cost" in entry
             assert "credit" in entry
-            assert entry["mode"] in ("maxuse", "sell")
+            assert entry["mode"] in ("maxuse", "sell", "discharge")
 
     def test_result_preserves_costs(self):
         costs = [1.0, 2.0, 3.0]
@@ -497,11 +497,19 @@ class TestComputeChargeModes:
         result_costs = [e["cost"] for e in result]
         assert result_costs == costs
 
-    def test_summer_strategy_never_schedules_charge_or_discharge(self):
+    def test_summer_strategy_uses_discharge_in_sell_windows_and_maxuse_midday(self):
         costs = [1.0] * 24
         rates = make_rates(costs)
         result = compute_charge_modes(rates, 0.7, 160, 240)
-        assert all(entry["mode"] in {"maxuse", "sell"} for entry in result)
+        mode_map = {e["start"].hour: e["mode"] for e in result}
+        # Sell-window hours (0-9, 17-23) that are not selected as sell → discharge
+        for h in range(10):
+            assert mode_map[h] in {"sell", "discharge"}, f"hour {h}: {mode_map[h]}"
+        for h in range(17, 24):
+            assert mode_map[h] in {"sell", "discharge"}, f"hour {h}: {mode_map[h]}"
+        # Mid-day hours (10-16) → maxuse (charge battery from solar)
+        for h in range(10, 17):
+            assert mode_map[h] == "maxuse", f"hour {h}: {mode_map[h]}"
 
 
 # ---------------------------------------------------------------------------
@@ -1047,8 +1055,8 @@ def test_recompute_handles_today_only_rates_without_tomorrow_data(
         2024, 1, 1, 23, 0, tzinfo=UTC
     )
     assert sensor._charge_entries[-1]["end"] == datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
-    assert sensor._charge_entries[-1]["mode"] == "maxuse"
-    assert sensor._mode == "maxuse"
+    assert sensor._charge_entries[-1]["mode"] == "discharge"
+    assert sensor._mode == "discharge"
     assert next_update == 1801
 
 
