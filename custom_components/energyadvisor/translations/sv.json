@@ -91,6 +91,7 @@
         "data": {
           "battery_capacity_kwh": "Batterikapacitet",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt",
+          "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt",
           "battery_degradation_cost": "Marginal för batterislitage",
           "battery_soc_entity": "Sensor för batteriets laddningsnivå",
           "battery_charge_power_entity": "Sensor för batteriets laddningseffekt"
@@ -98,6 +99,7 @@
         "data_description": {
           "battery_capacity_kwh": "Användbar batterikapacitet. Ange tillsammans med maximal laddningseffekt för att ersätta standardantagandena.",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt. Ange tillsammans med batterikapaciteten.",
+          "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt. Lämnas tomt används laddningseffekten som standardvärde.",
           "battery_degradation_cost": "Minsta prisskillnad som krävs innan batteriet cyklas.",
           "battery_soc_entity": "Sensor som rapporterar batteriets aktuella laddningsnivå i procent.",
           "battery_charge_power_entity": "Sensor som rapporterar aktuell batteriladdningseffekt för verifiering och framtida inlärning."
@@ -256,6 +258,7 @@
         "data": {
           "battery_capacity_kwh": "Batterikapacitet",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt",
+          "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt",
           "battery_degradation_cost": "Marginal för batterislitage",
           "battery_soc_entity": "Sensor för batteriets laddningsnivå",
           "battery_charge_power_entity": "Sensor för batteriets laddningseffekt"
@@ -263,6 +266,7 @@
         "data_description": {
           "battery_capacity_kwh": "Användbar batterikapacitet. Ange tillsammans med maximal laddningseffekt för att ersätta standardantagandena.",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt. Ange tillsammans med batterikapaciteten.",
+          "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt. Lämnas tomt används laddningseffekten som standardvärde.",
           "battery_degradation_cost": "Minsta prisskillnad som krävs innan batteriet cyklas.",
           "battery_soc_entity": "Sensor som rapporterar batteriets aktuella laddningsnivå i procent.",
           "battery_charge_power_entity": "Sensor som rapporterar aktuell batteriladdningseffekt för verifiering och framtida inlärning."

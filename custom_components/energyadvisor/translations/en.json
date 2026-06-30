@@ -91,6 +91,7 @@
         "data": {
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
+          "battery_max_discharge_power_w": "Battery max discharge power",
           "battery_degradation_cost": "Battery degradation cost margin",
           "battery_soc_entity": "Battery state of charge sensor",
           "battery_charge_power_entity": "Battery charge power sensor"
@@ -98,6 +99,7 @@
         "data_description": {
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
           "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
+          "battery_max_discharge_power_w": "Maximum battery discharge power. If left empty, defaults to the configured charge power.",
           "battery_degradation_cost": "Minimum price spread required before the battery is cycled.",
           "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
           "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
@@ -256,6 +258,7 @@
         "data": {
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
+          "battery_max_discharge_power_w": "Battery max discharge power",
           "battery_degradation_cost": "Battery degradation cost margin",
           "battery_soc_entity": "Battery state of charge sensor",
           "battery_charge_power_entity": "Battery charge power sensor"
@@ -263,6 +266,7 @@
         "data_description": {
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
           "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
+          "battery_max_discharge_power_w": "Maximum battery discharge power. If left empty, defaults to the configured charge power.",
           "battery_degradation_cost": "Minimum price spread required before the battery is cycled.",
           "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
           "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
