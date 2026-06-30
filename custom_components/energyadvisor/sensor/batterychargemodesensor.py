@@ -1884,11 +1884,16 @@ class BatteryChargeModeSensor(SensorEntity):
                     # Apply constraint based on projected level at slot start
                     if mode in _BATTERY_OUTPUT_MODES:
                         if simulated_kwh <= reserve_kwh:
-                            entry["mode"] = "standby"
-                            entry["constraint_reason"] = (
-                                _BATTERY_OUTPUT_BLOCKED_RESERVE_REASON
-                            )
-                            mode = "standby"
+                            if mode != "maxuse":
+                                # sell/discharge: block — insufficient energy.
+                                entry["mode"] = "standby"
+                                entry["constraint_reason"] = (
+                                    _BATTERY_OUTPUT_BLOCKED_RESERVE_REASON
+                                )
+                                mode = "standby"
+                            # maxuse: the inverter hardware enforces the 5%
+                            # reserve cutoff; leave the mode so the inverter
+                            # self-limits gracefully.
                         elif simulated_kwh < effective_floor_kwh and mode == "sell":
                             entry["mode"] = "maxuse"
                             entry["constraint_reason"] = _SELL_FLOOR_BLOCKED_REASON
@@ -1913,8 +1918,12 @@ class BatteryChargeModeSensor(SensorEntity):
                     else:  # standby: battery explicitly idle
                         delta_kwh = 0.0
 
+                    # For maxuse, the hardware 5% reserve is a hard floor; clamp
+                    # the simulation there so that subsequent daytime solar
+                    # recharge is modelled correctly from reserve, not from zero.
+                    sim_floor = reserve_kwh if mode == "maxuse" else 0.0
                     simulated_kwh = max(
-                        0.0, min(capacity_kwh, simulated_kwh + delta_kwh)
+                        sim_floor, min(capacity_kwh, simulated_kwh + delta_kwh)
                     )
             return adjusted
 
