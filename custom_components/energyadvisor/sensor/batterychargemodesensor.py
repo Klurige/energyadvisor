@@ -356,20 +356,35 @@ def _slot_sell_score(entry: dict) -> tuple[float, float]:
     return (_entry_sell_value(entry), entry.get("cost", 0.0))
 
 
-def _has_solar_surplus_in_rate_slot(
+def _solar_window_by_date(
     solar_entries: list[dict],
-    slot_start: datetime,
-    slot_end: datetime,
-    base_load_kw: float,
-) -> bool:
-    """Return True if any 15-min sub-slot within [slot_start, slot_end) has solar > base load."""
-    step = timedelta(minutes=_FORECAST_SLOT_MINUTES)
-    t = slot_start
-    while t < slot_end:
-        if _solar_kw_for_slot(solar_entries, t, t + step) > base_load_kw:
-            return True
-        t += step
-    return False
+    tz_hint=None,
+) -> dict:
+    """Return {date: (sunrise, sunset)} from solar forecast entries.
+
+    sunrise: start of first 15-min slot with power above the useful threshold.
+    sunset:  end of last such slot (start of that slot + _FORECAST_SLOT_MINUTES).
+    """
+    windows: dict = {}
+    for entry in solar_entries:
+        end_str = entry.get("end")
+        if not end_str:
+            continue
+        try:
+            entry_end = datetime.fromisoformat(end_str)
+            if entry_end.tzinfo is None and tz_hint is not None:
+                entry_end = entry_end.replace(tzinfo=tz_hint)
+        except ValueError:
+            continue
+        if entry.get("pow", 0.0) <= _MIN_USEFUL_SOLAR_KW:
+            continue
+        entry_start = entry_end - timedelta(minutes=_FORECAST_SLOT_MINUTES)
+        d = entry_start.date()
+        if d not in windows:
+            windows[d] = (entry_start, entry_end)
+        else:
+            windows[d] = (windows[d][0], entry_end)
+    return windows
 
 
 def _apply_summer_sell_strategy(
@@ -377,57 +392,88 @@ def _apply_summer_sell_strategy(
     sellable_kwh: float | None = None,
     discharge_power_kw: float | None = None,
     solar_entries: list[dict] | None = None,
-    base_load_kw: float | None = None,
     margin: float = 0.0,
 ) -> None:
     """Assign discharge/maxuse/sell modes for the solar-dominant (summer) strategy.
 
-    Initial mode assignment (per slot, before sell selection):
-    - When solar forecast is available, a slot is **maxuse** when solar surplus
-      exists (solar_kw > base_load) AND the export credit is below the battery
-      wear margin (not worth exporting — better to store for the evening sell).
-      All other slots are **discharge**: the battery covers load and any solar
-      surplus is exported to the grid at the prevailing credit price.
-    - When no solar forecast is available, fall back to fixed windows:
-      sell-candidate hours (00:00–10:00, 17:00–24:00) → discharge;
-      mid-day (10:00–17:00) → maxuse.
+    Two periods per day:
 
-    Sell selection (peak-and-expand):
-    All discharge slots are sell candidates.  The highest-valued slot is chosen
-    as the peak, then the window expands outward — always picking the higher
-    adjacent candidate — until the sell target (derived from sellable_kwh /
-    discharge_power) is reached.  This produces a near-contiguous sell block
-    that minimises inverter warm-up transitions.
+    **Period 1 — midnight to noon (00:00–12:00)**
+    - Before sunrise: discharge (no solar, battery covers load).
+    - After sunrise, per slot: credit > margin → discharge (export solar
+      surplus at the prevailing price); credit ≤ margin → maxuse (store
+      cheap solar in the battery for the evening sell).
+
+    No sell candidates in period 1.
+
+    **Period 2 — noon to midnight (12:00–24:00)**
+    - Noon → sunset: maxuse (fill battery from solar for evening sell).
+    - Sunset → midnight: discharge (battery covers load, no solar).
+    - All period-2 slots are sell candidates: peak-and-expand upgrades the
+      highest-valued contiguous window to sell, whether the price peak falls
+      before or after sunset.
+
+    **Fallback (no solar forecast)**
+    Fixed windows: period 1 → all discharge; period 2: 12:00–17:00 → maxuse,
+    17:00–24:00 → discharge (sell candidates — noon-to-17:00 maxuse slots are
+    not sell candidates in fallback mode).
     """
     has_solar_data = bool(solar_entries)
-    base_kw = base_load_kw or 0.0
+    tz_hint = charge_entries[0]["start"].tzinfo if charge_entries else None
+    solar_windows = _solar_window_by_date(solar_entries or [], tz_hint=tz_hint)
 
     entries_by_day: dict = {}
     for entry in charge_entries:
+        start = entry["start"]
+        d = start.date()
+        hour_frac = start.hour + start.minute / 60.0
+        is_period2 = hour_frac >= 12.0
+
         if has_solar_data:
-            surplus = _has_solar_surplus_in_rate_slot(
-                solar_entries, entry["start"], entry["end"], base_kw
-            )
-            credit = entry.get("credit") or 0.0
-            # Store in battery when solar is available and export is not worth
-            # more than battery wear cost; otherwise export to grid.
-            if surplus and credit <= margin:
-                entry["mode"] = "maxuse"
+            sunrise, sunset = solar_windows.get(d, (None, None))
+            if not is_period2:
+                # Period 1: discharge before sunrise, per-slot price after.
+                if sunrise is None or start < sunrise:
+                    entry["mode"] = "discharge"
+                else:
+                    credit = entry.get("credit") or 0.0
+                    entry["mode"] = "discharge" if credit > margin else "maxuse"
             else:
-                entry["mode"] = "discharge"
+                # Period 2: maxuse until sunset, discharge after.
+                if sunset is None or start < sunset:
+                    entry["mode"] = "maxuse"
+                else:
+                    entry["mode"] = "discharge"
         else:
-            # No solar forecast: fall back to fixed sell-candidate windows.
-            if _is_summer_sell_candidate(entry["start"]):
+            # Fallback: fixed windows.
+            if not is_period2:
                 entry["mode"] = "discharge"
             else:
-                entry["mode"] = "maxuse"
-        entries_by_day.setdefault(entry["start"].date(), []).append(entry)
+                entry["mode"] = "maxuse" if hour_frac < 17.0 else "discharge"
+
+        entries_by_day.setdefault(d, []).append(entry)
 
     for day_entries in entries_by_day.values():
-        # All discharge slots are sell candidates — sell windows are now
-        # determined dynamically by the discharge/maxuse assignment above.
-        candidates = [e for e in day_entries if e["mode"] == "discharge"]
+        # Sell candidates: period-2 slots only.
+        # Dynamic (solar data): ALL period-2 slots — sell can start before
+        # sunset when the price peak falls in the afternoon.
+        # Fallback: only period-2 discharge slots (17:00+) so the fixed
+        # noon-17:00 maxuse window is never overridden by sell selection.
+        if has_solar_data:
+            candidates = [
+                e
+                for e in day_entries
+                if (e["start"].hour + e["start"].minute / 60.0) >= 12.0
+            ]
+        else:
+            candidates = [
+                e
+                for e in day_entries
+                if e["mode"] == "discharge"
+                and (e["start"].hour + e["start"].minute / 60.0) >= 12.0
+            ]
         if not candidates:
+            continue
             continue
 
         candidates.sort(key=lambda entry: entry["start"])
@@ -825,7 +871,6 @@ def compute_charge_modes(
             sellable_kwh=sellable_kwh,
             discharge_power_kw=discharge_power_kw,
             solar_entries=solar_entries,
-            base_load_kw=base_load_kw,
             margin=margin,
         )
     else:

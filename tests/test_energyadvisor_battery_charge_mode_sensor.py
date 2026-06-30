@@ -342,18 +342,19 @@ class TestComputeChargeModes:
         mode_map = {e["start"].hour: e["mode"] for e in result}
 
         assert len(result) == 24
+        # Period 2 discharge slots (h17-h23) are sell candidates; top 6 → sell.
         assert {hour for hour, mode in mode_map.items() if mode == "sell"} == {
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
         }
-        assert mode_map[0] == "sell"
+        assert mode_map[0] == "discharge"
         assert mode_map[6] == "discharge"
         assert mode_map[12] == "maxuse"
-        assert mode_map[21] == "discharge"
+        assert mode_map[21] == "sell"
 
     def test_spring_dst_day_keeps_all_slots_and_positive_durations(self):
         stockholm = ZoneInfo("Europe/Stockholm")
@@ -383,11 +384,11 @@ class TestComputeChargeModes:
         assert result[-1]["end"].strftime("%Y-%m-%dT%H:%M") == "2024-04-01T00:00"
         assert mode_map["00:00"] == "discharge"
         assert mode_map["01:00"] == "discharge"
-        assert mode_map["04:00"] == "sell"
-        assert mode_map["06:00"] == "sell"
-        assert mode_map["09:00"] == "sell"
-        assert mode_map["17:00"] == "discharge"
-        assert mode_map["19:00"] == "discharge"
+        assert mode_map["04:00"] == "discharge"
+        assert mode_map["06:00"] == "discharge"
+        assert mode_map["09:00"] == "discharge"
+        assert mode_map["17:00"] == "sell"
+        assert mode_map["19:00"] == "sell"
         assert mode_map["23:00"] == "discharge"
 
     def test_sell_uses_highest_candidate_slots_per_day(self):
@@ -422,16 +423,16 @@ class TestComputeChargeModes:
         mode_map = {e["start"].hour: e["mode"] for e in result}
 
         assert {hour for hour, mode in mode_map.items() if mode == "sell"} == {
-            8,
-            9,
             17,
             18,
             19,
             20,
+            21,
+            22,
         }
         assert mode_map[6] == "discharge"
         assert mode_map[7] == "discharge"
-        assert mode_map[21] == "discharge"
+        assert mode_map[20] == "sell"
 
     def test_sell_selection_is_applied_per_day(self):
         day_one = [1.0] * 24
@@ -475,8 +476,8 @@ class TestComputeChargeModes:
             if e["start"].day == 2 and e["mode"] == "sell"
         }
 
-        assert day_one_sell == {7, 8, 9, 17, 18, 19}
-        assert day_two_sell == {6, 7, 8, 9, 17, 18}
+        assert day_one_sell == {17, 18, 19, 20, 21, 22}
+        assert day_two_sell == {17, 18, 19, 20, 21, 22}
 
     def test_result_entries_have_required_fields(self):
         rates = make_rates([1.0, 3.0, 1.0])
@@ -497,19 +498,20 @@ class TestComputeChargeModes:
         result_costs = [e["cost"] for e in result]
         assert result_costs == costs
 
-    def test_summer_strategy_uses_discharge_in_sell_windows_and_maxuse_midday(self):
+    def test_summer_strategy_period1_discharge_period2_maxuse_and_sell(self):
         costs = [1.0] * 24
         rates = make_rates(costs)
         result = compute_charge_modes(rates, 0.7, 160, 240)
         mode_map = {e["start"].hour: e["mode"] for e in result}
-        # Sell-window hours (0-9, 17-23) that are not selected as sell → discharge
-        for h in range(10):
-            assert mode_map[h] in {"sell", "discharge"}, f"hour {h}: {mode_map[h]}"
+        # Period 1 (h0–h11): all discharge
+        for h in range(12):
+            assert mode_map[h] == "discharge", f"hour {h}: {mode_map[h]}"
+        # Period 2, noon–17h: maxuse (charge battery from solar)
+        for h in range(12, 17):
+            assert mode_map[h] == "maxuse", f"hour {h}: {mode_map[h]}"
+        # Period 2, 17h+: sell candidates → sell or discharge
         for h in range(17, 24):
             assert mode_map[h] in {"sell", "discharge"}, f"hour {h}: {mode_map[h]}"
-        # Mid-day hours (10-16) → maxuse (charge battery from solar)
-        for h in range(10, 17):
-            assert mode_map[h] == "maxuse", f"hour {h}: {mode_map[h]}"
 
 
 # ---------------------------------------------------------------------------
