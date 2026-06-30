@@ -85,6 +85,7 @@ PREFERRED_SENSOR_ENTITY_IDS: dict[str, str] = {
     "battery_floor": "sensor.energy_advisor_battery_floor",
     "battery_floor_pct": "sensor.energy_advisor_battery_floor_pct",
     "learning_nights": "sensor.energy_advisor_learning_nights",
+    "sell_safety_margin": "sensor.energy_advisor_sell_safety_margin",
     "battery_soc_forecast": "sensor.energy_advisor_battery_soc_forecast",
 }
 

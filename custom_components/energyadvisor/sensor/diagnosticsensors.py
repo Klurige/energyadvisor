@@ -11,6 +11,7 @@ Sensors
 - battery_floor        Energy (kWh) that must stay in the battery until solar starts.
 - battery_floor_pct    Same floor expressed as % of battery capacity (for inverter automation).
 - learning_nights      Number of quiet nights used in the rolling base-load average.
+- sell_safety_margin   Learned sell safety margin (kWh) adjusted at each dawn.
 - battery_soc_forecast Forecasted battery SoC% over the planned charge schedule.
 """
 
@@ -247,6 +248,51 @@ class BatteryFloorPercentSensor(_DiagnosticBase, RestoreSensor):
             self._restored_value = None
             return live
         return self._restored_value
+
+
+class SellSafetyMarginSensor(_DiagnosticBase, RestoreSensor):
+    """Reports the learned sell safety margin in kWh.
+
+    This margin is added on top of the battery floor constraint. It
+    self-calibrates each dawn: decreases when the battery has too much
+    energy at sunrise (sell was too conservative), increases slightly
+    when the battery was near the hardware 5% floor (risk of grid import).
+    """
+
+    def __init__(
+        self,
+        entry: ConfigEntry,
+        device_info: DeviceInfo,
+        battery_sensor: "BatteryChargeModeSensor",
+    ) -> None:
+        super().__init__(
+            entry,
+            device_info,
+            battery_sensor,
+            SensorEntityDescription(
+                key="sell_safety_margin",
+                translation_key="sell_safety_margin",
+                native_unit_of_measurement="kWh",
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+        )
+        self._attr_exclude_from_recording = False
+        self._restored_value: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_sensor_data()
+        if last is not None and last.native_value is not None:
+            try:
+                self._restored_value = float(last.native_value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                pass
+
+    @property
+    def native_value(self) -> float | None:
+        live = self._battery_sensor.sell_safety_margin_kwh
+        self._restored_value = None
+        return round(live, 3)
 
 
 class BatterySocForecastSensor(_DiagnosticBase, RestoreSensor):

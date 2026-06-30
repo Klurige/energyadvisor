@@ -370,6 +370,9 @@
       "learning_nights": {
         "name": "Learning Nights"
       },
+      "sell_safety_margin": {
+        "name": "Sell Safety Margin"
+      },
       "battery_soc_forecast": {
         "name": "Battery SoC Forecast"
       }

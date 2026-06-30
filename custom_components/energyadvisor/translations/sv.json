@@ -370,6 +370,9 @@
       "learning_nights": {
         "name": "Inlärningsnätter"
       },
+      "sell_safety_margin": {
+        "name": "Säljsäkerhetsmarginal"
+      },
       "battery_soc_forecast": {
         "name": "Batteri SoC-prognos"
       }

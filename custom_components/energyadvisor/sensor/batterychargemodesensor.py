@@ -80,6 +80,17 @@ _MAX_LEARNING_HISTORY = 30  # Rolling average over the last 30 valid nights.
 _STORAGE_KEY = "energyadvisor_battery_base_load"
 _STORAGE_VERSION = 1
 
+# Dawn SoC feedback: self-calibrating sell safety margin.
+# The battery has a hardware 5% cutoff, so dawn SoC can never be below reserve.
+# Feedback is therefore asymmetric: decrease margin when dawn SoC is well above
+# reserve (sold too little); increase margin slightly when dawn SoC is at or near
+# reserve (battery may have hit the hardware floor before dawn, risking grid import).
+_DAWN_MARGIN_HIGH_THRESHOLD_PCT = 15.0  # dawn SoC above (reserve + this) → decrease
+_DAWN_MARGIN_LOW_THRESHOLD_PCT = 5.0    # dawn SoC within this % of reserve → small increase
+_DAWN_MARGIN_DECREASE_STEP_KWH = 0.5   # kWh removed per well-stocked dawn
+_DAWN_MARGIN_INCREASE_STEP_KWH = 0.2   # kWh added per tight dawn (small safety buffer)
+_DAWN_MARGIN_MAX_KWH = 8.0             # absolute ceiling on the sell safety margin
+
 _WAITING_FOR_RATES_REASON = "Waiting for electricity price data."
 _OUTSIDE_HORIZON_REASON = (
     "Current time is outside the available battery schedule horizon."
@@ -740,6 +751,11 @@ class BatteryChargeModeSensor(SensorEntity):
         self._quiet_night: bool = False
         self._store: Store | None = None
 
+        # Dawn SoC feedback: sell safety margin adjusted each morning.
+        self._sell_safety_margin_kwh: float = 0.0
+        self._was_in_daytime: bool = False      # detect night→day transition
+        self._dawn_feedback_date: object = None  # prevent double-trigger per day
+
         if capacity_kwh is not None and max_power_w is not None:
             max_power_kw = max_power_w / 1000.0
             self._charge_power_kw = max_power_kw
@@ -875,6 +891,14 @@ class BatteryChargeModeSensor(SensorEntity):
                     "Base load restored: %.3f kW from %d nights.",
                     self._household_base_load_kw,
                     len(self._base_load_history),
+                )
+
+        if isinstance(data, dict):
+            margin = data.get("sell_safety_margin_kwh")
+            if isinstance(margin, (int, float)) and math.isfinite(float(margin)):
+                self._sell_safety_margin_kwh = max(0.0, float(margin))
+                _LOGGER.debug(
+                    "Sell safety margin restored: %.3f kWh.", self._sell_safety_margin_kwh
                 )
 
         if not self._base_load_history:
@@ -1055,7 +1079,10 @@ class BatteryChargeModeSensor(SensorEntity):
         """Persist the base-load rolling average to HA storage."""
         if self._store is None:
             return
-        await self._store.async_save({"base_load_history": self._base_load_history})
+        await self._store.async_save({
+            "base_load_history": self._base_load_history,
+            "sell_safety_margin_kwh": round(self._sell_safety_margin_kwh, 3),
+        })
 
     async def _average_power_kw_from_recorder(
         self,
@@ -1234,6 +1261,58 @@ class BatteryChargeModeSensor(SensorEntity):
         )
         await self._save_learned_data()
 
+    async def _update_sell_margin_at_dawn(self) -> None:
+        """Adjust sell safety margin based on dawn SoC reading.
+
+        Called once per day when solar first starts (night→day transition).
+        The battery has a 5% hardware cutoff, so dawn SoC is always ≥ reserve.
+
+        - Dawn SoC well above reserve → sold too conservatively → decrease margin.
+        - Dawn SoC at or near reserve → battery may have hit the hardware floor
+          before dawn, risking overnight grid imports → small increase for buffer.
+        """
+        if self._battery_capacity_kwh is None:
+            return
+        soc_pct = self._battery_soc_percent()
+        if soc_pct is None:
+            return
+
+        capacity_kwh = self._battery_capacity_kwh
+        reserve_pct = _DEFAULT_RESERVE_FRACTION * 100.0
+        above_reserve_pct = soc_pct - reserve_pct  # how far above 5%
+
+        if above_reserve_pct > _DAWN_MARGIN_HIGH_THRESHOLD_PCT:
+            # Battery significantly above reserve at dawn → sell strategy was
+            # too conservative; reduce the margin to allow more evening selling.
+            self._sell_safety_margin_kwh = max(
+                0.0, self._sell_safety_margin_kwh - _DAWN_MARGIN_DECREASE_STEP_KWH
+            )
+            _LOGGER.info(
+                "Dawn SoC feedback: SoC %.1f%% is %.1f%% above reserve — "
+                "sell was conservative. Margin decreased to %.2f kWh.",
+                soc_pct, above_reserve_pct, self._sell_safety_margin_kwh,
+            )
+        elif above_reserve_pct <= _DAWN_MARGIN_LOW_THRESHOLD_PCT:
+            # Battery near reserve — hardware floor may have been hit before dawn.
+            # Add a small buffer to protect against early overnight grid imports.
+            self._sell_safety_margin_kwh = min(
+                _DAWN_MARGIN_MAX_KWH,
+                self._sell_safety_margin_kwh + _DAWN_MARGIN_INCREASE_STEP_KWH,
+            )
+            _LOGGER.info(
+                "Dawn SoC feedback: SoC %.1f%% is close to reserve — "
+                "adding buffer. Margin increased to %.2f kWh.",
+                soc_pct, self._sell_safety_margin_kwh,
+            )
+        else:
+            _LOGGER.debug(
+                "Dawn SoC feedback: SoC %.1f%% (%.1f%% above reserve) — no margin change.",
+                soc_pct, above_reserve_pct,
+            )
+
+        await self._save_learned_data()
+        self._notify_update_listeners()
+
     async def _start_sensor(self) -> None:
         if not self._waiting_for_first_value:
             return
@@ -1303,6 +1382,11 @@ class BatteryChargeModeSensor(SensorEntity):
         if self._battery_capacity_kwh is None or self._battery_capacity_kwh <= 0:
             return None
         return round(self._required_load_kwh / self._battery_capacity_kwh * 100.0, 1)
+
+    @property
+    def sell_safety_margin_kwh(self) -> float:
+        """Learned sell safety margin (kWh) added on top of the floor constraint."""
+        return self._sell_safety_margin_kwh
 
     @property
     def battery_soc_forecast(self) -> list[dict]:
@@ -1557,6 +1641,16 @@ class BatteryChargeModeSensor(SensorEntity):
             )
             self._reserved_kwh = self._battery_capacity_kwh * _DEFAULT_RESERVE_FRACTION
 
+            # Effective floor adds the learned sell safety margin on top of the
+            # calculated floor. The margin self-calibrates at each dawn: it
+            # decreases when the battery was well above reserve at sunrise
+            # (sell was too conservative) and increases slightly when it was at
+            # or near reserve (battery may have hit the hardware 5% cutoff early).
+            effective_floor_kwh = min(
+                floor_kwh + self._sell_safety_margin_kwh,
+                self._battery_capacity_kwh,
+            )
+
             if soc_percent is not None:
                 capacity_kwh = self._battery_capacity_kwh
                 battery_kwh = capacity_kwh * soc_percent / 100.0
@@ -1597,7 +1691,7 @@ class BatteryChargeModeSensor(SensorEntity):
                                 _BATTERY_OUTPUT_BLOCKED_RESERVE_REASON
                             )
                             mode = "standby"
-                        elif simulated_kwh < floor_kwh and mode == "sell":
+                        elif simulated_kwh < effective_floor_kwh and mode == "sell":
                             entry["mode"] = "maxuse"
                             entry["constraint_reason"] = _SELL_FLOOR_BLOCKED_REASON
                             mode = "maxuse"
@@ -1672,6 +1766,21 @@ class BatteryChargeModeSensor(SensorEntity):
         self._charge_entries = self._apply_battery_constraints(
             self._planned_charge_entries, now
         )
+
+        # Dawn detection: trigger sell-margin feedback on first recompute after sunrise.
+        solar_start_t, solar_end_t, _ = _find_solar_window(solar_entries, now)
+        in_daytime = (
+            solar_start_t is not None
+            and solar_end_t is not None
+            and solar_start_t <= now < solar_end_t
+        )
+        if in_daytime and not self._was_in_daytime:
+            today = now.date()
+            if self._dawn_feedback_date != today:
+                self._dawn_feedback_date = today
+                self.hass.async_create_task(self._update_sell_margin_at_dawn())
+        self._was_in_daytime = in_daytime
+
         result = self._update_current_mode(now)
         self._notify_update_listeners()
         return result
@@ -1833,6 +1942,7 @@ class BatteryChargeModeSensor(SensorEntity):
             ),
             "reserved_kwh": round(self._reserved_kwh, 3),
             "required_load_kwh": round(self._required_load_kwh, 3),
+            "sell_safety_margin_kwh": round(self._sell_safety_margin_kwh, 3),
             "base_load_kw": (
                 round(self._household_base_load_kw, 3)
                 if self._household_base_load_kw is not None

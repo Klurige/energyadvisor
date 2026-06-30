@@ -27,6 +27,7 @@ from .diagnosticsensors import (
     BatteryFloorSensor,
     BatterySocForecastSensor,
     LearningNightsSensor,
+    SellSafetyMarginSensor,
     StrategySensor,
 )
 from .electricitypricelevels import ElectricityPriceLevelsSensor
@@ -92,6 +93,7 @@ async def async_setup_entry(
         BatteryFloorSensor(entry, device_info, battery_sensor),
         BatteryFloorPercentSensor(entry, device_info, battery_sensor),
         LearningNightsSensor(entry, device_info, battery_sensor),
+        SellSafetyMarginSensor(entry, device_info, battery_sensor),
         BatterySocForecastSensor(entry, device_info, battery_sensor),
     ]
 
