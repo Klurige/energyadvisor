@@ -12,7 +12,7 @@
     "recorder"
   ],
   "documentation": "https://github.com/Klurige/energyadvisor",
-  "integration_type": "helper",
+  "integration_type": "service",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/Klurige/energyadvisor/issues",
   "requirements": [],
