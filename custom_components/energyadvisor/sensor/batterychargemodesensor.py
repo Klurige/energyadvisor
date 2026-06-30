@@ -1936,16 +1936,16 @@ class BatteryChargeModeSensor(SensorEntity):
                     # Apply constraint based on projected level at slot start
                     if mode in _BATTERY_OUTPUT_MODES:
                         if simulated_kwh <= reserve_kwh:
-                            if mode != "maxuse":
-                                # sell/discharge: block — insufficient energy.
+                            if mode == "sell":
+                                # Active export from an empty battery: block it.
                                 entry["mode"] = "standby"
                                 entry["constraint_reason"] = (
                                     _BATTERY_OUTPUT_BLOCKED_RESERVE_REASON
                                 )
                                 mode = "standby"
-                            # maxuse: the inverter hardware enforces the 5%
-                            # reserve cutoff; leave the mode so the inverter
-                            # self-limits gracefully.
+                            # maxuse / discharge: the inverter hardware 5%
+                            # reserve cutoff self-limits drain gracefully;
+                            # leave the mode so the inverter handles it.
                         elif simulated_kwh < effective_floor_kwh and mode == "sell":
                             entry["mode"] = "maxuse"
                             entry["constraint_reason"] = _SELL_FLOOR_BLOCKED_REASON
