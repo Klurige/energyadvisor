@@ -1507,17 +1507,74 @@ class BatteryChargeModeSensor(SensorEntity):
             self._reserved_kwh = self._battery_capacity_kwh * _DEFAULT_RESERVE_FRACTION
 
             if soc_percent is not None:
-                battery_kwh = self._battery_capacity_kwh * soc_percent / 100.0
-                reserve_kwh = self._battery_capacity_kwh * _DEFAULT_RESERVE_FRACTION
+                capacity_kwh = self._battery_capacity_kwh
+                battery_kwh = capacity_kwh * soc_percent / 100.0
+                reserve_kwh = capacity_kwh * _DEFAULT_RESERVE_FRACTION
+                charge_power_kw = self._charge_power_kw or 0.0
+                discharge_power_kw = self._discharge_power_kw or (
+                    self._household_base_load_kw or 0.0
+                )
+                base_load_kw = self._household_base_load_kw or 0.0
+
+                # Forward simulation: evaluate constraint based on the projected
+                # battery level at each slot, not the static current level.
+                # This ensures that evening sell entries remain permitted on sunny
+                # days even when the battery is low in the morning — solar will
+                # recharge during the day before the sell window opens.
+                simulated_kwh = battery_kwh
                 for entry in adjusted:
-                    if entry["mode"] not in _BATTERY_OUTPUT_MODES:
+                    if entry["end"] <= now:
+                        continue  # past slots: no change, no simulation step
+
+                    slot_start = max(entry["start"], now)
+                    slot_hours = (
+                        (entry["end"] - slot_start).total_seconds() / 3600.0
+                    )
+                    if slot_hours <= 0:
                         continue
-                    if battery_kwh <= reserve_kwh:
-                        entry["mode"] = "standby"
-                        entry["constraint_reason"] = _BATTERY_OUTPUT_BLOCKED_RESERVE_REASON
-                    elif battery_kwh < floor_kwh and entry["mode"] == "sell":
-                        entry["mode"] = "maxuse"
-                        entry["constraint_reason"] = _SELL_FLOOR_BLOCKED_REASON
+
+                    solar_kw = _solar_kw_for_slot(
+                        solar_entries, entry["start"], entry["end"]
+                    )
+                    mode = entry["mode"]
+
+                    # Apply constraint based on projected level at slot start
+                    if mode in _BATTERY_OUTPUT_MODES:
+                        if simulated_kwh <= reserve_kwh:
+                            entry["mode"] = "standby"
+                            entry["constraint_reason"] = (
+                                _BATTERY_OUTPUT_BLOCKED_RESERVE_REASON
+                            )
+                            mode = "standby"
+                        elif simulated_kwh < floor_kwh and mode == "sell":
+                            entry["mode"] = "maxuse"
+                            entry["constraint_reason"] = _SELL_FLOOR_BLOCKED_REASON
+                            mode = "maxuse"
+
+                    # Simulate battery delta for this slot
+                    if mode == "charge":
+                        delta_kwh = (
+                            charge_power_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
+                        )
+                    elif mode == "sell":
+                        delta_kwh = -discharge_power_kw * slot_hours
+                    elif mode in {"maxuse", "discharge"}:
+                        # Battery covers load deficit; excess solar charges battery
+                        net_kw = solar_kw - base_load_kw
+                        if net_kw >= 0:
+                            delta_kwh = (
+                                net_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
+                            )
+                        else:
+                            delta_kwh = (
+                                net_kw * slot_hours / _DEFAULT_DISCHARGE_EFFICIENCY
+                            )
+                    else:  # standby: battery explicitly idle
+                        delta_kwh = 0.0
+
+                    simulated_kwh = max(
+                        0.0, min(capacity_kwh, simulated_kwh + delta_kwh)
+                    )
             return adjusted
 
         # --- Fallback: only SoC reserve check on current slot ---
