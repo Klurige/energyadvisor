@@ -1,15 +1,15 @@
 {
   "domain": "energyadvisor",
   "name": "Energy Advisor",
+  "after_dependencies": [
+    "recorder"
+  ],
   "codeowners": [
     "@Klurige"
   ],
   "config_flow": true,
   "dependencies": [
     "nordpool"
-  ],
-  "after_dependencies": [
-    "recorder"
   ],
   "documentation": "https://github.com/Klurige/energyadvisor",
   "integration_type": "service",
