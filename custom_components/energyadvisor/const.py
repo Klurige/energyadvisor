@@ -49,6 +49,7 @@ CONF_FORECAST_TOMORROW_ENTITY = "forecast_tomorrow_entity"
 # Battery charge mode configuration
 CONF_BATTERY_CAPACITY_KWH = "battery_capacity_kwh"
 CONF_BATTERY_MAX_CHARGE_POWER_W = "battery_max_charge_power_w"
+CONF_BATTERY_MAX_DISCHARGE_POWER_W = "battery_max_discharge_power_w"
 CONF_BATTERY_DEGRADATION_COST = "battery_degradation_cost"
 CONF_BATTERY_SOC_ENTITY = "battery_soc_entity"
 CONF_BATTERY_CHARGE_POWER_ENTITY = "battery_charge_power_entity"

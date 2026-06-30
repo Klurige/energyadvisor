@@ -32,6 +32,7 @@ from ..const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
+    CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_SOC_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
@@ -816,6 +817,7 @@ class BatteryChargeModeSensor(SensorEntity):
         # Battery parameters from config (or fallback defaults).
         capacity_kwh = entry.options.get(CONF_BATTERY_CAPACITY_KWH)
         max_power_w = entry.options.get(CONF_BATTERY_MAX_CHARGE_POWER_W)
+        max_discharge_power_w = entry.options.get(CONF_BATTERY_MAX_DISCHARGE_POWER_W)
         self._battery_soc_entity = entry.options.get(CONF_BATTERY_SOC_ENTITY)
         self._battery_capacity_kwh = capacity_kwh if capacity_kwh is not None else None
         self._charge_power_kw: float | None = None
@@ -849,13 +851,16 @@ class BatteryChargeModeSensor(SensorEntity):
         if capacity_kwh is not None and max_power_w is not None:
             max_power_kw = max_power_w / 1000.0
             self._charge_power_kw = max_power_kw
-            # Charging time: capacity / power × 60 (minutes)
+            # Charging time: capacity / charge_power (minutes)
             self._charging_time_minutes = round(capacity_kwh / max_power_kw * 60)
-            # Discharging time: typically 1.5× charging time (lower average discharge power)
-            self._discharging_time_minutes = round(self._charging_time_minutes * 1.5)
-            self._discharge_power_kw = capacity_kwh / (
-                self._discharging_time_minutes / 60
-            )
+            # Discharge power: use configured value when available; otherwise
+            # assume same as charge power (symmetric inverter).
+            if max_discharge_power_w is not None:
+                discharge_kw = max_discharge_power_w / 1000.0
+            else:
+                discharge_kw = max_power_kw
+            self._discharge_power_kw = discharge_kw
+            self._discharging_time_minutes = round(capacity_kwh / discharge_kw * 60)
         else:
             self._charging_time_minutes = _DEFAULT_CHARGING_TIME_MINUTES
             self._discharging_time_minutes = _DEFAULT_DISCHARGING_TIME_MINUTES

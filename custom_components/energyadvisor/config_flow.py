@@ -26,6 +26,7 @@ from .const import (
     CONF_BATTERY_CHARGE_POWER_ENTITY,
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
+    CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_SOC_ENTITY,
     CONF_DEHUMIDIFIER_POWER_ENTITY,
     CONF_DEHUMIDIFIER_POWER_W,
@@ -201,6 +202,11 @@ def _build_battery_schema(
         vol.Optional(
             CONF_BATTERY_MAX_CHARGE_POWER_W,
             default=_schema_default(values.get(CONF_BATTERY_MAX_CHARGE_POWER_W)),
+            description={"suffix": "W"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=1)),
+        vol.Optional(
+            CONF_BATTERY_MAX_DISCHARGE_POWER_W,
+            default=_schema_default(values.get(CONF_BATTERY_MAX_DISCHARGE_POWER_W)),
             description={"suffix": "W"},
         ): vol.All(vol.Coerce(float), vol.Range(min=1)),
         vol.Optional(
