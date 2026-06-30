@@ -1324,11 +1324,18 @@ class BatteryChargeModeSensor(SensorEntity):
         discharge_power_kw = self._discharge_power_kw or base_load_kw
         solar_entries = self._solar_forecast_entries()
 
-        current_kwh = capacity_kwh * soc_pct / 100.0
+        initial_kwh = capacity_kwh * soc_pct / 100.0
+        current_kwh = initial_kwh
         result: list[dict] = []
+
+        # Track the last completed slot so we can prepend it as an anchor point.
+        # This gives apexcharts-card a data point just before "now" so the chart
+        # renders immediately rather than showing "Loading" with all-future data.
+        last_completed_entry: dict | None = None
 
         for entry in self._charge_entries:
             if entry["end"] <= now:
+                last_completed_entry = entry
                 continue  # skip fully elapsed slots
 
             # For the current partially-elapsed slot, use only remaining time.
@@ -1357,6 +1364,18 @@ class BatteryChargeModeSensor(SensorEntity):
                     "soc_pct": round(current_kwh / capacity_kwh * 100.0, 1),
                     "mode": mode,
                 }
+            )
+
+        # Prepend an anchor at the last slot boundary (up to 15 min in the past)
+        # so apexcharts-card always sees at least one historical data point.
+        if last_completed_entry is not None:
+            result.insert(
+                0,
+                {
+                    "end": last_completed_entry["end"].isoformat(),
+                    "soc_pct": round(initial_kwh / capacity_kwh * 100.0, 1),
+                    "mode": last_completed_entry.get("mode", "standby"),
+                },
             )
 
         return result
