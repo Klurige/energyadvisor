@@ -353,13 +353,24 @@ def _slot_sell_score(entry: dict) -> tuple[float, float]:
     return (_entry_sell_value(entry), entry.get("cost", 0.0))
 
 
-def _apply_summer_sell_strategy(charge_entries: list[dict]) -> None:
+def _apply_summer_sell_strategy(
+    charge_entries: list[dict],
+    sellable_kwh: float | None = None,
+    discharge_power_kw: float | None = None,
+) -> None:
     """Default to maxuse and mark sell slots using a peak-and-expand strategy.
 
     Instead of picking the N highest-valued slots independently (which
     scatters sell periods across the day), this finds the single highest-priced
     slot and expands outward — always choosing the higher-valued adjacent
-    candidate — until `_SUMMER_SELL_SLOTS_PER_DAY` slots are selected.
+    candidate — until the sell target is reached.
+
+    When `sellable_kwh` and `discharge_power_kw` are provided, the target
+    is derived dynamically: ceil(sellable_kwh / (discharge_power × slot_hours)).
+    This ensures the planned sell window exactly covers the energy available
+    above the floor, rather than using a hardcoded slot count.
+    Falls back to `_SUMMER_SELL_SLOTS_PER_DAY` when battery parameters are
+    not available (e.g., during tests or early startup).
 
     This produces a near-contiguous sell window anchored at the price peak.
     A contiguous block of sell slots reduces warm-up overhead from frequent
@@ -377,7 +388,22 @@ def _apply_summer_sell_strategy(charge_entries: list[dict]) -> None:
             continue
 
         candidates.sort(key=lambda entry: entry["start"])
-        target = min(_SUMMER_SELL_SLOTS_PER_DAY, len(candidates))
+
+        # Derive per-slot energy and target sell count.
+        if sellable_kwh is not None and discharge_power_kw is not None:
+            slot_secs = (candidates[0]["end"] - candidates[0]["start"]).total_seconds()
+            slot_hours = slot_secs / 3600.0
+            energy_per_slot = discharge_power_kw * slot_hours
+            if energy_per_slot > 0 and sellable_kwh > 0:
+                default_target = math.ceil(sellable_kwh / energy_per_slot)
+            else:
+                default_target = 0
+        else:
+            default_target = _SUMMER_SELL_SLOTS_PER_DAY
+
+        target = min(default_target, len(candidates))
+        if target <= 0:
+            continue
 
         # Seed: highest-ranked slot; ties (same credit and cost) broken by
         # earliest time.
@@ -695,13 +721,18 @@ def compute_charge_modes(
     charging_time_minutes,
     discharging_time_minutes,
     solar_entries=None,
+    sellable_kwh=None,
+    discharge_power_kw=None,
 ):
     """Compute battery modes for every price slot.
 
     Selects between two strategies based on the daily solar forecast:
 
     - **Solar-aware** (expected solar ≥ threshold): default to `maxuse`,
-      mark the six highest-valued morning/evening slots as `sell`.
+      mark morning/evening slots as `sell` using a peak-and-expand strategy.
+      When `sellable_kwh` and `discharge_power_kw` are provided, the number
+      of sell slots is derived from the battery's available capacity above
+      the floor; otherwise falls back to `_SUMMER_SELL_SLOTS_PER_DAY`.
     - **Price-arbitrage** (minimal solar): find cheap charge windows and
       expensive discharge/sell windows using the price-spread algorithm.
 
@@ -712,6 +743,10 @@ def compute_charge_modes(
         discharging_time_minutes: Expected discharge duration in minutes.
         solar_entries: Optional refined solar forecast (15-min slots from the
                        solar coordinator). Used to select the strategy.
+        sellable_kwh: Battery energy available to sell above the floor (kWh).
+                      Used to set the sell width dynamically when solar-dominant.
+        discharge_power_kw: Inverter discharge power (kW). Used with
+                            `sellable_kwh` to calculate the target slot count.
     Returns:
         List of dicts with 'start', 'end', 'mode', 'cost', 'credit'.
     """
@@ -731,7 +766,11 @@ def compute_charge_modes(
     ]
 
     if _is_solar_dominant(solar_entries or []):
-        _apply_summer_sell_strategy(charge_entries)
+        _apply_summer_sell_strategy(
+            charge_entries,
+            sellable_kwh=sellable_kwh,
+            discharge_power_kw=discharge_power_kw,
+        )
     else:
         _apply_price_arbitrage_strategy(
             charge_entries, margin, charging_time_minutes, discharging_time_minutes
@@ -1798,10 +1837,35 @@ class BatteryChargeModeSensor(SensorEntity):
         # flips between dominant and minimal (e.g. morning forecast update).
         solar_dominant = _is_solar_dominant(solar_entries)
         self._solar_dominant = solar_dominant
+
+        # Compute sellable energy for dynamic sell-width in solar-dominant mode.
+        # sellable = battery capacity above (floor + safety margin).
+        sellable_kwh: float | None = None
+        if (
+            solar_dominant
+            and self._battery_capacity_kwh is not None
+            and self._household_base_load_kw is not None
+        ):
+            floor_kwh, _ = _compute_floor_kwh(
+                solar_entries,
+                now,
+                self._household_base_load_kw,
+                self._battery_capacity_kwh,
+                _DEFAULT_RESERVE_FRACTION,
+            )
+            sellable_kwh = max(
+                0.0,
+                self._battery_capacity_kwh
+                - floor_kwh
+                - self._sell_safety_margin_kwh,
+            )
+
+        # Round to 0.1 kWh so minor floating-point drift does not force a replan.
         plan_inputs_hash = hash(
             (
                 tuple((r.get("from"), r.get("cost"), r.get("credit")) for r in rates),
                 solar_dominant,
+                round(sellable_kwh, 1) if sellable_kwh is not None else None,
             )
         )
         if plan_inputs_hash != self._last_plan_inputs_hash:
@@ -1812,6 +1876,8 @@ class BatteryChargeModeSensor(SensorEntity):
                 self._charging_time_minutes,
                 self._discharging_time_minutes,
                 solar_entries=solar_entries,
+                sellable_kwh=sellable_kwh,
+                discharge_power_kw=self._discharge_power_kw,
             )
 
         self._charge_entries = self._apply_battery_constraints(
