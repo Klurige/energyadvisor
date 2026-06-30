@@ -23,6 +23,7 @@ from ..solar_forecast_coordinator import SolarForecastCoordinator
 from .compactlevels import CompactLevelsSensor
 from .diagnosticsensors import (
     BaseLoadSensor,
+    BatteryFloorPercentSensor,
     BatteryFloorSensor,
     BatterySocForecastSensor,
     LearningNightsSensor,
@@ -89,6 +90,7 @@ async def async_setup_entry(
         BaseLoadSensor(entry, device_info, battery_sensor),
         StrategySensor(entry, device_info, battery_sensor),
         BatteryFloorSensor(entry, device_info, battery_sensor),
+        BatteryFloorPercentSensor(entry, device_info, battery_sensor),
         LearningNightsSensor(entry, device_info, battery_sensor),
         BatterySocForecastSensor(entry, device_info, battery_sensor),
     ]

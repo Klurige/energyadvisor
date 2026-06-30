@@ -1298,7 +1298,12 @@ class BatteryChargeModeSensor(SensorEntity):
         return self._required_load_kwh
 
     @property
-    def battery_soc_forecast(self) -> list[dict]:
+    def battery_floor_pct(self) -> float | None:
+        """Floor expressed as percentage of battery capacity (0–100)."""
+        if self._battery_capacity_kwh is None or self._battery_capacity_kwh <= 0:
+            return None
+        return round(self._required_load_kwh / self._battery_capacity_kwh * 100.0, 1)
+
         """Forecast battery SoC% over the planned charge schedule.
 
         Returns two concatenated segments:

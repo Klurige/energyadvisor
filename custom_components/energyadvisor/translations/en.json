@@ -364,6 +364,9 @@
       "battery_floor": {
         "name": "Battery Floor"
       },
+      "battery_floor_pct": {
+        "name": "Battery Floor Percent"
+      },
       "learning_nights": {
         "name": "Learning Nights"
       },

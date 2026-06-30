@@ -174,6 +174,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
         "base_load": "sensor.energy_advisor_base_load",
         "strategy": "sensor.energy_advisor_strategy",
         "battery_floor": "sensor.energy_advisor_battery_floor",
+        "battery_floor_pct": "sensor.energy_advisor_battery_floor_pct",
         "learning_nights": "sensor.energy_advisor_learning_nights",
         "battery_soc_forecast": "sensor.energy_advisor_battery_soc_forecast",
     }
