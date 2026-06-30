@@ -222,7 +222,9 @@ def _build_battery_schema(
         vol.Optional(
             CONF_BATTERY_CHARGE_POWER_ENTITY,
             default=_schema_default(values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)),
-            description={"suggested_value": values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)},
+            description={
+                "suggested_value": values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)
+            },
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
     }
 
@@ -254,21 +256,31 @@ def _build_household_schema(values: dict[str, Any]) -> dict[Any, Any]:
         vol.Optional(
             CONF_OUTDOOR_TEMPERATURE_ENTITY,
             default=_schema_default(values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)),
-            description={"suggested_value": values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)},
+            description={
+                "suggested_value": values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)
+            },
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
         vol.Optional(
             CONF_WATER_HEATER_ACTIVE_ENTITY,
             default=_schema_default(values.get(CONF_WATER_HEATER_ACTIVE_ENTITY)),
-            description={"suggested_value": values.get(CONF_WATER_HEATER_ACTIVE_ENTITY)},
+            description={
+                "suggested_value": values.get(CONF_WATER_HEATER_ACTIVE_ENTITY)
+            },
         ): EntitySelector(
-            EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "sensor", "switch"])
+            EntitySelectorConfig(
+                domain=["binary_sensor", "input_boolean", "sensor", "switch"]
+            )
         ),
         vol.Optional(
             CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
             default=_schema_default(values.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)),
-            description={"suggested_value": values.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)},
+            description={
+                "suggested_value": values.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)
+            },
         ): EntitySelector(
-            EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "sensor", "switch"])
+            EntitySelectorConfig(
+                domain=["binary_sensor", "input_boolean", "sensor", "switch"]
+            )
         ),
     }
 
@@ -857,14 +869,18 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         errors = {}
         if user_input is not None:
-            grid_entities = {key: user_input.get(key) for key in GRID_METERING_ENTITY_KEYS}
+            grid_entities = {
+                key: user_input.get(key) for key in GRID_METERING_ENTITY_KEYS
+            }
             errors.update(_validate_optional_sensor_entities(self.hass, grid_entities))
             if not errors:
                 for key, entity_id in grid_entities.items():
                     self.data[key] = entity_id or None
                 return await self.async_step_household()
 
-        form_values = {key: _form_value(self.data, key) for key in GRID_METERING_ENTITY_KEYS}
+        form_values = {
+            key: _form_value(self.data, key) for key in GRID_METERING_ENTITY_KEYS
+        }
         return self.async_show_form(
             step_id="grid_metering",
             data_schema=vol.Schema(_build_grid_metering_schema(form_values)),
@@ -878,7 +894,10 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             household_entities = {
                 key: user_input.get(key)
-                for key in (*HOUSEHOLD_SENSOR_ENTITY_KEYS, *HOUSEHOLD_BINARY_ENTITY_KEYS)
+                for key in (
+                    *HOUSEHOLD_SENSOR_ENTITY_KEYS,
+                    *HOUSEHOLD_BINARY_ENTITY_KEYS,
+                )
             }
             errors.update(
                 _validate_optional_sensor_entities(self.hass, household_entities)
@@ -903,7 +922,9 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         errors = {}
         if user_input is not None:
-            hot_water_entities = {key: user_input.get(key) for key in HOT_WATER_ENTITY_KEYS}
+            hot_water_entities = {
+                key: user_input.get(key) for key in HOT_WATER_ENTITY_KEYS
+            }
             errors.update(
                 _validate_optional_sensor_entities(self.hass, hot_water_entities)
             )
@@ -988,8 +1009,13 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
                         CONF_BATTERY_DEGRADATION_COST: self.data.get(
                             CONF_BATTERY_DEGRADATION_COST
                         ),
-                        **{key: self.data.get(key) for key in ALL_OPTIMIZER_ENTITY_KEYS},
-                        **{key: self.data.get(key) for key in ALL_OPTIMIZER_NUMERIC_KEYS},
+                        **{
+                            key: self.data.get(key) for key in ALL_OPTIMIZER_ENTITY_KEYS
+                        },
+                        **{
+                            key: self.data.get(key)
+                            for key in ALL_OPTIMIZER_NUMERIC_KEYS
+                        },
                     },
                 )
 
@@ -1009,7 +1035,9 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
         self.current_options: dict[str, Any] = {}
         self.unit_of_measurement = ""
 
-    def _update_price_sensor_attributes(self, sensor_attributes: dict[str, Any] | None) -> None:
+    def _update_price_sensor_attributes(
+        self, sensor_attributes: dict[str, Any] | None
+    ) -> None:
         """Persist display metadata for the selected price sensor."""
         if sensor_attributes:
             self.current_options["unit_of_measurement"] = sensor_attributes.get(
@@ -1030,12 +1058,14 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
         if not self.current_options:
             self.current_options = dict(self.config_entry.options)
 
-        current_prices_sensor = self.current_options.get(CONF_NORDPOOL_PRICES_SENSOR, "")
+        current_prices_sensor = self.current_options.get(
+            CONF_NORDPOOL_PRICES_SENSOR, ""
+        )
         if user_input and CONF_NORDPOOL_PRICES_SENSOR in user_input:
             current_prices_sensor = user_input[CONF_NORDPOOL_PRICES_SENSOR]
 
-        _is_valid_for_display, display_attributes = await _validate_nordpool_prices_sensor(
-            self.hass, current_prices_sensor
+        _is_valid_for_display, display_attributes = (
+            await _validate_nordpool_prices_sensor(self.hass, current_prices_sensor)
         )
         self.unit_of_measurement = (
             display_attributes.get("unit_of_measurement", "")
@@ -1076,12 +1106,16 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
                 {
                     vol.Required(
                         CONF_NORDPOOL_PRICES_SENSOR,
-                        default=self.current_options.get(CONF_NORDPOOL_PRICES_SENSOR, ""),
+                        default=self.current_options.get(
+                            CONF_NORDPOOL_PRICES_SENSOR, ""
+                        ),
                     ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
                     vol.Optional(
                         CONF_LOW_THRESHOLD,
                         description={
-                            "suggested_value": self.current_options.get(CONF_LOW_THRESHOLD),
+                            "suggested_value": self.current_options.get(
+                                CONF_LOW_THRESHOLD
+                            ),
                             "suffix": self.unit_of_measurement,
                         },
                         default=self.current_options.get(CONF_LOW_THRESHOLD),
@@ -1089,7 +1123,9 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
                     vol.Optional(
                         CONF_HIGH_THRESHOLD,
                         description={
-                            "suggested_value": self.current_options.get(CONF_HIGH_THRESHOLD),
+                            "suggested_value": self.current_options.get(
+                                CONF_HIGH_THRESHOLD
+                            ),
                             "suffix": self.unit_of_measurement,
                         },
                         default=self.current_options.get(CONF_HIGH_THRESHOLD),
@@ -1113,7 +1149,9 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
                 {
                     vol.Optional(
                         CONF_SUPPLIER_NOTE,
-                        default=_schema_default(self.current_options.get(CONF_SUPPLIER_NOTE)),
+                        default=_schema_default(
+                            self.current_options.get(CONF_SUPPLIER_NOTE)
+                        ),
                     ): vol.Coerce(str),
                     vol.Optional(
                         CONF_SUPPLIER_FIXED_FEE,
@@ -1162,11 +1200,15 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
                 {
                     vol.Optional(
                         CONF_GRID_NOTE,
-                        default=_schema_default(self.current_options.get(CONF_GRID_NOTE)),
+                        default=_schema_default(
+                            self.current_options.get(CONF_GRID_NOTE)
+                        ),
                     ): vol.Coerce(str),
                     vol.Optional(
                         CONF_GRID_FIXED_FEE,
-                        default=_schema_default(self.current_options.get(CONF_GRID_FIXED_FEE)),
+                        default=_schema_default(
+                            self.current_options.get(CONF_GRID_FIXED_FEE)
+                        ),
                         description={"suffix": self.unit_of_measurement},
                     ): vol.All(vol.Coerce(float), vol.Range(min=0)),
                     vol.Optional(
@@ -1296,14 +1338,17 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
     ) -> ConfigFlowResult:
         errors = {}
         if user_input is not None:
-            grid_entities = {key: user_input.get(key) for key in GRID_METERING_ENTITY_KEYS}
+            grid_entities = {
+                key: user_input.get(key) for key in GRID_METERING_ENTITY_KEYS
+            }
             errors.update(_validate_optional_sensor_entities(self.hass, grid_entities))
             if not errors:
                 self.current_options.update(user_input)
                 return await self.async_step_household()
 
         form_values = {
-            key: _form_value(self.current_options, key) for key in GRID_METERING_ENTITY_KEYS
+            key: _form_value(self.current_options, key)
+            for key in GRID_METERING_ENTITY_KEYS
         }
         return self.async_show_form(
             step_id="grid_metering",
@@ -1318,7 +1363,10 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
         if user_input is not None:
             household_entities = {
                 key: user_input.get(key)
-                for key in (*HOUSEHOLD_SENSOR_ENTITY_KEYS, *HOUSEHOLD_BINARY_ENTITY_KEYS)
+                for key in (
+                    *HOUSEHOLD_SENSOR_ENTITY_KEYS,
+                    *HOUSEHOLD_BINARY_ENTITY_KEYS,
+                )
             }
             errors.update(
                 _validate_optional_sensor_entities(self.hass, household_entities)
@@ -1342,7 +1390,9 @@ class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
     ) -> ConfigFlowResult:
         errors = {}
         if user_input is not None:
-            hot_water_entities = {key: user_input.get(key) for key in HOT_WATER_ENTITY_KEYS}
+            hot_water_entities = {
+                key: user_input.get(key) for key in HOT_WATER_ENTITY_KEYS
+            }
             errors.update(
                 _validate_optional_sensor_entities(self.hass, hot_water_entities)
             )

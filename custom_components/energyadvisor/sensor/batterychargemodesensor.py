@@ -87,10 +87,12 @@ _STORAGE_VERSION = 1
 # reserve (sold too little); increase margin slightly when dawn SoC is at or near
 # reserve (battery may have hit the hardware floor before dawn, risking grid import).
 _DAWN_MARGIN_HIGH_THRESHOLD_PCT = 15.0  # dawn SoC above (reserve + this) → decrease
-_DAWN_MARGIN_LOW_THRESHOLD_PCT = 5.0    # dawn SoC within this % of reserve → small increase
-_DAWN_MARGIN_DECREASE_STEP_KWH = 0.5   # kWh removed per well-stocked dawn
-_DAWN_MARGIN_INCREASE_STEP_KWH = 0.2   # kWh added per tight dawn (small safety buffer)
-_DAWN_MARGIN_MAX_KWH = 8.0             # absolute ceiling on the sell safety margin
+_DAWN_MARGIN_LOW_THRESHOLD_PCT = (
+    5.0  # dawn SoC within this % of reserve → small increase
+)
+_DAWN_MARGIN_DECREASE_STEP_KWH = 0.5  # kWh removed per well-stocked dawn
+_DAWN_MARGIN_INCREASE_STEP_KWH = 0.2  # kWh added per tight dawn (small safety buffer)
+_DAWN_MARGIN_MAX_KWH = 8.0  # absolute ceiling on the sell safety margin
 
 _WAITING_FOR_RATES_REASON = "Waiting for electricity price data."
 _OUTSIDE_HORIZON_REASON = (
@@ -651,7 +653,9 @@ def _apply_price_arbitrage_strategy(
         return
     range_start = charge_entries[0]["start"]
     range_end = charge_entries[-1]["end"]
-    _find_local_peaks(charge_entries, range_start, range_end, margin, discharging_time_minutes)
+    _find_local_peaks(
+        charge_entries, range_start, range_end, margin, discharging_time_minutes
+    )
     _find_local_valleys(charge_entries, margin, charging_time_minutes)
     _extend_peaks(charge_entries)
     _classify_output_modes(charge_entries, margin)
@@ -830,11 +834,21 @@ class BatteryChargeModeSensor(SensorEntity):
 
         # Entities for base-load learning.
         self._power_entity: str | None = entry.options.get(CONF_POWER_ENTITY)
-        self._power_meter_entity: str | None = entry.options.get(CONF_POWER_METER_CONSUMPTION)
-        self._grid_import_entity: str | None = entry.options.get(CONF_GRID_IMPORT_ENTITY)
-        self._grid_export_entity: str | None = entry.options.get(CONF_GRID_EXPORT_ENTITY)
-        self._water_heater_active_entity: str | None = entry.options.get(CONF_WATER_HEATER_ACTIVE_ENTITY)
-        self._central_heating_active_entity: str | None = entry.options.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)
+        self._power_meter_entity: str | None = entry.options.get(
+            CONF_POWER_METER_CONSUMPTION
+        )
+        self._grid_import_entity: str | None = entry.options.get(
+            CONF_GRID_IMPORT_ENTITY
+        )
+        self._grid_export_entity: str | None = entry.options.get(
+            CONF_GRID_EXPORT_ENTITY
+        )
+        self._water_heater_active_entity: str | None = entry.options.get(
+            CONF_WATER_HEATER_ACTIVE_ENTITY
+        )
+        self._central_heating_active_entity: str | None = entry.options.get(
+            CONF_CENTRAL_HEATING_ACTIVE_ENTITY
+        )
 
         # Learning state (populated from storage and updated nightly).
         self._base_load_history: list[float] = []
@@ -845,7 +859,7 @@ class BatteryChargeModeSensor(SensorEntity):
 
         # Dawn SoC feedback: sell safety margin adjusted each morning.
         self._sell_safety_margin_kwh: float = 0.0
-        self._was_in_daytime: bool = False      # detect night→day transition
+        self._was_in_daytime: bool = False  # detect night→day transition
         self._dawn_feedback_date: object = None  # prevent double-trigger per day
 
         if capacity_kwh is not None and max_power_w is not None:
@@ -926,7 +940,10 @@ class BatteryChargeModeSensor(SensorEntity):
             )
         big_consumers = [
             e
-            for e in [self._water_heater_active_entity, self._central_heating_active_entity]
+            for e in [
+                self._water_heater_active_entity,
+                self._central_heating_active_entity,
+            ]
             if e
         ]
         if big_consumers:
@@ -976,11 +993,13 @@ class BatteryChargeModeSensor(SensorEntity):
             self._base_load_history = [
                 float(v)
                 for v in data["base_load_history"]
-                if isinstance(v, (int, float)) and math.isfinite(float(v)) and float(v) > 0
+                if isinstance(v, (int, float))
+                and math.isfinite(float(v))
+                and float(v) > 0
             ]
             if self._base_load_history:
-                self._household_base_load_kw = (
-                    sum(self._base_load_history) / len(self._base_load_history)
+                self._household_base_load_kw = sum(self._base_load_history) / len(
+                    self._base_load_history
                 )
                 _LOGGER.debug(
                     "Base load restored: %.3f kW from %d nights.",
@@ -993,7 +1012,8 @@ class BatteryChargeModeSensor(SensorEntity):
             if isinstance(margin, (int, float)) and math.isfinite(float(margin)):
                 self._sell_safety_margin_kwh = max(0.0, float(margin))
                 _LOGGER.debug(
-                    "Sell safety margin restored: %.3f kWh.", self._sell_safety_margin_kwh
+                    "Sell safety margin restored: %.3f kWh.",
+                    self._sell_safety_margin_kwh,
                 )
 
         if not self._base_load_history:
@@ -1032,16 +1052,30 @@ class BatteryChargeModeSensor(SensorEntity):
         for days_ago in range(start_days_ago, _MAX_LEARNING_HISTORY + 1):
             night = today - timedelta(days=days_ago)
             window_start = datetime(
-                night.year, night.month, night.day,
-                _LEARNING_WINDOW_START_HOUR, 0, 0, tzinfo=local_tz,
+                night.year,
+                night.month,
+                night.day,
+                _LEARNING_WINDOW_START_HOUR,
+                0,
+                0,
+                tzinfo=local_tz,
             )
             window_end = datetime(
-                night.year, night.month, night.day,
-                _LEARNING_WINDOW_END_HOUR, 0, 0, tzinfo=local_tz,
+                night.year,
+                night.month,
+                night.day,
+                _LEARNING_WINDOW_END_HOUR,
+                0,
+                0,
+                tzinfo=local_tz,
             )
-            base_load_kw = await self._average_power_kw_from_recorder(window_start, window_end)
+            base_load_kw = await self._average_power_kw_from_recorder(
+                window_start, window_end
+            )
             if base_load_kw is None:
-                _LOGGER.debug("Bootstrap (power): skipping %s — no valid average.", night)
+                _LOGGER.debug(
+                    "Bootstrap (power): skipping %s — no valid average.", night
+                )
                 continue
             _LOGGER.debug(
                 "Bootstrap (power): %s  base load %.3f kW.", night, base_load_kw
@@ -1051,12 +1085,14 @@ class BatteryChargeModeSensor(SensorEntity):
                 break
 
         if not bootstrapped:
-            _LOGGER.debug("Bootstrap (power): no valid nights found in recorder history.")
+            _LOGGER.debug(
+                "Bootstrap (power): no valid nights found in recorder history."
+            )
             return
 
         self._base_load_history = list(reversed(bootstrapped))
-        self._household_base_load_kw = (
-            sum(self._base_load_history) / len(self._base_load_history)
+        self._household_base_load_kw = sum(self._base_load_history) / len(
+            self._base_load_history
         )
         await self._save_learned_data()
         _LOGGER.info(
@@ -1092,22 +1128,38 @@ class BatteryChargeModeSensor(SensorEntity):
         for days_ago in range(start_days_ago, _MAX_LEARNING_HISTORY + 1):
             night = today - timedelta(days=days_ago)
             window_start = datetime(
-                night.year, night.month, night.day,
-                _LEARNING_WINDOW_START_HOUR, 0, 0, tzinfo=local_tz,
+                night.year,
+                night.month,
+                night.day,
+                _LEARNING_WINDOW_START_HOUR,
+                0,
+                0,
+                tzinfo=local_tz,
             )
             window_end = datetime(
-                night.year, night.month, night.day,
-                _LEARNING_WINDOW_END_HOUR, 0, 0, tzinfo=local_tz,
+                night.year,
+                night.month,
+                night.day,
+                _LEARNING_WINDOW_END_HOUR,
+                0,
+                0,
+                tzinfo=local_tz,
             )
 
             # Check big consumers were off the whole window.
             quiet = True
-            for consumer in [self._water_heater_active_entity, self._central_heating_active_entity]:
+            for consumer in [
+                self._water_heater_active_entity,
+                self._central_heating_active_entity,
+            ]:
                 if not consumer:
                     continue
                 consumer_states = await recorder.async_add_executor_job(
                     recorder_history.state_changes_during_period,
-                    self.hass, window_start, window_end, consumer,
+                    self.hass,
+                    window_start,
+                    window_end,
+                    consumer,
                 )
                 if any(
                     s.state in ("on", "true", "1")
@@ -1116,7 +1168,9 @@ class BatteryChargeModeSensor(SensorEntity):
                     quiet = False
                     break
             if not quiet:
-                _LOGGER.debug("Bootstrap (meter): skipping %s — big consumer was active.", night)
+                _LOGGER.debug(
+                    "Bootstrap (meter): skipping %s — big consumer was active.", night
+                )
                 continue
 
             # Query meter with a small buffer so we capture the reading
@@ -1130,12 +1184,19 @@ class BatteryChargeModeSensor(SensorEntity):
             )
             states = meter_states.get(self._power_meter_entity, [])
 
-            reading_start = _last_float_state_at_or_before(states, window_start + timedelta(minutes=5))
-            reading_end = _last_float_state_at_or_before(states, window_end + timedelta(minutes=5))
+            reading_start = _last_float_state_at_or_before(
+                states, window_start + timedelta(minutes=5)
+            )
+            reading_end = _last_float_state_at_or_before(
+                states, window_end + timedelta(minutes=5)
+            )
             if reading_start is None or reading_end is None:
                 _LOGGER.debug(
                     "Bootstrap (meter): skipping %s — no meter data (start=%s, end=%s, %d states).",
-                    night, reading_start, reading_end, len(states),
+                    night,
+                    reading_start,
+                    reading_end,
+                    len(states),
                 )
                 continue
 
@@ -1143,25 +1204,30 @@ class BatteryChargeModeSensor(SensorEntity):
             if not (0 < diff_kwh < 5.0):  # sanity: max ~1.67 kW average
                 _LOGGER.debug(
                     "Bootstrap (meter): skipping %s — diff %.3f kWh outside sanity band.",
-                    night, diff_kwh,
+                    night,
+                    diff_kwh,
                 )
                 continue
 
             _LOGGER.debug(
                 "Bootstrap (meter): %s  base load %.3f kW (diff %.3f kWh).",
-                night, diff_kwh / _LEARNING_WINDOW_HOURS, diff_kwh,
+                night,
+                diff_kwh / _LEARNING_WINDOW_HOURS,
+                diff_kwh,
             )
             bootstrapped.append(diff_kwh / _LEARNING_WINDOW_HOURS)
             if len(bootstrapped) >= _MAX_LEARNING_HISTORY:
                 break
 
         if not bootstrapped:
-            _LOGGER.debug("Bootstrap (meter): no quiet nights found in recorder history.")
+            _LOGGER.debug(
+                "Bootstrap (meter): no quiet nights found in recorder history."
+            )
             return
 
         self._base_load_history = list(reversed(bootstrapped))
-        self._household_base_load_kw = (
-            sum(self._base_load_history) / len(self._base_load_history)
+        self._household_base_load_kw = sum(self._base_load_history) / len(
+            self._base_load_history
         )
         await self._save_learned_data()
         _LOGGER.info(
@@ -1174,10 +1240,12 @@ class BatteryChargeModeSensor(SensorEntity):
         """Persist the base-load rolling average to HA storage."""
         if self._store is None:
             return
-        await self._store.async_save({
-            "base_load_history": self._base_load_history,
-            "sell_safety_margin_kwh": round(self._sell_safety_margin_kwh, 3),
-        })
+        await self._store.async_save(
+            {
+                "base_load_history": self._base_load_history,
+                "sell_safety_margin_kwh": round(self._sell_safety_margin_kwh, 3),
+            }
+        )
 
     async def _average_power_kw_from_recorder(
         self,
@@ -1209,7 +1277,10 @@ class BatteryChargeModeSensor(SensorEntity):
         # --- Inverter power (W): outlier-filtered trimmed mean ---
         states_dict = await rec.async_add_executor_job(
             recorder_history.state_changes_during_period,
-            self.hass, window_start, window_end, self._power_entity,
+            self.hass,
+            window_start,
+            window_end,
+            self._power_entity,
         )
         values: list[float] = []
         for s in states_dict.get(self._power_entity, []):
@@ -1222,20 +1293,24 @@ class BatteryChargeModeSensor(SensorEntity):
 
         if len(values) < 6:
             _LOGGER.debug(
-                "Power averaging: only %d valid readings in window — not enough data.", len(values)
+                "Power averaging: only %d valid readings in window — not enough data.",
+                len(values),
             )
             return None
 
         sorted_vals = sorted(values)
         median = sorted_vals[len(sorted_vals) // 2]
-        lo = median / 3.0   # drop-out / brief-disconnect floor
-        hi = median * 2.5   # big-consumer spike ceiling
+        lo = median / 3.0  # drop-out / brief-disconnect floor
+        hi = median * 2.5  # big-consumer spike ceiling
 
         filtered = [v for v in values if lo <= v <= hi]
         if len(filtered) < len(values) // 2:
             _LOGGER.debug(
                 "Power averaging: %d/%d readings outside [%.0f W, %.0f W] — noisy data, skipping.",
-                len(values) - len(filtered), len(values), lo, hi,
+                len(values) - len(filtered),
+                len(values),
+                lo,
+                hi,
             )
             return None
 
@@ -1252,7 +1327,10 @@ class BatteryChargeModeSensor(SensorEntity):
                 continue
             states_dict = await rec.async_add_executor_job(
                 recorder_history.state_changes_during_period,
-                self.hass, window_start, window_end, entity,
+                self.hass,
+                window_start,
+                window_end,
+                entity,
             )
             grid_vals: list[float] = []
             for s in states_dict.get(entity, []):
@@ -1267,7 +1345,9 @@ class BatteryChargeModeSensor(SensorEntity):
 
         result_kw = avg_inverter_kw + grid_correction_kw
         if not (0.05 < result_kw < 3.0):
-            _LOGGER.debug("Power averaging: result %.3f kW outside sanity band.", result_kw)
+            _LOGGER.debug(
+                "Power averaging: result %.3f kW outside sanity band.", result_kw
+            )
             return None
 
         return result_kw
@@ -1308,7 +1388,9 @@ class BatteryChargeModeSensor(SensorEntity):
         self._learning_window_active = False
 
         if not self._quiet_night:
-            _LOGGER.debug("Base load learning: skipping — big consumer was active during 01:00–04:00.")
+            _LOGGER.debug(
+                "Base load learning: skipping — big consumer was active during 01:00–04:00."
+            )
             return
 
         local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
@@ -1317,16 +1399,30 @@ class BatteryChargeModeSensor(SensorEntity):
         if self._power_entity:
             # Power-averaging approach: query recorder for the just-closed window.
             window_start = datetime(
-                today_local.year, today_local.month, today_local.day,
-                _LEARNING_WINDOW_START_HOUR, 0, 0, tzinfo=local_tz,
+                today_local.year,
+                today_local.month,
+                today_local.day,
+                _LEARNING_WINDOW_START_HOUR,
+                0,
+                0,
+                tzinfo=local_tz,
             )
             window_end = datetime(
-                today_local.year, today_local.month, today_local.day,
-                _LEARNING_WINDOW_END_HOUR, 0, 0, tzinfo=local_tz,
+                today_local.year,
+                today_local.month,
+                today_local.day,
+                _LEARNING_WINDOW_END_HOUR,
+                0,
+                0,
+                tzinfo=local_tz,
             )
-            base_load_kw = await self._average_power_kw_from_recorder(window_start, window_end)
+            base_load_kw = await self._average_power_kw_from_recorder(
+                window_start, window_end
+            )
             if base_load_kw is None:
-                _LOGGER.debug("Base load learning: power averaging yielded no valid result.")
+                _LOGGER.debug(
+                    "Base load learning: power averaging yielded no valid result."
+                )
                 return
         elif self._power_meter_entity:
             if self._meter_reading_at_01 is None:
@@ -1336,7 +1432,10 @@ class BatteryChargeModeSensor(SensorEntity):
                 return
             diff_kwh = reading_04 - self._meter_reading_at_01
             if diff_kwh <= 0:
-                _LOGGER.debug("Base load learning: non-positive diff (%.3f kWh), skipping.", diff_kwh)
+                _LOGGER.debug(
+                    "Base load learning: non-positive diff (%.3f kWh), skipping.",
+                    diff_kwh,
+                )
                 return
             base_load_kw = diff_kwh / _LEARNING_WINDOW_HOURS
         else:
@@ -1346,8 +1445,8 @@ class BatteryChargeModeSensor(SensorEntity):
         if len(self._base_load_history) > _MAX_LEARNING_HISTORY:
             self._base_load_history.pop(0)
 
-        self._household_base_load_kw = (
-            sum(self._base_load_history) / len(self._base_load_history)
+        self._household_base_load_kw = sum(self._base_load_history) / len(
+            self._base_load_history
         )
         _LOGGER.info(
             "Base load learning: updated to %.3f kW (%d nights in average).",
@@ -1385,7 +1484,9 @@ class BatteryChargeModeSensor(SensorEntity):
             _LOGGER.info(
                 "Dawn SoC feedback: SoC %.1f%% is %.1f%% above reserve — "
                 "sell was conservative. Margin decreased to %.2f kWh.",
-                soc_pct, above_reserve_pct, self._sell_safety_margin_kwh,
+                soc_pct,
+                above_reserve_pct,
+                self._sell_safety_margin_kwh,
             )
         elif above_reserve_pct <= _DAWN_MARGIN_LOW_THRESHOLD_PCT:
             # Battery near reserve — hardware floor may have been hit before dawn.
@@ -1397,12 +1498,14 @@ class BatteryChargeModeSensor(SensorEntity):
             _LOGGER.info(
                 "Dawn SoC feedback: SoC %.1f%% is close to reserve — "
                 "adding buffer. Margin increased to %.2f kWh.",
-                soc_pct, self._sell_safety_margin_kwh,
+                soc_pct,
+                self._sell_safety_margin_kwh,
             )
         else:
             _LOGGER.debug(
                 "Dawn SoC feedback: SoC %.1f%% (%.1f%% above reserve) — no margin change.",
-                soc_pct, above_reserve_pct,
+                soc_pct,
+                above_reserve_pct,
             )
 
         await self._save_learned_data()
@@ -1544,7 +1647,9 @@ class BatteryChargeModeSensor(SensorEntity):
                 continue
             solar_kw = _solar_kw_for_slot(solar_entries, entry["start"], entry["end"])
             mode = entry["mode"]
-            sim_kwh = max(0.0, min(capacity_kwh, sim_kwh + _delta(mode, slot_hours, solar_kw)))
+            sim_kwh = max(
+                0.0, min(capacity_kwh, sim_kwh + _delta(mode, slot_hours, solar_kw))
+            )
             result.append(
                 {
                     "end": entry["end"].isoformat(),
@@ -1767,9 +1872,7 @@ class BatteryChargeModeSensor(SensorEntity):
                         continue  # past slots: no change, no simulation step
 
                     slot_start = max(entry["start"], now)
-                    slot_hours = (
-                        (entry["end"] - slot_start).total_seconds() / 3600.0
-                    )
+                    slot_hours = (entry["end"] - slot_start).total_seconds() / 3600.0
                     if slot_hours <= 0:
                         continue
 
@@ -1802,9 +1905,7 @@ class BatteryChargeModeSensor(SensorEntity):
                         # Battery covers load deficit; excess solar charges battery
                         net_kw = solar_kw - base_load_kw
                         if net_kw >= 0:
-                            delta_kwh = (
-                                net_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
-                            )
+                            delta_kwh = net_kw * slot_hours * _DEFAULT_CHARGE_EFFICIENCY
                         else:
                             delta_kwh = (
                                 net_kw * slot_hours / _DEFAULT_DISCHARGE_EFFICIENCY
@@ -1860,9 +1961,7 @@ class BatteryChargeModeSensor(SensorEntity):
             )
             sellable_kwh = max(
                 0.0,
-                self._battery_capacity_kwh
-                - floor_kwh
-                - self._sell_safety_margin_kwh,
+                self._battery_capacity_kwh - floor_kwh - self._sell_safety_margin_kwh,
             )
 
         # Round to 0.1 kWh so minor floating-point drift does not force a replan.

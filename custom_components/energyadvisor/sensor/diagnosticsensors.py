@@ -134,7 +134,9 @@ class StrategySensor(_DiagnosticBase):
 
     @property
     def native_value(self) -> str:
-        return "solar_aware" if self._battery_sensor.solar_dominant else "price_arbitrage"
+        return (
+            "solar_aware" if self._battery_sensor.solar_dominant else "price_arbitrage"
+        )
 
 
 class BatteryFloorSensor(_DiagnosticBase, RestoreSensor):
@@ -175,7 +177,9 @@ class BatteryFloorSensor(_DiagnosticBase, RestoreSensor):
         if live:
             self._restored_value = None
             return round(live, 3)
-        return round(self._restored_value, 3) if self._restored_value is not None else 0.0
+        return (
+            round(self._restored_value, 3) if self._restored_value is not None else 0.0
+        )
 
 
 class LearningNightsSensor(_DiagnosticBase):
@@ -358,4 +362,3 @@ class BatterySocForecastSensor(_DiagnosticBase, RestoreSensor):
             "min_soc_pct": min_entry["soc_pct"],
             "min_soc_time": min_entry["end"],
         }
-

@@ -522,8 +522,14 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
     assert result["options"][CONF_BATTERY_SOC_ENTITY] == "sensor.battery_soc"
     assert result["options"][CONF_GRID_IMPORT_ENTITY] == "sensor.grid_import"
     assert result["options"][CONF_POWER_METER_CONSUMPTION] == "sensor.power_meter"
-    assert result["options"][CONF_WATER_HEATER_ACTIVE_ENTITY] == "binary_sensor.water_heater_active"
-    assert result["options"][CONF_CENTRAL_HEATING_ACTIVE_ENTITY] == "binary_sensor.heating_active"
+    assert (
+        result["options"][CONF_WATER_HEATER_ACTIVE_ENTITY]
+        == "binary_sensor.water_heater_active"
+    )
+    assert (
+        result["options"][CONF_CENTRAL_HEATING_ACTIVE_ENTITY]
+        == "binary_sensor.heating_active"
+    )
     assert result["options"][CONF_WATER_HEATER_POWER_W] == 3500.0
     assert result["options"][CONF_POOL_PUMP_POWER_W] == 500.0
     assert result["options"][CONF_DEHUMIDIFIER_POWER_W] == 1500.0
@@ -709,7 +715,9 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
     result = await handler.async_step_flexible_loads({})
     assert result["type"] == "create_entry"
     assert result["data"][CONF_BATTERY_DEGRADATION_COST] == 0.0
-    assert result["data"][CONF_OUTDOOR_TEMPERATURE_ENTITY] == "sensor.outdoor_temperature"
+    assert (
+        result["data"][CONF_OUTDOOR_TEMPERATURE_ENTITY] == "sensor.outdoor_temperature"
+    )
     assert result["data"][CONF_WATER_HEATER_POWER_ENTITY] == "sensor.water_heater_power"
     assert result["data"][CONF_WATER_HEATER_POWER_W] == 3500.0
     assert result["data"][CONF_WATER_HEATER_MAX_HOURS] == 4.0
