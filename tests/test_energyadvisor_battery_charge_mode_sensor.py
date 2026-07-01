@@ -779,6 +779,14 @@ def test_extra_state_attributes_structure(sensor):
     assert attrs["charge_source"] is None
 
 
+def test_battery_floor_includes_reserve(sensor):
+    sensor._battery_capacity_kwh = 10.0
+    sensor._required_load_kwh = 1.5
+
+    assert sensor.battery_floor_kwh == 2.0
+    assert sensor.battery_floor_pct == 20.0
+
+
 def test_extra_state_attributes_serialises_datetimes_to_strings(sensor):
     start = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
     sensor._charge_entries = [

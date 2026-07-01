@@ -1670,14 +1670,17 @@ class BatteryChargeModeSensor(SensorEntity):
     @property
     def battery_floor_kwh(self) -> float:
         """Energy (kWh) that must stay in the battery to cover load until solar."""
-        return self._required_load_kwh
+        if self._battery_capacity_kwh is None or self._battery_capacity_kwh <= 0:
+            return 0.0
+        reserve_kwh = self._battery_capacity_kwh * _DEFAULT_RESERVE_FRACTION
+        return min(self._battery_capacity_kwh, reserve_kwh + self._required_load_kwh)
 
     @property
     def battery_floor_pct(self) -> float | None:
         """Floor expressed as percentage of battery capacity (0–100)."""
         if self._battery_capacity_kwh is None or self._battery_capacity_kwh <= 0:
             return None
-        return round(self._required_load_kwh / self._battery_capacity_kwh * 100.0, 1)
+        return round(self.battery_floor_kwh / self._battery_capacity_kwh * 100.0, 1)
 
     @property
     def sell_safety_margin_kwh(self) -> float:
