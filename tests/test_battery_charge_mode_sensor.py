@@ -351,8 +351,9 @@ class TestComputeChargeModes:
             21,
             22,
         }
-        assert mode_map[0] == "discharge"
-        assert mode_map[6] == "discharge"
+        # Period 1 (h0-h11): all maxuse — no price peaks with uniform prices.
+        assert mode_map[0] == "maxuse"
+        assert mode_map[6] == "maxuse"
         assert mode_map[12] == "maxuse"
         assert mode_map[21] == "sell"
 
@@ -382,11 +383,10 @@ class TestComputeChargeModes:
         # gap as a two-hour slot on spring-forward days.
         assert result[1]["end"] - result[1]["start"] == timedelta(hours=2)
         assert result[-1]["end"].strftime("%Y-%m-%dT%H:%M") == "2024-04-01T00:00"
-        assert mode_map["00:00"] == "discharge"
-        assert mode_map["01:00"] == "discharge"
-        assert mode_map["04:00"] == "discharge"
-        assert mode_map["06:00"] == "discharge"
-        assert mode_map["09:00"] == "discharge"
+        assert mode_map["00:00"] == "maxuse"
+        assert mode_map["01:00"] == "maxuse"
+        assert mode_map["09:00"] == "maxuse"
+        assert mode_map["12:00"] == "maxuse"
         assert mode_map["17:00"] == "sell"
         assert mode_map["19:00"] == "sell"
         assert mode_map["23:00"] == "discharge"
@@ -503,9 +503,9 @@ class TestComputeChargeModes:
         rates = make_rates(costs)
         result = compute_charge_modes(rates, 0.7, 160, 240)
         mode_map = {e["start"].hour: e["mode"] for e in result}
-        # Period 1 (h0–h11): all discharge
+        # Period 1 (h0–h11): maxuse by default (no price peaks with flat prices)
         for h in range(12):
-            assert mode_map[h] == "discharge", f"hour {h}: {mode_map[h]}"
+            assert mode_map[h] == "maxuse", f"hour {h}: {mode_map[h]}"
         # Period 2, noon–17h: maxuse (charge battery from solar)
         for h in range(12, 17):
             assert mode_map[h] == "maxuse", f"hour {h}: {mode_map[h]}"

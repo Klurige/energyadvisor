@@ -399,10 +399,11 @@ def _apply_summer_sell_strategy(
     Two periods per day:
 
     **Period 1 — midnight to noon (00:00–12:00)**
-    - Before sunrise: discharge (no solar, battery covers load).
-    - After sunrise, per slot: credit > margin → discharge (export solar
-      surplus at the prevailing price); credit ≤ margin → maxuse (store
-      cheap solar in the battery for the evening sell).
+    Default: maxuse (store solar / cover load from battery).
+    Exception: if the current slot's price is higher than the minimum price of
+    any remaining period-1 slot by more than the battery wear margin, use
+    discharge instead (it is worth exporting now rather than storing for a
+    cheaper later slot).
 
     No sell candidates in period 1.
 
@@ -414,66 +415,68 @@ def _apply_summer_sell_strategy(
       before or after sunset.
 
     **Fallback (no solar forecast)**
-    Fixed windows: period 1 → all discharge; period 2: 12:00–17:00 → maxuse,
-    17:00–24:00 → discharge (sell candidates — noon-to-17:00 maxuse slots are
-    not sell candidates in fallback mode).
+    Period 1: same price-peak discharge logic as above.
+    Period 2: 12:00–17:00 → maxuse, 17:00–24:00 → discharge (sell candidates
+    only — the noon-to-17:00 maxuse slots are not sell candidates in fallback).
     """
     has_solar_data = bool(solar_entries)
     tz_hint = charge_entries[0]["start"].tzinfo if charge_entries else None
     solar_windows = _solar_window_by_date(solar_entries or [], tz_hint=tz_hint)
 
-    entries_by_day: dict = {}
+    # Group entries into period 1 and period 2 per day.
+    day_period1: dict = {}
+    day_period2: dict = {}
     for entry in charge_entries:
         start = entry["start"]
         d = start.date()
         hour_frac = start.hour + start.minute / 60.0
-        is_period2 = hour_frac >= 12.0
-
-        if has_solar_data:
-            sunrise, sunset = solar_windows.get(d, (None, None))
-            if not is_period2:
-                # Period 1: discharge before sunrise, per-slot price after.
-                if sunrise is None or start < sunrise:
-                    entry["mode"] = "discharge"
-                else:
-                    credit = entry.get("credit") or 0.0
-                    entry["mode"] = "discharge" if credit > margin else "maxuse"
-            else:
-                # Period 2: maxuse until sunset, discharge after.
-                if sunset is None or start < sunset:
-                    entry["mode"] = "maxuse"
-                else:
-                    entry["mode"] = "discharge"
+        if hour_frac < 12.0:
+            day_period1.setdefault(d, []).append(entry)
         else:
-            # Fallback: fixed windows.
-            if not is_period2:
-                entry["mode"] = "discharge"
+            day_period2.setdefault(d, []).append(entry)
+
+    # Period 1: maxuse by default; discharge at price peaks.
+    # A slot is a "peak" when its cost exceeds the minimum cost of all
+    # subsequent period-1 slots on the same day by more than the margin.
+    for p1_entries in day_period1.values():
+        # Build suffix minimum: min cost of entries AFTER position i.
+        n = len(p1_entries)
+        suffix_min: list[float] = [math.inf] * n
+        for i in range(n - 2, -1, -1):
+            suffix_min[i] = min(
+                p1_entries[i + 1].get("cost") or 0.0,
+                suffix_min[i + 1],
+            )
+        for i, entry in enumerate(p1_entries):
+            cost = entry.get("cost") or 0.0
+            entry["mode"] = "discharge" if cost > suffix_min[i] + margin else "maxuse"
+
+    # Period 2: maxuse until sunset, discharge after (sell candidates).
+    for d, p2_entries in day_period2.items():
+        _, sunset = solar_windows.get(d, (None, None))
+        for entry in p2_entries:
+            start = entry["start"]
+            hour_frac = start.hour + start.minute / 60.0
+            if has_solar_data:
+                entry["mode"] = (
+                    "maxuse" if (sunset is None or start < sunset) else "discharge"
+                )
             else:
                 entry["mode"] = "maxuse" if hour_frac < 17.0 else "discharge"
 
-        entries_by_day.setdefault(d, []).append(entry)
-
-    for day_entries in entries_by_day.values():
-        # Sell candidates: period-2 slots only.
-        # Dynamic (solar data): ALL period-2 slots — sell can start before
-        # sunset when the price peak falls in the afternoon.
-        # Fallback: only period-2 discharge slots (17:00+) so the fixed
-        # noon-17:00 maxuse window is never overridden by sell selection.
-        if has_solar_data:
-            candidates = [
-                e
-                for e in day_entries
-                if (e["start"].hour + e["start"].minute / 60.0) >= 12.0
-            ]
-        else:
-            candidates = [
-                e
-                for e in day_entries
-                if e["mode"] == "discharge"
-                and (e["start"].hour + e["start"].minute / 60.0) >= 12.0
-            ]
-        if not candidates:
+    # Sell selection (period 2 only): peak-and-expand per day.
+    for d in set(day_period1.keys()) | set(day_period2.keys()):
+        p2_entries = day_period2.get(d, [])
+        if not p2_entries:
             continue
+
+        # Dynamic: all period-2 slots are candidates (sell peak can precede sunset).
+        # Fallback: only the discharge slots (17:00+).
+        if has_solar_data:
+            candidates = list(p2_entries)
+        else:
+            candidates = [e for e in p2_entries if e["mode"] == "discharge"]
+        if not candidates:
             continue
 
         candidates.sort(key=lambda entry: entry["start"])
@@ -494,8 +497,7 @@ def _apply_summer_sell_strategy(
         if target <= 0:
             continue
 
-        # Seed: highest-ranked slot; ties (same credit and cost) broken by
-        # earliest time.
+        # Seed: highest-ranked slot; ties broken by earliest time.
         peak_idx = max(
             range(len(candidates)),
             key=lambda i: (*_slot_sell_score(candidates[i]), -i),
@@ -504,8 +506,7 @@ def _apply_summer_sell_strategy(
         left = peak_idx
         right = peak_idx
 
-        # Expand outward one slot at a time, always picking the higher-ranked
-        # adjacent candidate (left or right in time order).
+        # Expand outward one slot at a time, picking the higher adjacent candidate.
         _EMPTY_SCORE: tuple[float, float] = (-math.inf, -math.inf)
         while (right - left + 1) < target:
             left_score = (
