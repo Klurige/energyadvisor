@@ -21,7 +21,7 @@ An optional sensor that refines an [Open Meteo](https://open-meteo.com/) solar p
 |---|---|---|
 | Solar forecast sensor (tomorrow) | `forecast_tomorrow_entity` | `sensor.home_energy_production_tomorrow` |
 
-Configure via **Settings → Devices & Services → Electricity Price Levels → Configure**.
+Configure via **Settings → Devices & Services → Energy Advisor → Configure**.
 
 The sensor is only created when both `forecast_entity` and `power_entity` are set.
 If `forecast_tomorrow_entity` is provided, it must also refer to an existing

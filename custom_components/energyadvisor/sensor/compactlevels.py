@@ -23,7 +23,7 @@ from ..const import (
 )
 
 if TYPE_CHECKING:
-    from .electricitypricelevels import ElectricityPriceLevelsSensor
+    from .energyadvisor import EnergyAdvisorSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,10 +45,10 @@ if simulationLevelIndex >= 0:
 
 def _resolve_levels_sensor(
     hass: HomeAssistant, entity_id: str | None = None
-) -> ElectricityPriceLevelsSensor | None:
+) -> EnergyAdvisorSensor | None:
     """Resolve a levels sensor instance from runtime data."""
     runtime_entries = hass.data.get(DOMAIN, {})
-    matches: list[ElectricityPriceLevelsSensor] = []
+    matches: list[EnergyAdvisorSensor] = []
 
     for runtime_data in runtime_entries.values():
         levels_sensor = getattr(runtime_data, "levels_sensor", None)
@@ -98,7 +98,7 @@ class CompactLevelsSensor(SensorEntity):
         hass: HomeAssistant,
         entry: ConfigEntry,
         device_info: DeviceInfo,
-        source_sensor: ElectricityPriceLevelsSensor,
+        source_sensor: EnergyAdvisorSensor,
     ) -> None:
         self._entry = entry
         self._source_sensor = source_sensor

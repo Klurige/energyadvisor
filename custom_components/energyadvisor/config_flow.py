@@ -426,7 +426,7 @@ async def _validate_nordpool_prices_sensor(
     return True, attributes
 
 
-class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
+class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
     VERSION = 2
 
     def __init__(self):
@@ -436,8 +436,8 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(
         config_entry: ConfigEntry,
-    ) -> ElectricityPriceLevelOptionFlowHandler:
-        return ElectricityPriceLevelOptionFlowHandler()
+    ) -> EnergyAdvisorOptionFlowHandler:
+        return EnergyAdvisorOptionFlowHandler()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -1031,7 +1031,7 @@ class ElectricityPriceLevelFlowHandler(ConfigFlow, domain=DOMAIN):
         )
 
 
-class ElectricityPriceLevelOptionFlowHandler(OptionsFlow):
+class EnergyAdvisorOptionFlowHandler(OptionsFlow):
     def __init__(self) -> None:
         self.current_options: dict[str, Any] = {}
         self.unit_of_measurement = ""

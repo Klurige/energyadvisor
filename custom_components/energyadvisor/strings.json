@@ -332,7 +332,7 @@
   },
   "entity": {
     "sensor": {
-      "electricitypricelevels": {
+      "energyadvisor": {
         "name": "Price"
       },
       "compactlevels": {

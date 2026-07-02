@@ -1,4 +1,4 @@
-"""The ElectricityPriceLevel integration."""
+"""The Energy Advisor integration."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN, LOGGER, PREFERRED_SENSOR_ENTITY_IDS, build_sensor_unique_id
-from .models import ElectricityPriceLevelsRuntimeData
+from .models import EnergyAdvisorRuntimeData
 from .services import async_setup_services
 
 PLATFORMS = [Platform.SENSOR]
@@ -59,6 +59,10 @@ def _registry_entry_sensor_key(entity_entry: er.RegistryEntry) -> str | None:
     _, _, suffix = entity_entry.unique_id.rpartition("_")
     if suffix in PREFERRED_SENSOR_ENTITY_IDS:
         return suffix
+
+    preferred_entity_id = PREFERRED_SENSOR_ENTITY_IDS.get("energyadvisor")
+    if preferred_entity_id and entity_entry.entity_id == preferred_entity_id:
+        return "energyadvisor"
 
     return None
 
@@ -112,14 +116,14 @@ async def _async_migrate_entity_registry(
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up ElectricityPriceLevel from a config entry."""
+    """Set up Energy Advisor from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     async_setup_services(hass)
     await _async_migrate_entity_registry(hass, entry)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     runtime_data = getattr(entry, "runtime_data", None)
-    if isinstance(runtime_data, ElectricityPriceLevelsRuntimeData):
+    if isinstance(runtime_data, EnergyAdvisorRuntimeData):
         hass.data[DOMAIN][entry.entry_id] = runtime_data
 
     entry.async_on_unload(entry.add_update_listener(async_update_options))

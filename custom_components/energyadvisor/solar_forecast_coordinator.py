@@ -79,7 +79,7 @@ from .const import (
 )
 
 if TYPE_CHECKING:
-    from .sensor.electricitypricelevels import ElectricityPriceLevelsSensor
+    from .sensor.energyadvisor import EnergyAdvisorSensor
 
 # Algorithm tuning constants
 SLOTS_PER_DAY = 96  # 15-min intervals per day
@@ -220,7 +220,7 @@ class SolarForecastCoordinator:
         self,
         hass: HomeAssistant,
         entry: ConfigEntry,
-        levels_sensor: ElectricityPriceLevelsSensor | None = None,
+        levels_sensor: EnergyAdvisorSensor | None = None,
     ) -> None:
         self.hass = hass
         self.entry = entry

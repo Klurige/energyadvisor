@@ -6,8 +6,8 @@ import pytest
 
 from custom_components.energyadvisor import config_flow as config_flow_module
 from custom_components.energyadvisor.config_flow import (
-    ElectricityPriceLevelFlowHandler,
-    ElectricityPriceLevelOptionFlowHandler,
+    EnergyAdvisorFlowHandler,
+    EnergyAdvisorOptionFlowHandler,
     _parse_unit_of_measurement,
     _validate_nordpool_prices_sensor,
 )
@@ -172,7 +172,7 @@ async def test_options_flow_init_step_contains_price_and_threshold_fields() -> N
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
-    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler = EnergyAdvisorOptionFlowHandler()
     handler._config_entry = config_entry
     hass = MagicMock()
     hass.states.get.return_value = None
@@ -196,7 +196,7 @@ async def test_options_flow_household_step_contains_new_load_fields() -> None:
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
-    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler = EnergyAdvisorOptionFlowHandler()
     handler._config_entry = config_entry
     handler.current_options = dict(config_entry.options)
     handler.unit_of_measurement = "EUR/kWh"
@@ -220,7 +220,7 @@ async def test_options_flow_threshold_validation_error() -> None:
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
-    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler = EnergyAdvisorOptionFlowHandler()
     handler._config_entry = config_entry
     state = MagicMock()
     state.state = "1.23"
@@ -247,7 +247,7 @@ async def test_options_flow_threshold_validation_error() -> None:
 @pytest.mark.asyncio
 async def test_main_flow_thresholds_proceeds_to_solar_forecast() -> None:
     """Test thresholds step proceeds to solar_forecast step."""
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.hass = MagicMock()
     handler.data = {
         CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
@@ -274,7 +274,7 @@ async def test_main_flow_user_prefills_dev_default_prices_sensor(monkeypatch) ->
         {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"},
     )
 
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.hass = MagicMock()
 
     result = await handler.async_step_user()
@@ -288,7 +288,7 @@ async def test_main_flow_user_prefills_dev_default_prices_sensor(monkeypatch) ->
 @pytest.mark.asyncio
 async def test_main_flow_solar_forecast_rejects_missing_tomorrow_entity() -> None:
     """Test solar step validates the optional tomorrow forecast entity."""
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.data = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
     hass = MagicMock()
@@ -326,7 +326,7 @@ async def test_main_flow_solar_forecast_prefills_dev_default_entities(
         },
     )
 
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.hass = MagicMock()
     handler.data = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
@@ -342,7 +342,7 @@ async def test_main_flow_solar_forecast_prefills_dev_default_entities(
 @pytest.mark.asyncio
 async def test_main_flow_valid_solar_forecast_proceeds_to_battery() -> None:
     """Test valid solar settings proceed to the battery step."""
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.data = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
     hass = MagicMock()
@@ -378,7 +378,7 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
         },
     )
 
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.hass = MagicMock()
     handler.data = {
         CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
@@ -399,7 +399,7 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
 @pytest.mark.asyncio
 async def test_main_flow_battery_requires_capacity_and_power_together() -> None:
     """Test battery step requires capacity and max power together."""
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.data = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
     handler.hass = MagicMock()
 
@@ -418,7 +418,7 @@ async def test_main_flow_battery_requires_capacity_and_power_together() -> None:
 @pytest.mark.asyncio
 async def test_main_flow_battery_rejects_missing_optimizer_entity() -> None:
     """Test battery step validates optional optimizer entities when provided."""
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.data = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
     hass = MagicMock()
     hass.states.get.return_value = None
@@ -460,7 +460,7 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
         "sensor.dehumidifier_power": _make_state("0"),
     }.get(entity_id)
 
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.data = dict(base_data)
     handler.hass = hass
 
@@ -541,7 +541,7 @@ async def test_options_flow_requires_solar_power_pair() -> None:
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
-    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler = EnergyAdvisorOptionFlowHandler()
     handler._config_entry = config_entry
     handler.current_options = dict(config_entry.options)
     handler.unit_of_measurement = "EUR/kWh"
@@ -568,7 +568,7 @@ async def test_options_flow_rejects_missing_tomorrow_entity() -> None:
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
-    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler = EnergyAdvisorOptionFlowHandler()
     handler._config_entry = config_entry
     handler.current_options = dict(config_entry.options)
     handler.unit_of_measurement = "EUR/kWh"
@@ -598,7 +598,7 @@ async def test_options_flow_requires_battery_capacity_and_power_together() -> No
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
-    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler = EnergyAdvisorOptionFlowHandler()
     handler._config_entry = config_entry
     handler.current_options = dict(config_entry.options)
     handler.unit_of_measurement = "EUR/kWh"
@@ -625,7 +625,7 @@ async def test_options_flow_rejects_missing_optimizer_entity() -> None:
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
-    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler = EnergyAdvisorOptionFlowHandler()
     handler._config_entry = config_entry
     handler.current_options = dict(config_entry.options)
     handler.unit_of_measurement = "EUR/kWh"
@@ -650,7 +650,7 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
-    handler = ElectricityPriceLevelOptionFlowHandler()
+    handler = EnergyAdvisorOptionFlowHandler()
     handler._config_entry = config_entry
 
     hass = MagicMock()

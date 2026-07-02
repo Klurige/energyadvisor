@@ -166,7 +166,7 @@ NordpoolDataCoordinator  ←──  nordpool.get_prices_for_date (HA service cal
         │
         │  async_update_data(raw_prices)
         ▼
-ElectricityPriceLevelsSensor
+EnergyAdvisorSensor
   • parse entries: spot price → cost/credit via calculate_cost_and_credit()
   • classify: calculate_level(cost)
   • rank: sort each day's entries by price, assign minute-scaled rank
@@ -185,7 +185,7 @@ CompactLevelsSensor
 | File | Role |
 |------|------|
 | `sensor/__init__.py` | Wires up coordinator + sensors, registers entities |
-| `sensor/electricitypricelevels.py` | Core sensor: price calc, level, rank, rates |
+| `sensor/energyadvisor.py` | Core sensor: price calc, level, rank, rates |
 | `sensor/compactlevels.py` | Compact level string sensor |
 | `sensor/nordpool_coordinator.py` | Calls Nordpool service, feeds data to sensor |
 | `coordinator.py` | (Does not exist — see `sensor/__init__.py`) |

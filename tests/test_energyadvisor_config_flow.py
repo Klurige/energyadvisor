@@ -6,7 +6,7 @@ import pytest
 
 from custom_components.energyadvisor import config_flow as config_flow_module
 from custom_components.energyadvisor.config_flow import (
-    ElectricityPriceLevelFlowHandler,
+    EnergyAdvisorFlowHandler,
     _validate_nordpool_prices_sensor,
 )
 from custom_components.energyadvisor.const import (
@@ -48,7 +48,7 @@ async def test_main_flow_user_prefills_dev_default_prices_sensor(monkeypatch) ->
         {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"},
     )
 
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.hass = MagicMock()
 
     result = await handler.async_step_user()
@@ -62,7 +62,7 @@ async def test_main_flow_user_prefills_dev_default_prices_sensor(monkeypatch) ->
 @pytest.mark.asyncio
 async def test_battery_step_creates_energy_advisor_entry_title():
     """The final config-flow step should create an Energy Advisor entry."""
-    handler = ElectricityPriceLevelFlowHandler()
+    handler = EnergyAdvisorFlowHandler()
     handler.hass = MagicMock()
     handler.hass.states.get.return_value = None
     handler.data = {

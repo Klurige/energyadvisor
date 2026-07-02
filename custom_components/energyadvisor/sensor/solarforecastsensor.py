@@ -1,4 +1,4 @@
-"""Solar Forecast sensor for the ElectricityPriceLevels integration."""
+"""Solar Forecast sensor for the Energy Advisor integration."""
 
 from __future__ import annotations
 

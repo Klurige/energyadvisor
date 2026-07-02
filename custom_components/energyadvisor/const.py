@@ -77,7 +77,7 @@ ATTR_ENERGY_TOMORROW_KWH = "energy_tomorrow_kwh"
 ATTR_INTRADAY_SCALING = "intraday_scaling"
 
 PREFERRED_SENSOR_ENTITY_IDS: dict[str, str] = {
-    "electricitypricelevels": "sensor.energy_advisor_price",
+    "energyadvisor": "sensor.energy_advisor_price",
     "compactlevels": "sensor.energy_advisor_compact_levels",
     "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
     "solarforecast": "sensor.energy_advisor_solar_forecast",

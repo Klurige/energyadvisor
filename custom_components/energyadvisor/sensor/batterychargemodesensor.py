@@ -2,7 +2,7 @@
 
 Determines whether a home battery should be in standby, charging, maxuse,
 discharge, or sell mode based on the electricity price schedule from the
-ElectricityPriceLevels sensor.
+Energy Advisor sensor.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ from ..const import (
 )
 
 if TYPE_CHECKING:
-    from .electricitypricelevels import ElectricityPriceLevelsSensor
+    from .energyadvisor import EnergyAdvisorSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -899,7 +899,7 @@ class BatteryChargeModeSensor(SensorEntity):
         hass: HomeAssistant,
         entry: ConfigEntry,
         device_info: DeviceInfo,
-        source_sensor: ElectricityPriceLevelsSensor,
+        source_sensor: EnergyAdvisorSensor,
     ) -> None:
         self._entry = entry
         self._source_sensor = source_sensor

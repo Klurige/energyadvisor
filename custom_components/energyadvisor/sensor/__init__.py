@@ -1,4 +1,4 @@
-"""Support for the ElectricityPriceLevel sensor service."""
+"""Support for the Energy Advisor sensor service."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from ..const import (
     CONF_POWER_ENTITY,
     DOMAIN,
 )
-from ..models import ElectricityPriceLevelsRuntimeData
+from ..models import EnergyAdvisorRuntimeData
 from .batterychargemodesensor import BatteryChargeModeSensor
 from ..solar_forecast_coordinator import SolarForecastCoordinator
 from .compactlevels import CompactLevelsSensor
@@ -30,7 +30,7 @@ from .diagnosticsensors import (
     SellSafetyMarginSensor,
     StrategySensor,
 )
-from .electricitypricelevels import ElectricityPriceLevelsSensor
+from .energyadvisor import EnergyAdvisorSensor
 from .nordpool_coordinator import NordpoolDataCoordinator
 from .solarforecastsensor import SolarForecastSensor
 
@@ -81,7 +81,7 @@ async def async_setup_entry(
         configuration_url=None,
     )
 
-    levels_sensor = ElectricityPriceLevelsSensor(hass, entry, device_info)
+    levels_sensor = EnergyAdvisorSensor(hass, entry, device_info)
     compact_levels_sensor = CompactLevelsSensor(hass, entry, device_info, levels_sensor)
     battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, levels_sensor)
     entities = [
@@ -124,7 +124,7 @@ async def async_setup_entry(
         currency_from_config,
     )
 
-    runtime_data = ElectricityPriceLevelsRuntimeData(
+    runtime_data = EnergyAdvisorRuntimeData(
         levels_sensor=levels_sensor,
         compact_sensor=compact_levels_sensor,
         coordinator=coordinator,
