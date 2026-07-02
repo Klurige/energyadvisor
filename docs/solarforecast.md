@@ -158,7 +158,7 @@ See `custom_components/energyadvisor/const.py` and the gitignored `custom_compon
 
 ## Continuation notes
 
-- `solar_forecast_coordinator.py` — all logic: DB, correction model, intraday scaling, forecast assembly, dev-mode polling, and export-credit guarding via the main electricity price sensor.
+- `solar_forecast_coordinator.py` — all logic: DB, correction model, intraday scaling, forecast assembly, dev-mode polling, and export-credit guarding via the main Energy Advisor sensor (`sensor/energyadvisor.py`).
 - `sensor/solarforecastsensor.py` — HA sensor wrapper; caches state/attribute summaries and keeps the large `forecasts` payload out of recorder attribute storage.
 - `sensor/__init__.py` — conditionally creates `SolarForecastCoordinator` + sensor when both `forecast_entity` and `power_entity` are configured in entry options.
 - `config_flow.py` — `solar_forecast` config step (after `thresholds`); options flow includes the same three fields.
