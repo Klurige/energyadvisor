@@ -1,0 +1,16 @@
+Here’s the step-by-step plan:
+
+1. Fix the module-name mismatch first
+Pick one canonical path for the main price sensor and make the code match it everywhere ( sensor/__init__.py , runtime models, coordinators, tests). This is the highest-priority fix because it currently makes the tree confusing and likely fragile.
+2. Clean up imports and compatibility
+Update every internal import to the canonical module path, then drop any stale references or temporary aliases once everything points to one place.
+3. Split the biggest modules
+Break  batterychargemodesensor.py  into smaller helper modules for strategy logic, forecasting, and entity wiring. If needed, trim  config_flow.py  the same way so schema building and validation don’t live in one huge file.
+4. Normalize naming
+Convert mixed-style names like  simulationLevelIndex  to PEP 8 names, and make terms consistent across the project ( NordPool  vs  Nordpool , entity keys vs file names, etc.).
+5. Remove duplicate test tracks
+Consolidate the legacy/current test pairs into one canonical set, keeping only the tests that still add value after the renames.
+6. Refresh docs and examples
+Update README and docs so file names, module names, entity IDs, and screenshots/examples all agree with the final structure.
+7. Verify in layers
+Run the narrowest tests first for imports/config flow/sensor wiring, then run the full test suite once the refactor is stable.

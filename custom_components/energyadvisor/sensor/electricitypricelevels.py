@@ -1,5 +1,5 @@
 """
-This module provides the ElectricityPriceLevel sensor for Home Assistant.
+This module provides the ElectricityPriceLevels sensor for Home Assistant.
 
 The sensor calculates the current electricity price level (Low, Medium, High)
 based on Nord Pool spot prices and user-defined thresholds and fees.
