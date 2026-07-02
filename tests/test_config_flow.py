@@ -1,4 +1,4 @@
-"""Tests for config and options flow behavior."""
+"""Tests for Energy Advisor config and options flow behavior."""
 
 from unittest.mock import MagicMock
 
@@ -37,6 +37,7 @@ from custom_components.energyadvisor.const import (
     CONF_WATER_HEATER_MAX_HOURS,
     CONF_WATER_HEATER_POWER_ENTITY,
     CONF_WATER_HEATER_POWER_W,
+    DOMAIN,
 )
 
 
@@ -107,6 +108,7 @@ async def test_validate_nordpool_prices_sensor_valid():
 
     is_valid, attrs = await _validate_nordpool_prices_sensor(hass, "sensor.nordpool")
 
+    assert DOMAIN == "energyadvisor"
     assert is_valid is True
     assert attrs["currency"] == "SEK"
     assert attrs["energy_unit"] == "kWh"
