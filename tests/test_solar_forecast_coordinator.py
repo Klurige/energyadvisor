@@ -632,6 +632,27 @@ class TestCollectOmData:
         result = coord._collect_om_data()
         assert result == {}
 
+    def test_partial_forecasts_skip_invalid_entries(self):
+        now_utc = datetime.now(UTC)
+        first = (now_utc + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        second = (now_utc + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        coord = self._coord_with_state(
+            {
+                "forecasts": [
+                    {"period_end": first, "pv_estimate": 3.5},
+                    {"period_end": "bad", "pv_estimate": 4.0},
+                    {"period_end": second, "pv_estimate_mean": "2.1"},
+                    {"pv_estimate": 5.0},
+                ]
+            }
+        )
+
+        result = coord._collect_om_data()
+
+        assert len(result) == 2
+        assert result[coord._parse_ts(first)] == 3500.0
+        assert result[coord._parse_ts(second)] == 2100.0
+
 
 # ---------------------------------------------------------------------------
 # _build_forecast_from_data

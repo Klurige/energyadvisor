@@ -1,20 +1,27 @@
 """Test component setup."""
 
+from types import SimpleNamespace
 import sys
 import types
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 
-from custom_components.energyadvisor import _async_migrate_entity_registry
+from custom_components.energyadvisor import (
+    PLATFORMS,
+    _async_migrate_entity_registry,
+    async_setup_entry,
+    async_unload_entry,
+)
 from custom_components.energyadvisor.const import (
     DOMAIN,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
 )
+from custom_components.energyadvisor.models import EnergyAdvisorRuntimeData
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -208,3 +215,57 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
         assert migrated.unique_id == build_sensor_unique_id(entry, sensor_key)
 
     assert hass.states.get("sensor.energy_advisor_solar_forecast") is None
+
+
+async def test_async_setup_entry_stores_runtime_data_and_registers_reload_listener(
+    hass,
+):
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry.add_to_hass(hass)
+    unload_callbacks = []
+    entry.async_on_unload = unload_callbacks.append
+    entry.add_update_listener = MagicMock(return_value=lambda: None)
+    runtime_data = EnergyAdvisorRuntimeData(
+        levels_sensor=MagicMock(),
+        compact_sensor=MagicMock(),
+        coordinator=MagicMock(),
+        solar_sensor=MagicMock(),
+        solar_coordinator=MagicMock(),
+    )
+    entry.runtime_data = runtime_data
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+
+    with (
+        patch("custom_components.energyadvisor.async_setup_services") as mock_services,
+        patch(
+            "custom_components.energyadvisor._async_migrate_entity_registry",
+            new=AsyncMock(),
+        ) as mock_migrate,
+    ):
+        assert await async_setup_entry(hass, entry) is True
+
+    mock_services.assert_called_once_with(hass)
+    mock_migrate.assert_awaited_once_with(hass, entry)
+    hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
+        entry, PLATFORMS
+    )
+    assert hass.data[DOMAIN][entry.entry_id] is runtime_data
+    entry.add_update_listener.assert_called_once()
+    assert len(unload_callbacks) == 1
+
+
+async def test_async_unload_entry_removes_runtime_data_and_service():
+    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    hass = MagicMock()
+    hass.data = {DOMAIN: {entry.entry_id: SimpleNamespace()}}
+    hass.config_entries = MagicMock()
+    hass.config_entries.async_unload_platforms = AsyncMock(return_value=True)
+    hass.services = MagicMock()
+
+    assert await async_unload_entry(hass, entry) is True
+
+    hass.config_entries.async_unload_platforms.assert_awaited_once_with(
+        entry, PLATFORMS
+    )
+    assert entry.entry_id not in hass.data[DOMAIN]
+    hass.services.async_remove.assert_called_once_with(DOMAIN, "get_levels")

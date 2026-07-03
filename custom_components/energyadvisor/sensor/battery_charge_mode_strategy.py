@@ -428,14 +428,15 @@ def _parse_compact_rates(rates: list[dict]) -> list[dict]:
         from_str = r.get("from")
         if not from_str:
             continue
-        start = datetime.fromisoformat(from_str).replace(tzinfo=local_tz)
-        parsed.append(
-            {
-                "start": start,
-                "cost": r.get("cost", 0.0),
-                "credit": r.get("credit", 0.0),
-            }
-        )
+        try:
+            start = datetime.fromisoformat(from_str).replace(tzinfo=local_tz)
+            cost = float(r.get("cost", 0.0))
+            credit = float(r.get("credit", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(cost) or not math.isfinite(credit):
+            continue
+        parsed.append({"start": start, "cost": cost, "credit": credit})
 
     # Derive "end" from the next entry's start
     for i in range(len(parsed) - 1):

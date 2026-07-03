@@ -162,6 +162,18 @@ async def test_execute_nordpool_call_bad_response(coordinator, mock_hass):
 
 
 @pytest.mark.asyncio
+async def test_execute_nordpool_call_no_data_response(coordinator, mock_hass):
+    """Test Nordpool service call when the service returns no data."""
+    test_date = datetime.date(2025, 8, 9)
+    mock_hass.services.async_call.return_value = None
+
+    status, payload = await coordinator._execute_nordpool_call_logic(test_date)
+
+    assert status == "SUCCESS_NO_DATA"
+    assert payload is None
+
+
+@pytest.mark.asyncio
 async def test_send_updated_data_to_sensor(coordinator, mock_callback):
     """Test sending updated data to the sensor."""
     current_date = datetime.date(2025, 8, 9)
