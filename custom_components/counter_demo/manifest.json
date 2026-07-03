@@ -1,0 +1,10 @@
+{
+  "domain": "counter_demo",
+  "name": "Counter Demo",
+  "codeowners": [
+    "@Klurige"
+  ],
+  "config_flow": true,
+  "requirements": [],
+  "version": "0.0.1"
+}

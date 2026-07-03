@@ -1,0 +1,9 @@
+{
+  "entity": {
+    "sensor": {
+      "cycle_counter": {
+        "name": "Cycle counter"
+      }
+    }
+  }
+}
