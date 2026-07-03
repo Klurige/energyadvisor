@@ -111,9 +111,7 @@ def mock_device_info():
 
 @pytest.fixture
 def sensor_instance(mock_hass, mock_config_entry, mock_device_info):
-    sensor = EnergyAdvisorSensor(
-        mock_hass, mock_config_entry, mock_device_info
-    )
+    sensor = EnergyAdvisorSensor(mock_hass, mock_config_entry, mock_device_info)
     sensor.hass = mock_hass  # Manually assign hass to the instance for testing
     sensor.async_write_ha_state = MagicMock()  # Crucial mock
     # Prevent actual listener setup during tests not focused on it

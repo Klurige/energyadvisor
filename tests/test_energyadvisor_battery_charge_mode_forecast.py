@@ -20,7 +20,9 @@ UTC = timezone.utc
 def _make_solar_entries(start: datetime, powers: list[float]) -> list[dict]:
     return [
         {
-            "end": (start + timedelta(minutes=15 * (index + 1))).isoformat(timespec="minutes"),
+            "end": (start + timedelta(minutes=15 * (index + 1))).isoformat(
+                timespec="minutes"
+            ),
             "pow": power,
         }
         for index, power in enumerate(powers)
@@ -51,10 +53,14 @@ def test_solar_window_by_date_groups_entries_and_skips_invalid_rows():
 
 def test_is_solar_dominant_uses_daily_threshold():
     assert not _is_solar_dominant(
-        _make_solar_entries(datetime(2024, 6, 1, 12, 0, tzinfo=UTC), [0.5, 0.5, 0.5, 0.5])
+        _make_solar_entries(
+            datetime(2024, 6, 1, 12, 0, tzinfo=UTC), [0.5, 0.5, 0.5, 0.5]
+        )
     )
     assert _is_solar_dominant(
-        _make_solar_entries(datetime(2024, 6, 1, 12, 0, tzinfo=UTC), [1.0, 1.0, 1.0, 1.0])
+        _make_solar_entries(
+            datetime(2024, 6, 1, 12, 0, tzinfo=UTC), [1.0, 1.0, 1.0, 1.0]
+        )
     )
 
 
@@ -65,7 +71,12 @@ def test_solar_kw_for_slot_matches_slot_and_ignores_mismatches():
         {"end": "2024-06-01T12:30:00+00:00", "pow": -2.0},
     ]
 
-    assert _solar_kw_for_slot(solar_entries, slot_start, slot_start + timedelta(minutes=15)) == 1.5
+    assert (
+        _solar_kw_for_slot(
+            solar_entries, slot_start, slot_start + timedelta(minutes=15)
+        )
+        == 1.5
+    )
     assert (
         _solar_kw_for_slot(
             solar_entries,
@@ -136,15 +147,10 @@ def test_last_float_state_at_or_before_parses_decimal_comma_and_stops_at_cutoff(
         ),
     ]
 
+    assert _last_float_state_at_or_before(
+        states, datetime(2024, 6, 1, 10, 30, tzinfo=UTC)
+    ) == pytest.approx(1.25)
     assert (
-        _last_float_state_at_or_before(
-            states, datetime(2024, 6, 1, 10, 30, tzinfo=UTC)
-        )
-        == pytest.approx(1.25)
-    )
-    assert (
-        _last_float_state_at_or_before(
-            states, datetime(2024, 6, 1, 11, 30, tzinfo=UTC)
-        )
+        _last_float_state_at_or_before(states, datetime(2024, 6, 1, 11, 30, tzinfo=UTC))
         is None
     )

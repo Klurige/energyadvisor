@@ -246,7 +246,9 @@ def _build_household_schema(values: dict[str, Any]) -> dict[Any, Any]:
         vol.Optional(
             CONF_OUTDOOR_TEMPERATURE_ENTITY,
             default=_schema_default(values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)),
-            description={"suggested_value": values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)},
+            description={
+                "suggested_value": values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)
+            },
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
         vol.Optional(
             CONF_WATER_HEATER_ACTIVE_ENTITY,

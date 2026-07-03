@@ -17,7 +17,6 @@ from custom_components.energyadvisor.sensor.diagnosticsensors import (
     StrategySensor,
 )
 
-
 UTC = timezone.utc
 
 
@@ -86,16 +85,16 @@ async def test_base_load_sensor_registers_listener_and_reports_value(
     "solar_dominant, expected",
     [(True, "solar_aware"), (False, "price_arbitrage")],
 )
-def test_strategy_sensor_tracks_solar_dominance(entry, device_info, solar_dominant, expected):
+def test_strategy_sensor_tracks_solar_dominance(
+    entry, device_info, solar_dominant, expected
+):
     battery_sensor = _make_battery_sensor(solar_dominant=solar_dominant)
     sensor = StrategySensor(entry, device_info, battery_sensor)
 
     assert sensor.native_value == expected
 
 
-def test_learning_nights_and_sell_margin_sensors_expose_live_values(
-    entry, device_info
-):
+def test_learning_nights_and_sell_margin_sensors_expose_live_values(entry, device_info):
     battery_sensor = _make_battery_sensor()
 
     learning_sensor = LearningNightsSensor(entry, device_info, battery_sensor)
