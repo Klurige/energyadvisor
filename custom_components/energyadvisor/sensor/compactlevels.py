@@ -1,3 +1,10 @@
+"""Compact price-level sensor for clocks and dashboards.
+
+This entity reads the live Energy Advisor price sensor from runtime data and
+turns the current rate history into the compact string format used by small
+clock displays and similar integrations.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -86,7 +93,14 @@ def calculate_levels(
 
 
 class CompactLevelsSensor(SensorEntity):
-    """Entity that exposes the latest electricity price levels as an attribute."""
+    """Expose the current price levels in a compact string format.
+
+    Inputs:
+        - The live Energy Advisor price sensor from integration runtime data.
+    Outputs:
+        - State: minutes since midnight for the current slot.
+        - Attributes: a `compact` level string plus the service payload data.
+    """
 
     _attr_has_entity_name = True
     _attr_entity_registry_enabled_default = False

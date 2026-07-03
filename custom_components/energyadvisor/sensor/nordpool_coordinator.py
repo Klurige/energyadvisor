@@ -1,3 +1,13 @@
+"""Nordpool service coordinator.
+
+Inputs:
+    - A Nordpool config entry id, optional currency, and a callback that accepts
+      combined day-ahead price payloads.
+Outputs:
+    - Schedules fetches, combines today/tomorrow price data, and forwards the
+      resulting payload to the Energy Advisor price sensor.
+"""
+
 import logging
 from datetime import timedelta, date, datetime, time
 from typing import Callable, Any, Coroutine
@@ -12,6 +22,16 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class NordpoolDataCoordinator:
+    """Coordinate Nordpool fetches and payload delivery.
+
+    Inputs:
+        - Home Assistant services/state, a Nordpool config entry id, an update
+          callback, and an optional configured currency.
+    Outputs:
+        - Maintained current/next-day raw price lists plus scheduled refreshes
+          and sensor payloads.
+    """
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -19,6 +39,16 @@ class NordpoolDataCoordinator:
         data_update_callback: Callable[[dict[str, Any]], Coroutine[Any, Any, None]],
         currency: str | None = None,
     ):
+        """Create a coordinator for one Nordpool config entry.
+
+        Inputs:
+            - hass: Home Assistant instance used for services, state, and timers.
+            - nordpool_config_entry_id: Nordpool config entry to query.
+            - data_update_callback: async callback that receives merged payloads.
+            - currency: optional configured currency override.
+        Outputs:
+            - An idle coordinator ready to fetch today and tomorrow data.
+        """
         self.hass = hass
         self.nordpool_config_entry_id = nordpool_config_entry_id
         self.data_update_callback = data_update_callback
@@ -45,6 +75,14 @@ class NordpoolDataCoordinator:
     async def _execute_nordpool_call_logic(
         self, fetch_date: date
     ) -> tuple[str, dict[str, Any] | None]:
+        """Fetch one day's prices from Nordpool and normalize the response.
+
+        Inputs:
+            - fetch_date: the HASS calendar date to fetch.
+        Outputs:
+            - ("SUCCESS_DATA", payload) when a valid price list is returned.
+            - A status string and None for empty, malformed, or failed calls.
+        """
         date_to_fetch_str = fetch_date.isoformat()
         service_data = {
             "config_entry": self.nordpool_config_entry_id,
@@ -139,7 +177,13 @@ class NordpoolDataCoordinator:
             return "ERROR_OTHER", None
 
     async def _send_updated_data_to_sensor(self, current_hass_date: date) -> None:
-        """Combines available data and sends it to the sensor via callback."""
+        """Combine available day data and send it to the sensor callback.
+
+        Inputs:
+            - current_hass_date: the HASS date currently being published.
+        Outputs:
+            - Calls the update callback with the merged payload when data exists.
+        """
         combined_raw_data = []
         data_sent = False
 
@@ -203,6 +247,14 @@ class NordpoolDataCoordinator:
     async def _trigger_and_reschedule_nordpool(
         self, utc_now_from_scheduler: datetime | None = None
     ) -> None:
+        """Run the fetch/reschedule cycle and decide the next fetch time.
+
+        Inputs:
+            - utc_now_from_scheduler: optional scheduler timestamp.
+        Outputs:
+            - Updates stored day data, publishes to the sensor, and schedules
+              the next refresh.
+        """
         if not self._is_running:
             _LOGGER.debug("Coordinator is stopped, not rescheduling.")
             return
@@ -409,6 +461,13 @@ class NordpoolDataCoordinator:
         )
 
     def start(self) -> None:
+        """Start the coordinator and schedule the initial fetch.
+
+        Inputs:
+            - None.
+        Outputs:
+            - Coordinator marked running and initial refresh scheduled.
+        """
         if self._is_running:
             _LOGGER.warning("Coordinator already running.")
             return
@@ -441,6 +500,13 @@ class NordpoolDataCoordinator:
         )
 
     def stop(self) -> None:
+        """Stop the coordinator and cancel any scheduled refresh.
+
+        Inputs:
+            - None.
+        Outputs:
+            - Coordinator marked stopped with no pending scheduled task.
+        """
         self._is_running = False
         if self._task_remover[0]:
             _LOGGER.info(

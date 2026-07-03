@@ -1,8 +1,8 @@
 """Diagnostic sensors for the Energy Advisor battery optimiser.
 
-These sensors expose internal state of the BatteryChargeModeSensor so that
-behaviour can be monitored and analysed directly in dashboards without
-requiring template sensors.
+Each diagnostic entity reads one derived property from
+`BatteryChargeModeSensor` and republishes it as a dedicated sensor so
+dashboards and automations can inspect the planner without template sensors.
 
 Sensors
 -------
@@ -45,7 +45,13 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class _DiagnosticBase(SensorEntity):
-    """Shared scaffolding for all Energy Advisor diagnostic sensors."""
+    """Shared scaffolding for diagnostic sensors derived from the planner.
+
+    Inputs:
+        - A `BatteryChargeModeSensor` instance and the config entry metadata.
+    Outputs:
+        - A diagnostic sensor entity with a stable entity_id and update hook.
+    """
 
     _attr_has_entity_name = True
     _attr_should_poll = False
@@ -79,7 +85,15 @@ class _DiagnosticBase(SensorEntity):
 
 
 class BaseLoadSensor(_DiagnosticBase):
-    """Reports the learned household base load in Watts."""
+    """Report the learned household base load in watts.
+
+    Inputs:
+        - `BatteryChargeModeSensor.household_base_load_w`
+        - `BatteryChargeModeSensor.learning_nights`
+    Outputs:
+        - State: learned base load in watts.
+        - Attributes: `learning_nights` and `max_learning_nights`.
+    """
 
     def __init__(
         self,
@@ -114,7 +128,14 @@ class BaseLoadSensor(_DiagnosticBase):
 
 
 class StrategySensor(_DiagnosticBase):
-    """Reports which daily battery strategy is currently active."""
+    """Report which daily battery strategy is active.
+
+    Inputs:
+        - `BatteryChargeModeSensor.solar_dominant`
+    Outputs:
+        - State: `solar_aware` when solar dominates, otherwise
+          `price_arbitrage`.
+    """
 
     def __init__(
         self,
@@ -140,7 +161,14 @@ class StrategySensor(_DiagnosticBase):
 
 
 class BatteryFloorSensor(_DiagnosticBase, RestoreSensor):
-    """Reports how much energy must stay in the battery until solar starts."""
+    """Report the energy that must stay in the battery until solar starts.
+
+    Inputs:
+        - `BatteryChargeModeSensor.battery_floor_kwh`
+        - Restore storage for the last known value when live data is absent.
+    Outputs:
+        - State: the battery floor in kWh, rounded to three decimals.
+    """
 
     def __init__(
         self,
@@ -183,7 +211,13 @@ class BatteryFloorSensor(_DiagnosticBase, RestoreSensor):
 
 
 class LearningNightsSensor(_DiagnosticBase):
-    """Reports how many quiet nights are in the rolling base-load average."""
+    """Report how many quiet nights are in the rolling base-load average.
+
+    Inputs:
+        - `BatteryChargeModeSensor.learning_nights`
+    Outputs:
+        - State: integer count of nights used in the rolling average.
+    """
 
     def __init__(
         self,
@@ -209,11 +243,14 @@ class LearningNightsSensor(_DiagnosticBase):
 
 
 class BatteryFloorPercentSensor(_DiagnosticBase, RestoreSensor):
-    """Reports the battery floor as a percentage of capacity.
+    """Report the battery floor as a percentage of capacity.
 
-    This is the value to use as the inverter's 'force discharge to level'
-    setting — it tells the inverter exactly how far it may discharge during
-    sell mode while still protecting the battery for overnight load.
+    Inputs:
+        - `BatteryChargeModeSensor.battery_floor_pct`
+        - Restore storage for the last known value when live data is absent.
+    Outputs:
+        - State: floor percentage, suitable for the inverter's force-discharge
+          level setting.
     """
 
     def __init__(
@@ -255,12 +292,13 @@ class BatteryFloorPercentSensor(_DiagnosticBase, RestoreSensor):
 
 
 class SellSafetyMarginSensor(_DiagnosticBase, RestoreSensor):
-    """Reports the learned sell safety margin in kWh.
+    """Report the learned sell safety margin in kWh.
 
-    This margin is added on top of the battery floor constraint. It
-    self-calibrates each dawn: decreases when the battery has too much
-    energy at sunrise (sell was too conservative), increases slightly
-    when the battery was near the hardware 5% floor (risk of grid import).
+    Inputs:
+        - `BatteryChargeModeSensor.sell_safety_margin_kwh`
+        - Restore storage for the last known value when live data is absent.
+    Outputs:
+        - State: the current sell-margin buffer in kWh.
     """
 
     def __init__(
@@ -300,16 +338,15 @@ class SellSafetyMarginSensor(_DiagnosticBase, RestoreSensor):
 
 
 class BatterySocForecastSensor(_DiagnosticBase, RestoreSensor):
-    """Forecasted battery SoC% over the planned charge schedule.
+    """Forecast battery SoC across the planned schedule.
 
-    State      : forecasted SoC% for the first future 15-min slot (anchored to
-                 actual SoC at each recompute). Restored from storage on restart
-                 so dashboard charts load immediately without "Loading" delay.
-    Attributes :
-        forecasts    – list of {end: str, soc_pct: float} covering the full
-                       planned schedule (same time horizon as charge_entries).
-        min_soc_pct  – lowest SoC% expected anywhere in the forecast window.
-        min_soc_time – ISO timestamp when the minimum SoC is reached.
+    Inputs:
+        - `BatteryChargeModeSensor.battery_soc_forecast`
+        - Restore storage for the last known value when live data is absent.
+    Outputs:
+        - State: the forecast SoC for the first future slot.
+        - Attributes: the full forecast list, minimum SoC percentage, and the
+          timestamp where that minimum is reached.
     """
 
     _unrecorded_attributes = frozenset({ATTR_FORECASTS})

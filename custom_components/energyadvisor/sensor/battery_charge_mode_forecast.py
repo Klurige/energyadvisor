@@ -1,4 +1,12 @@
-"""Forecast helpers for the Battery Charge Mode sensor."""
+"""Battery charge mode forecast helpers.
+
+Inputs:
+    - Refined solar forecast rows with 15-minute boundaries.
+    - Current time, battery size, reserve fraction, and learned base-load data.
+Outputs:
+    - Solar window boundaries, dominance checks, slot solar lookups, battery
+      floor values, and restored recorder states for the planner.
+"""
 
 from __future__ import annotations
 
@@ -15,10 +23,13 @@ def _solar_window_by_date(
     solar_entries: list[dict],
     tz_hint=None,
 ) -> dict:
-    """Return {date: (sunrise, sunset)} from solar forecast entries.
+    """Build per-day sunrise/sunset windows from solar forecast rows.
 
-    sunrise: start of first 15-min slot with power above the useful threshold.
-    sunset:  end of last such slot (start of that slot + _FORECAST_SLOT_MINUTES).
+    Inputs:
+        - solar_entries: forecast rows with `end` and `pow`.
+        - tz_hint: timezone to attach to naive timestamps.
+    Outputs:
+        - Mapping of date -> (first useful slot start, last useful slot end).
     """
     windows: dict = {}
     for entry in solar_entries:
@@ -43,7 +54,13 @@ def _solar_window_by_date(
 
 
 def _is_solar_dominant(solar_entries: list[dict]) -> bool:
-    """Return True when today's solar forecast exceeds the awareness threshold."""
+    """Return whether today's solar forecast is large enough for solar-aware mode.
+
+    Inputs:
+        - solar_entries: 15-minute forecast rows with `pow`.
+    Outputs:
+        - True when the useful solar energy meets the dominance threshold.
+    """
     if not solar_entries:
         return False
     total_kwh = sum(
@@ -57,7 +74,14 @@ def _is_solar_dominant(solar_entries: list[dict]) -> bool:
 def _solar_kw_for_slot(
     solar_entries: list[dict], slot_start: datetime, slot_end: datetime
 ) -> float:
-    """Return the forecast solar power (kW) for the 15-min slot [slot_start, slot_end)."""
+    """Return the solar forecast kW that matches a specific schedule slot.
+
+    Inputs:
+        - solar_entries: forecast rows with `end` and `pow`.
+        - slot_start / slot_end: slot boundaries to match.
+    Outputs:
+        - Forecast solar power in kW for the slot, or 0.0 when no match exists.
+    """
     slot_tz = slot_end.tzinfo
     for entry in solar_entries:
         end_str = entry.get("end")
@@ -78,15 +102,13 @@ def _solar_kw_for_slot(
 def _find_solar_window(
     solar_entries: list[dict], now: datetime
 ) -> tuple[datetime | None, datetime | None, datetime | None]:
-    """Return (solar_start_today, solar_end_today, solar_start_tomorrow).
+    """Find today's and tomorrow's useful solar window boundaries.
 
-    solar_start_today:    start of the first useful solar slot for today's calendar day
-                          (may be in the past if we are already in the solar window)
-    solar_end_today:      end of the last useful solar slot for today's calendar day
-    solar_start_tomorrow: start of the first useful solar slot for tomorrow
-
-    The overnight gap the battery must cover is:
-        solar_end_today → solar_start_tomorrow
+    Inputs:
+        - solar_entries: 15-minute forecast rows with `end` and `pow`.
+        - now: current aware datetime used to split today from tomorrow.
+    Outputs:
+        - (solar_start_today, solar_end_today, solar_start_tomorrow).
     """
     today = now.date()
     tomorrow = today + timedelta(days=1)
@@ -123,14 +145,16 @@ def _compute_floor_kwh(
     battery_capacity_kwh: float,
     reserve_fraction: float,
 ) -> tuple[float, float]:
-    """Return (floor_kwh, required_load_kwh) for the current moment.
+    """Compute the dynamic battery floor and required overnight load.
 
-    floor_kwh = reserve + overnight_load + daytime_deficit
-
-    During daytime (solar producing), overnight_load is the energy needed for
-    the upcoming darkness window (today's last solar slot through tomorrow's
-    first solar slot). During nighttime, overnight_load decreases linearly as
-    we approach the next sunrise.
+    Inputs:
+        - solar_entries: refined solar forecast rows.
+        - now: current aware datetime.
+        - base_load_kw: learned household base load in kW.
+        - battery_capacity_kwh: usable battery capacity.
+        - reserve_fraction: hard reserve fraction to keep untouched.
+    Outputs:
+        - (floor_kwh, required_load_kwh) for the current moment.
     """
     reserve_kwh = battery_capacity_kwh * reserve_fraction
     solar_start_today, solar_end_today, solar_start_tomorrow = _find_solar_window(
@@ -205,10 +229,13 @@ def _compute_floor_kwh(
 
 
 def _last_float_state_at_or_before(states: list, cutoff: datetime) -> float | None:
-    """Return the float value of the last state recorded at or before *cutoff*.
+    """Return the last numeric recorder value at or before a cutoff time.
 
-    States are assumed to be in chronological order (as returned by the recorder).
-    Returns None if no suitable state is found or the state value is not numeric.
+    Inputs:
+        - states: recorder state rows in chronological order.
+        - cutoff: latest acceptable timestamp.
+    Outputs:
+        - The parsed float value, or None when no numeric state exists.
     """
     best = None
     for state in states:

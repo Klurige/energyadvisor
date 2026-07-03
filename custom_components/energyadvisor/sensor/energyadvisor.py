@@ -1,4 +1,10 @@
-"""Energy Advisor price sensor for Home Assistant."""
+"""Primary Energy Advisor price sensor.
+
+The sensor consumes the configured Nord Pool prices entity, applies the
+configured fees, taxes, credits, and thresholds, and exposes the current
+all-in electricity price together with the rate history used by the other
+Energy Advisor sensors.
+"""
 
 from __future__ import annotations
 
@@ -43,7 +49,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class EnergyAdvisorSensor(SensorEntity):
-    """Representation of the Energy Advisor price sensor."""
+    """Main electricity price sensor.
+
+    Inputs:
+        - The configured Nord Pool prices sensor.
+        - Thresholds, fees, credits, taxes, and currency/unit overrides from
+          the config entry.
+    Outputs:
+        - State: the current all-in electricity cost.
+        - Attributes: spot price, currency, unit, price level, rank, and rate
+          history used by the compact level and battery planner sensors.
+    """
 
     entity_description: SensorEntityDescription
     _attr_has_entity_name = True

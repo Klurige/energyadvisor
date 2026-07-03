@@ -1,4 +1,9 @@
-"""Solar Forecast sensor for the Energy Advisor integration."""
+"""Refined solar forecast sensor.
+
+The sensor reads the SolarForecastCoordinator output and publishes a corrected
+15-minute solar forecast plus the summary fields used by dashboards and
+automations.
+"""
 
 from __future__ import annotations
 
@@ -28,21 +33,17 @@ from ..solar_forecast_coordinator import SolarForecastCoordinator
 
 
 class SolarForecastSensor(SensorEntity):
-    """
-    Solar forecast sensor — today and tomorrow.
+    """Publish the corrected solar forecast for today and tomorrow.
 
-    State   : corrected kW estimate for the current 15-minute slot
-    Unit    : kW
-    Attributes:
-        forecasts           – list of 192 dicts covering today 00:00 – tomorrow 24:00 (local):
-                                end                 local time string (YYYY-MM-DDTHH:MM)
-                                pow                 kW  (corrected)
-                                raw                 kW  (OM, uncorrected)
-        total_samples       – how many (om, actual) pairs are stored
-        data_since          – ISO date of oldest stored reading
-        energy_today_kwh    – total corrected kWh for today (full calendar day)
-        energy_tomorrow_kwh – total corrected kWh for tomorrow
-        intraday_scaling    – real-time scaling factor applied to today's future slots
+    Inputs:
+        - `SolarForecastCoordinator.forecast`
+        - `SolarForecastCoordinator.total_samples`
+        - `SolarForecastCoordinator.data_since`
+        - `SolarForecastCoordinator.intraday_scaling`
+    Outputs:
+        - State: corrected kW estimate for the current 15-minute slot.
+        - Attributes: the full 48-hour forecast and the summary statistics
+          consumed by the dashboard and battery planner.
     """
 
     _attr_has_entity_name = True

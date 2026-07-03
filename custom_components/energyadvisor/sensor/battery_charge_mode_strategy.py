@@ -1,4 +1,12 @@
-"""Strategy helpers for the Battery Charge Mode sensor."""
+"""Battery charge mode strategy helpers.
+
+Inputs:
+    - Compact rate rows from Energy Advisor and optional solar forecast rows.
+    - Margin and timing parameters from the battery planner.
+Outputs:
+    - Planned charge entries, sell windows, and helper transformations used by
+      the battery charge mode sensor.
+"""
 
 from __future__ import annotations
 
@@ -20,11 +28,15 @@ _SUMMER_SELL_SLOTS_PER_DAY = 6
 def _find_local_peaks(
     charge_entries, range_start, range_end, margin, total_peak_time_minutes
 ):
-    """Mark the most expensive slots in a time window as 'discharge'.
+    """Mark the most expensive slots in a window as discharge.
 
-    Finds the global price peak in [range_start, range_end), then widens it to
-    fill up to total_peak_time_minutes of discharge time around that peak.
-    Modifies charge_entries in place.
+    Inputs:
+        - charge_entries: mutable schedule rows with `start`, `end`, and `cost`.
+        - range_start / range_end: time window to inspect.
+        - margin: minimum price gap required to justify discharging.
+        - total_peak_time_minutes: target discharge duration around the peak.
+    Outputs:
+        - Mutates `charge_entries` in place by marking discharge slots.
     """
     in_range = sorted(
         [e for e in charge_entries if range_start <= e["start"] < range_end],
@@ -94,11 +106,14 @@ def _find_local_peaks(
 
 
 def _find_local_valleys(charge_entries, margin, min_valley_time_minutes):
-    """Mark the cheapest slots before each discharge block as 'charge'.
+    """Mark the cheapest slots before each discharge block as charge.
 
-    For every discharge block, looks back up to 8 hours and picks the cheapest
-    slots needed to cover min_valley_time_minutes of charging time.
-    Modifies charge_entries in place.
+    Inputs:
+        - charge_entries: mutable schedule rows with `start`, `end`, and `cost`.
+        - margin: retained planner margin passed through for symmetry.
+        - min_valley_time_minutes: charging duration to cover before discharge.
+    Outputs:
+        - Mutates `charge_entries` in place by marking charge slots.
     """
     discharge_entries = [e for e in charge_entries if e["mode"] == "discharge"]
     if not discharge_entries:
@@ -137,13 +152,12 @@ def _find_local_valleys(charge_entries, margin, min_valley_time_minutes):
 
 
 def _extend_peaks(charge_entries):
-    """Extend discharge regions to cover the head, tail, and inter-block gaps.
+    """Extend discharge regions to cover head, tail, and inter-block gaps.
 
-    - Everything before the first non-standby entry becomes 'discharge'.
-    - Everything after the last non-standby entry becomes 'discharge'.
-    - Standby gaps between a discharge block and the following charge block
-      become 'discharge'.
-    Modifies charge_entries in place.
+    Inputs:
+        - charge_entries: mutable schedule rows with `start`, `end`, and `mode`.
+    Outputs:
+        - Mutates `charge_entries` in place by expanding discharge coverage.
     """
     if not charge_entries:
         return
@@ -186,12 +200,26 @@ def _extend_peaks(charge_entries):
 
 
 def _has_prior_charge(charge_entries: list[dict], entry_index: int) -> bool:
-    """Return whether a charge slot exists before the current entry."""
+    """Return whether a charge slot exists before the current entry.
+
+    Inputs:
+        - charge_entries: ordered schedule rows.
+        - entry_index: current row index to inspect.
+    Outputs:
+        - True when an earlier charge slot exists.
+    """
     return any(entry["mode"] == "charge" for entry in charge_entries[:entry_index])
 
 
 def _future_charge_cost(charge_entries: list[dict], entry_index: int) -> float | None:
-    """Return the cheapest later charge slot cost, if one exists."""
+    """Return the cheapest later charge-slot cost, if one exists.
+
+    Inputs:
+        - charge_entries: ordered schedule rows.
+        - entry_index: current row index to inspect.
+    Outputs:
+        - Cheapest future charge cost, or None if no later charge slot exists.
+    """
     future_costs = [
         entry["cost"]
         for entry in charge_entries[entry_index + 1 :]
@@ -203,12 +231,24 @@ def _future_charge_cost(charge_entries: list[dict], entry_index: int) -> float |
 
 
 def _slot_hours(entry: dict) -> float:
-    """Return the full duration of a schedule entry in hours."""
+    """Return the full duration of a schedule entry in hours.
+
+    Inputs:
+        - entry: schedule row with `start` and `end` datetimes.
+    Outputs:
+        - Slot duration in hours, never negative.
+    """
     return max(0.0, (entry["end"] - entry["start"]).total_seconds() / 3600.0)
 
 
 def _is_summer_sell_candidate(start: datetime) -> bool:
-    """Return whether a slot start belongs to the fixed summer sell windows."""
+    """Return whether a slot start belongs to the fixed summer sell windows.
+
+    Inputs:
+        - start: slot start datetime.
+    Outputs:
+        - True when the slot falls inside a summer sell window.
+    """
     start_minutes = start.hour * 60 + start.minute
     return any(
         window_start <= start_minutes < window_end
@@ -217,7 +257,13 @@ def _is_summer_sell_candidate(start: datetime) -> bool:
 
 
 def _entry_sell_value(entry: dict) -> float:
-    """Return the value used to rank summer sell slots."""
+    """Return the numeric value used to rank summer sell slots.
+
+    Inputs:
+        - entry: schedule row with optional `credit` and `cost` fields.
+    Outputs:
+        - A finite value suitable for sorting sell candidates.
+    """
     credit = entry.get("credit")
     if isinstance(credit, (int, float)) and math.isfinite(credit):
         return float(credit)
@@ -229,12 +275,12 @@ def _entry_sell_value(entry: dict) -> float:
 
 
 def _slot_sell_score(entry: dict) -> tuple[float, float]:
-    """Compound sort key for ranking summer sell candidates.
+    """Return the sort key used to rank summer sell candidates.
 
-    Primary: export credit (or 0 when no credit is provided).
-    Secondary: raw electricity cost, used as an avoidance-value proxy when
-    credit values are equal or absent (e.g. in test fixtures without credits).
-    Ties are therefore broken by which slot has the highest spot price.
+    Inputs:
+        - entry: schedule row with optional `credit` and `cost` fields.
+    Outputs:
+        - A `(credit, cost)` tuple used for deterministic candidate ranking.
     """
     return (_entry_sell_value(entry), entry.get("cost", 0.0))
 
@@ -246,30 +292,17 @@ def _apply_summer_sell_strategy(
     solar_entries: list[dict] | None = None,
     margin: float = 0.0,
 ) -> None:
-    """Assign discharge/maxuse/sell modes for the solar-dominant (summer) strategy.
+    """Assign discharge, maxuse, and sell modes for the solar-aware strategy.
 
-    Two periods per day:
-
-    **Period 1 — midnight to noon (00:00–12:00)**
-    Default: maxuse (store solar / cover load from battery).
-    Exception: if the current slot's price is higher than the minimum price of
-    any remaining period-1 slot by more than the battery wear margin, use
-    discharge instead (it is worth exporting now rather than storing for a
-    cheaper later slot).
-
-    No sell candidates in period 1.
-
-    **Period 2 — noon to midnight (12:00–24:00)**
-    - Noon → sunset: maxuse (fill battery from solar for evening sell).
-    - Sunset → midnight: discharge (battery covers load, no solar).
-    - All period-2 slots are sell candidates: peak-and-expand upgrades the
-      highest-valued contiguous window to sell, whether the price peak falls
-      before or after sunset.
-
-    **Fallback (no solar forecast)**
-    Period 1: same price-peak discharge logic as above.
-    Period 2: 12:00–17:00 → maxuse, 17:00–24:00 → discharge (sell candidates
-    only — the noon-to-17:00 maxuse slots are not sell candidates in fallback).
+    Inputs:
+        - charge_entries: mutable schedule rows with `start`, `end`, `cost`,
+          and `credit`.
+        - sellable_kwh / discharge_power_kw: optional sizing inputs for dynamic
+          sell-window width.
+        - solar_entries: refined solar forecast rows used to detect sunset.
+        - margin: battery wear margin used to choose between export and storage.
+    Outputs:
+        - Mutates `charge_entries` in place by assigning solar-aware modes.
     """
     has_solar_data = bool(solar_entries)
     tz_hint = charge_entries[0]["start"].tzinfo if charge_entries else None
@@ -382,13 +415,11 @@ def _apply_summer_sell_strategy(
 def _classify_output_modes(charge_entries: list[dict], margin: float) -> None:
     """Classify discharge-like slots into maxuse, discharge, or sell.
 
-    The price-window planner first marks cheap charge periods and expensive
-    battery-output periods. Step 6 refines the battery-output periods into:
-
-    - maxuse: self-consume battery energy when no earlier charge slot exists
-    - discharge: use the battery for house load after earlier cheap charging
-    - sell: export battery energy when a later cheaper charge window exists
-      and the current export credit is high enough to justify buying back later
+    Inputs:
+        - charge_entries: mutable schedule rows with peak/valley markers.
+        - margin: battery wear margin used when comparing future charge costs.
+    Outputs:
+        - Mutates `charge_entries` in place by refining output-mode rows.
     """
     for index, entry in enumerate(charge_entries):
         if entry["mode"] != "discharge":
@@ -414,10 +445,12 @@ def _classify_output_modes(charge_entries: list[dict], margin: float) -> None:
 
 
 def _parse_compact_rates(rates: list[dict]) -> list[dict]:
-    """Parse compact rate dicts (from attributes) into datetime-based dicts.
+    """Parse compact rate dicts into datetime-based schedule rows.
 
-    Compact format: {"from": "2026-05-25T00:00", "cost": 1.234, "credit": 0.987, ...}
-    Output format:  {"start": datetime, "end": datetime, "cost": float, "credit": float}
+    Inputs:
+        - rates: compact rows with `from`, `cost`, and `credit`.
+    Outputs:
+        - Parsed schedule rows with `start`, `end`, `cost`, and `credit`.
     """
     if not rates:
         return []
@@ -460,10 +493,14 @@ def _apply_price_arbitrage_strategy(
 ) -> None:
     """Apply price-based charge/discharge scheduling for low-solar days.
 
-    Re-uses the existing peak/valley/extend/classify pipeline that was the
-    original battery algorithm. On days with minimal solar the battery is
-    treated as a pure price-arbitrage asset: charge cheap, sell/discharge
-    at expensive peaks.
+    Inputs:
+        - charge_entries: mutable schedule rows with `start`, `end`, and `cost`.
+        - margin: minimum price spread needed to justify cycling.
+        - charging_time_minutes / discharging_time_minutes: planner sizing
+          inputs used to estimate how wide the charge and discharge windows
+          should be.
+    Outputs:
+        - Mutates `charge_entries` in place by assigning price-arbitrage modes.
     """
     if not charge_entries:
         return

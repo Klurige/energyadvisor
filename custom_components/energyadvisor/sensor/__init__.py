@@ -1,4 +1,10 @@
-"""Support for the Energy Advisor sensor service."""
+"""Sensor platform wiring for Energy Advisor.
+
+This package assembles the price sensor, compact level sensor, battery
+planner, diagnostic sensors, and optional refined solar forecast sensor. Each
+entity reads one or more integration inputs and publishes a single state plus
+a small set of structured attributes.
+"""
 
 from __future__ import annotations
 
@@ -69,6 +75,15 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Create and register all Energy Advisor sensor entities.
+
+    Inputs:
+        - Home Assistant instance and config entry options.
+        - An entity-registration callback for the sensor platform.
+    Outputs:
+        - Registered sensor entities plus runtime data on the config entry.
+        - A started Nord Pool coordinator and optional solar coordinator.
+    """
     integration = await async_get_integration(hass, DOMAIN)
 
     device_info = DeviceInfo(

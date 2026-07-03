@@ -1,8 +1,9 @@
-"""Battery Charge Mode sensor for Home Assistant.
+"""Battery Charge Mode sensor and planner.
 
-Determines whether a home battery should be in standby, charging, maxuse,
-discharge, or sell mode based on the electricity price schedule from the
-Energy Advisor sensor.
+The planner consumes the Energy Advisor price schedule plus optional battery
+state, solar forecast, and learned base-load history. It outputs the current
+battery mode together with the planned charge schedule and explainability
+attributes used by the diagnostic sensors.
 """
 
 from __future__ import annotations
@@ -221,7 +222,18 @@ def compute_charge_modes(
 
 
 class BatteryChargeModeSensor(SensorEntity):
-    """Sensor that reports the current Energy Advisor battery mode."""
+    """Report the current battery mode and the planned charge schedule.
+
+    Inputs:
+        - The Energy Advisor price sensor and its current rate schedule.
+        - Optional solar forecast, battery SoC, grid import/export, and
+          learned base-load history from storage.
+    Outputs:
+        - State: the current battery mode (`standby`, `charge`, `maxuse`,
+          `discharge`, or `sell`).
+        - Attributes: planned `charge_entries` plus explainability fields such
+          as `reason`, `next_mode_change`, and the learned battery-floor values.
+    """
 
     _attr_has_entity_name = True
     _attr_should_poll = False
