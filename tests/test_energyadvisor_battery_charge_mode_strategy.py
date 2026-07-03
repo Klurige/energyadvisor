@@ -32,7 +32,9 @@ def _make_rates(
 def _make_solar_entries(start: datetime, powers: list[float]) -> list[dict]:
     return [
         {
-            "end": (start + timedelta(minutes=15 * (index + 1))).isoformat(timespec="minutes"),
+            "end": (start + timedelta(minutes=15 * (index + 1))).isoformat(
+                timespec="minutes"
+            ),
             "pow": power,
         }
         for index, power in enumerate(powers)
@@ -79,7 +81,9 @@ def test_parse_compact_rates_skips_malformed_rows_and_uses_local_timezone():
 
 
 def test_apply_summer_sell_strategy_chooses_contiguous_sell_window():
-    charge_entries = _make_charge_entries(datetime(2024, 6, 1, 0, 0, tzinfo=UTC), [1.0] * 24)
+    charge_entries = _make_charge_entries(
+        datetime(2024, 6, 1, 0, 0, tzinfo=UTC), [1.0] * 24
+    )
     charge_entries[17]["credit"] = 5.0
     charge_entries[18]["credit"] = 10.0
     charge_entries[19]["credit"] = 8.0
@@ -99,7 +103,9 @@ def test_apply_summer_sell_strategy_chooses_contiguous_sell_window():
     )
 
     assert sum(entry["mode"] == "sell" for entry in charge_entries) == 3
-    assert {entry["start"].hour for entry in charge_entries if entry["mode"] == "sell"} == {
+    assert {
+        entry["start"].hour for entry in charge_entries if entry["mode"] == "sell"
+    } == {
         17,
         18,
         19,
