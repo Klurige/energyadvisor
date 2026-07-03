@@ -75,9 +75,7 @@ def test_cycle_counter_counts_up_then_down(hass, entry, device_info):
 
 
 @pytest.mark.asyncio
-async def test_async_added_to_hass_registers_one_second_timer(
-    hass, entry, device_info
-):
+async def test_async_added_to_hass_registers_one_second_timer(hass, entry, device_info):
     sensor = CounterDemoSensor(hass, entry, device_info)
     sensor.hass = hass
 

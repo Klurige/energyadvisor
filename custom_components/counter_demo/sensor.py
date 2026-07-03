@@ -40,7 +40,9 @@ class CounterDemoSensor(SensorEntity):
         )
         self.entity_id = PREFERRED_SENSOR_ENTITY_IDS[self.entity_description.key]
         self._attr_suggested_object_id = self.entity_description.key
-        self._attr_unique_id = build_sensor_unique_id(entry, self.entity_description.key)
+        self._attr_unique_id = build_sensor_unique_id(
+            entry, self.entity_description.key
+        )
         self._attr_device_info = device_info
         self._attr_exclude_from_recording = True
         self._value = 0

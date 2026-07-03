@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.counter_demo import PLATFORMS, async_setup_entry, async_unload_entry
+from custom_components.counter_demo import (
+    PLATFORMS,
+    async_setup_entry,
+    async_unload_entry,
+)
 from custom_components.counter_demo.const import DOMAIN
 
 
