@@ -48,7 +48,7 @@ from ..util import build_levels_payload_from_rates, level_to_compact
 _LOGGER = logging.getLogger(__name__)
 
 
-class EnergyAdvisorSensor(SensorEntity):
+class PriceSensor(SensorEntity):
     """Main electricity price sensor.
 
     Inputs:
@@ -126,8 +126,8 @@ class EnergyAdvisorSensor(SensorEntity):
         self._electricity_vat = electricity_vat if electricity_vat is not None else 0.0
 
         description = SensorEntityDescription(
-            key="energyadvisor",
-            translation_key="energyadvisor",
+            key="price",
+            translation_key="price",
         )
         self.entity_description = description
         self.entity_id = PREFERRED_SENSOR_ENTITY_IDS[description.key]
@@ -153,7 +153,7 @@ class EnergyAdvisorSensor(SensorEntity):
         self._update_listeners: list[Callable[[], None]] = []
 
         _LOGGER.debug(
-            "EnergyAdvisorSensor initialized for prices sensor %s",
+            "PriceSensor initialized for prices sensor %s",
             self._nordpool_prices_sensor,
         )
 
@@ -304,7 +304,7 @@ class EnergyAdvisorSensor(SensorEntity):
 
         This callback is triggered when the Nord Pool sensor, which this
         sensor depends on, updates its state. If the new state is valid,
-        this method will refresh the EnergyAdvisorSensor's state.
+        this method will refresh the PriceSensor's state.
 
         Args:
             event: The event object containing data about the state change.
@@ -325,7 +325,7 @@ class EnergyAdvisorSensor(SensorEntity):
 
         _LOGGER.debug(
             f"Tracked Nordpool sensor {self._nordpool_trigger_entity_id} changed to {new_state.state}. "
-            "Refreshing EnergyAdvisorSensor state."
+            "Refreshing PriceSensor state."
         )
         await self._refresh_sensor_state()
 
@@ -675,7 +675,7 @@ class EnergyAdvisorSensor(SensorEntity):
 
         Performs cleanup tasks, such as logging the removal.
         """
-        _LOGGER.debug("Removing EnergyAdvisorSensor.")
+        _LOGGER.debug("Removing PriceSensor.")
         await super().async_will_remove_from_hass()
 
     def _process_entry(self, entry_to_process: dict, daily_ranked_list: list[dict]):

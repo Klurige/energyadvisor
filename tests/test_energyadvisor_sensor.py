@@ -13,8 +13,8 @@ from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 # If dt_util is used directly by the sensor for parsing, ensure it's available or mock its usage if complex.
 # from homeassistant.util import dt as dt_util
 
-from custom_components.energyadvisor.sensor.energyadvisor import (
-    EnergyAdvisorSensor,
+from custom_components.energyadvisor.sensor.price import (
+    PriceSensor,
 )
 from custom_components.energyadvisor.const import (
     CONF_NORDPOOL_PRICES_SENSOR,
@@ -111,7 +111,7 @@ def mock_device_info():
 
 @pytest.fixture
 def sensor_instance(mock_hass, mock_config_entry, mock_device_info):
-    sensor = EnergyAdvisorSensor(mock_hass, mock_config_entry, mock_device_info)
+    sensor = PriceSensor(mock_hass, mock_config_entry, mock_device_info)
     sensor.hass = mock_hass  # Manually assign hass to the instance for testing
     sensor.async_write_ha_state = MagicMock()  # Crucial mock
     # Prevent actual listener setup during tests not focused on it
@@ -222,7 +222,7 @@ async def test_async_update_data_24_hours_today(sensor_instance, mock_hass):
 
     with patch("homeassistant.util.dt.now", return_value=now_local):
         with patch(
-            "custom_components.energyadvisor.sensor.energyadvisor.datetime.datetime"
+            "custom_components.energyadvisor.sensor.price.datetime.datetime"
         ) as mock_dt:
             mock_dt.now.return_value = now_local  # For datetime.datetime.now(local_tz)
             mock_dt.combine = datetime.datetime.combine
@@ -282,7 +282,7 @@ async def test_async_update_data_48_hours_today_and_tomorrow(
 
     with patch("homeassistant.util.dt.now", return_value=now_local):
         with patch(
-            "custom_components.energyadvisor.sensor.energyadvisor.datetime.datetime"
+            "custom_components.energyadvisor.sensor.price.datetime.datetime"
         ) as mock_dt:
             mock_dt.now.return_value = now_local
             mock_dt.combine = datetime.datetime.combine
@@ -343,7 +343,7 @@ async def test_async_update_data_48_hours_yesterday_and_today(
     # The subsequent _update_sensor_state_from_current_rate (called internally) will purge.
     with patch("homeassistant.util.dt.now", return_value=now_local):
         with patch(
-            "custom_components.energyadvisor.sensor.energyadvisor.datetime.datetime"
+            "custom_components.energyadvisor.sensor.price.datetime.datetime"
         ) as mock_dt:
             mock_dt.now.return_value = now_local
             mock_dt.combine = datetime.datetime.combine
@@ -544,7 +544,7 @@ async def test_update_with_no_current_rate_data(sensor_instance, mock_hass):
 
     with patch("homeassistant.util.dt.now", return_value=now_local):
         with patch(
-            "custom_components.energyadvisor.sensor.energyadvisor.datetime.datetime"
+            "custom_components.energyadvisor.sensor.price.datetime.datetime"
         ) as mock_dt:
             mock_dt.now.return_value = now_local
             mock_dt.combine = datetime.datetime.combine
@@ -582,7 +582,7 @@ async def test_async_update_data_with_malformed_data(sensor_instance):
         "raw": [{"start": "bad-time", "end": None, "price": 10}],
     }
     with patch(
-        "custom_components.energyadvisor.sensor.energyadvisor._LOGGER"
+        "custom_components.energyadvisor.sensor.price._LOGGER"
     ) as mock_logger:
         await sensor_instance.async_update_data(malformed_nordpool_data_2)
         mock_logger.error.assert_called_once()

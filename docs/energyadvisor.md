@@ -166,7 +166,7 @@ NordpoolDataCoordinator  ←──  nordpool.get_prices_for_date (HA service cal
         │
         │  async_update_data(raw_prices)
         ▼
-EnergyAdvisorSensor
+PriceSensor
   • parse entries: spot price → cost/credit via calculate_cost_and_credit()
   • classify: calculate_level(cost)
   • rank: sort each day's entries by price, assign minute-scaled rank

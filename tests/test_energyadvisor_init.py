@@ -173,7 +173,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
 
     registry = er.async_get(hass)
     current_entity_ids = {
-        "energyadvisor": "sensor.energy_advisor_price",
+        "price": "sensor.energy_advisor_price",
         "compactlevels": "sensor.energy_advisor_compact_levels",
         "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
         "solarforecast": "sensor.energy_advisor_solar_forecast_refined",

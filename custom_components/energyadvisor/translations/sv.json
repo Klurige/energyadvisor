@@ -336,7 +336,7 @@
   },
   "entity": {
     "sensor": {
-      "energyadvisor": {
+      "price": {
         "name": "Pris"
       },
       "compactlevels": {

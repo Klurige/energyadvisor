@@ -361,7 +361,7 @@ logger:
   default: info
   logs:
     custom_components.energyadvisor: debug
-    custom_components.energyadvisor.sensor.energyadvisor: info
+    custom_components.energyadvisor.sensor.price: info
     custom_components.energyadvisor.sensor.compactlevels: info
     custom_components.energyadvisor.util: debug
 ```

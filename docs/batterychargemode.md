@@ -102,7 +102,7 @@ Rate changes are detected via a hash of `(from, cost, credit)` tuples to avoid r
 ## Architecture
 
 ```
-EnergyAdvisorSensor (same config entry)
+PriceSensor (same config entry)
     │
     └─► BatteryChargeModeSensor._handle_source_update()
               │

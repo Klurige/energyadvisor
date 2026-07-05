@@ -64,7 +64,7 @@ from .battery_charge_mode_strategy import (
 )
 
 if TYPE_CHECKING:
-    from .energyadvisor import EnergyAdvisorSensor
+    from .price import PriceSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -244,7 +244,7 @@ class BatteryChargeModeSensor(SensorEntity):
         hass: HomeAssistant,
         entry: ConfigEntry,
         device_info: DeviceInfo,
-        source_sensor: EnergyAdvisorSensor,
+        source_sensor: PriceSensor,
     ) -> None:
         self._entry = entry
         self._source_sensor = source_sensor

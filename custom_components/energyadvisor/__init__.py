@@ -60,9 +60,9 @@ def _registry_entry_sensor_key(entity_entry: er.RegistryEntry) -> str | None:
     if suffix in PREFERRED_SENSOR_ENTITY_IDS:
         return suffix
 
-    preferred_entity_id = PREFERRED_SENSOR_ENTITY_IDS.get("energyadvisor")
+    preferred_entity_id = PREFERRED_SENSOR_ENTITY_IDS.get("price")
     if preferred_entity_id and entity_entry.entity_id == preferred_entity_id:
-        return "energyadvisor"
+        return "price"
 
     return None
 

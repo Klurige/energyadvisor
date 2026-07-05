@@ -36,7 +36,7 @@ from .diagnosticsensors import (
     SellSafetyMarginSensor,
     StrategySensor,
 )
-from .energyadvisor import EnergyAdvisorSensor
+from .price import PriceSensor
 from .nordpool_coordinator import NordpoolDataCoordinator
 from .solarforecastsensor import SolarForecastSensor
 
@@ -96,7 +96,7 @@ async def async_setup_entry(
         configuration_url=None,
     )
 
-    levels_sensor = EnergyAdvisorSensor(hass, entry, device_info)
+    levels_sensor = PriceSensor(hass, entry, device_info)
     compact_levels_sensor = CompactLevelsSensor(hass, entry, device_info, levels_sensor)
     battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, levels_sensor)
     entities = [
