@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Energy Advisor Battery Charge Plan</title>
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #ffffff;
+      color: #1f2937;
+    }
+
+    .card {
+      box-sizing: border-box;
+      background: #ffffff;
+      width: 100vw;
+      height: 100vh;
+      padding: 12px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.2rem;
+    }
+
+    #current-date {
+      font-size: 1rem;
+      margin: 0;
+      font-weight: 600;
+    }
+
+    .controls {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+      margin: 0;
+    }
+
+    button {
+      border: 1px solid #d1d5db;
+      background: #ffffff;
+      color: #111827;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #f3f4f6;
+    }
+
+    .collection-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.95rem;
+      color: #111827;
+      user-select: none;
+    }
+
+    .collection-toggle input {
+      margin: 0;
+    }
+
+    #status {
+      margin: 0;
+      color: #374151;
+      min-height: 1.2em;
+    }
+
+    #summary {
+      margin: 0;
+      color: #111827;
+      min-height: 1.2em;
+    }
+
+    .legend {
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      font-size: 0.85rem;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .legend-swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      border: 1px solid #d1d5db;
+    }
+
+    .chart-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 8px;
+      display: flex;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>SE4 battery charge plan (48h render)</h1>
+    <p id="current-date" aria-live="polite"></p>
+    <div class="controls">
+      <button id="previous-btn" type="button">Previous</button>
+      <button id="next-btn" type="button">Next</button>
+      <label class="collection-toggle" for="collect-48h">
+        <input id="collect-48h" type="checkbox" checked>
+        Collect 48h (untick = 24h)
+      </label>
+    </div>
+    <p id="status" aria-live="polite"></p>
+    <p id="summary"></p>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-swatch" style="background:deepskyblue"></span>Charge</span>
+      <span class="legend-item"><span class="legend-swatch" style="background:orange"></span>Maxuse</span>
+      <span class="legend-item"><span class="legend-swatch" style="background:crimson"></span>Discharge</span>
+      <span class="legend-item"><span class="legend-swatch" style="background:mediumpurple"></span>Sell</span>
+      <span class="legend-item"><span class="legend-swatch" style="background:mediumseagreen"></span>Standby</span>
+      <span class="legend-item"><span class="legend-swatch" style="background:mediumgrey"></span>Undecided</span>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="price-chart"></canvas>
+    </div>
+  </main>
+
+  <script>
+    const SLOTS_PER_DAY = 96;
+    const SLOTS_48H = 192;
+    const DISPLAY_Y_MIN = 0;
+    const DISPLAY_Y_MAX = 7;
+    const MODE_COLORS = {
+      charge: "deepskyblue",
+      maxuse: "orange",
+      discharge: "crimson",
+      sell: "mediumpurple",
+      standby: "mediumseagreen",
+      undecided: "mediumgrey",
+    };
+
+    const dateLabel = document.getElementById("current-date");
+    const statusLabel = document.getElementById("status");
+    const summaryLabel = document.getElementById("summary");
+    const chartWrap = document.querySelector(".chart-wrap");
+    const canvas = document.getElementById("price-chart");
+    const context = canvas.getContext("2d");
+    const previousButton = document.getElementById("previous-btn");
+    const nextButton = document.getElementById("next-btn");
+    const collect48Checkbox = document.getElementById("collect-48h");
+
+    const currentDate = new Date();
+    currentDate.setHours(0, 0, 0, 0);
+    let latestSlots = [];
+    let latestDeliveryStart = null;
+    let latestDeliveryEnd = null;
+
+    function formatDateLabel(date) {
+      return date.toLocaleDateString(undefined, {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+    }
+
+    function toIsoDate(date) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+
+    function renderDate() {
+      const nextDay = new Date(currentDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      dateLabel.textContent = `${formatDateLabel(currentDate)} to ${formatDateLabel(nextDay)}`;
+    }
+
+    function selectedCollectionHours() {
+      return collect48Checkbox.checked ? 48 : 24;
+    }
+
+    function normalizeSlot(entry) {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+      const cost = Number(entry.cost);
+      if (!Number.isFinite(cost)) {
+        return null;
+      }
+      const mode = typeof entry.mode === "string" ? entry.mode : "standby";
+      return { cost, mode };
+    }
+
+    function _parseLocalDateTime(value) {
+      if (typeof value !== "string" || !value) {
+        return null;
+      }
+      const parsed = new Date(value);
+      return Number.isFinite(parsed.getTime()) ? parsed : null;
+    }
+
+    function _expandToDisplaySlots(rawEntries, deliveryStart, deliveryEnd) {
+      const slots = Array.from({ length: SLOTS_48H }, () => null);
+      if (!Array.isArray(rawEntries) || rawEntries.length === 0) {
+        return slots;
+      }
+
+      const startMs = Number(deliveryStart) * 1000;
+      const endMs = Number(deliveryEnd) * 1000;
+      const hasWindow = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
+      const defaultHoursPerEntry = hasWindow
+        ? (endMs - startMs) / 1000 / 3600 / rawEntries.length
+        : 48 / rawEntries.length;
+
+      let filled = false;
+      rawEntries.forEach((entry, index) => {
+        const normalized = normalizeSlot(entry);
+        if (normalized === null) {
+          return;
+        }
+
+        const startDate = _parseLocalDateTime(entry?.from);
+        let lengthHours = Number(entry?.lengthHours);
+        if (!(lengthHours > 0)) {
+          const nextStart = _parseLocalDateTime(rawEntries[index + 1]?.from);
+          if (startDate && nextStart && nextStart > startDate) {
+            lengthHours = (nextStart.getTime() - startDate.getTime()) / 3600000;
+          } else {
+            lengthHours = defaultHoursPerEntry;
+          }
+        }
+
+        if (hasWindow && startDate) {
+          const slotStart = Math.floor((startDate.getTime() - startMs) / (15 * 60 * 1000));
+          const slotEnd = Math.ceil(
+            (startDate.getTime() + lengthHours * 3600000 - startMs) / (15 * 60 * 1000)
+          );
+          const clampedStart = Math.max(0, slotStart);
+          const clampedEnd = Math.min(SLOTS_48H, Math.max(clampedStart + 1, slotEnd));
+          for (let i = clampedStart; i < clampedEnd; i += 1) {
+            slots[i] = normalized;
+            filled = true;
+          }
+          return;
+        }
+
+        const fallbackSpan = Math.max(1, Math.floor(SLOTS_48H / rawEntries.length));
+        const fallbackStart = Math.min(SLOTS_48H - 1, index * fallbackSpan);
+        const fallbackEnd =
+          index === rawEntries.length - 1
+            ? SLOTS_48H
+            : Math.min(SLOTS_48H, fallbackStart + fallbackSpan);
+        for (let i = fallbackStart; i < fallbackEnd; i += 1) {
+          slots[i] = normalized;
+          filled = true;
+        }
+      });
+
+      return filled ? slots : Array.from({ length: SLOTS_48H }, () => null);
+    }
+
+    function drawHistogram(rawSlots = latestSlots, deliveryStart = null, deliveryEnd = null) {
+      const effectiveDeliveryStart =
+        deliveryStart === null ? latestDeliveryStart : deliveryStart;
+      const effectiveDeliveryEnd =
+        deliveryEnd === null ? latestDeliveryEnd : deliveryEnd;
+      const slots = _expandToDisplaySlots(
+        rawSlots,
+        effectiveDeliveryStart,
+        effectiveDeliveryEnd
+      );
+      latestSlots = rawSlots;
+      latestDeliveryStart = effectiveDeliveryStart;
+      latestDeliveryEnd = effectiveDeliveryEnd;
+
+      const presentValues = slots
+        .filter((slot) => slot !== null)
+        .map((slot) => slot.cost);
+      const dpr = window.devicePixelRatio || 1;
+      const logicalWidth = Math.max(chartWrap.clientWidth - 2, 320);
+      const logicalHeight = Math.max(chartWrap.clientHeight - 2, 220);
+      const leftPad = 50;
+      const rightPad = 10;
+      const topPad = 16;
+      const bottomPad = 28;
+      const chartWidth = Math.max(logicalWidth - leftPad - rightPad, 1);
+      const chartHeight = Math.max(logicalHeight - topPad - bottomPad, 1);
+      const slotWidth = chartWidth / SLOTS_48H;
+      const barWidth = Math.max(slotWidth * 0.8, 1);
+
+      canvas.width = Math.floor(logicalWidth * dpr);
+      canvas.height = Math.floor(logicalHeight * dpr);
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, logicalWidth, logicalHeight);
+      context.fillStyle = "#f9fafb";
+      context.fillRect(leftPad, topPad, chartWidth, chartHeight);
+      context.strokeStyle = "#e5e7eb";
+      context.strokeRect(leftPad, topPad, chartWidth, chartHeight);
+
+      if (!presentValues.length) {
+        context.fillStyle = "#374151";
+        context.font = "14px Arial";
+        context.fillText("No data available for the selected date range.", leftPad + 12, topPad + 24);
+        return;
+      }
+
+      const yForValue = (value) =>
+        topPad + ((DISPLAY_Y_MAX - value) / (DISPLAY_Y_MAX - DISPLAY_Y_MIN)) * chartHeight;
+
+      context.strokeStyle = "#e5e7eb";
+      for (let tick = DISPLAY_Y_MIN; tick <= DISPLAY_Y_MAX; tick += 1) {
+        const y = yForValue(tick);
+        context.beginPath();
+        context.moveTo(leftPad, y);
+        context.lineTo(leftPad + chartWidth, y);
+        context.stroke();
+      }
+
+      slots.forEach((slot, index) => {
+        if (slot === null) {
+          return;
+        }
+        const plottedCost = Math.max(
+          DISPLAY_Y_MIN,
+          Math.min(DISPLAY_Y_MAX, slot.cost)
+        );
+        if (plottedCost <= DISPLAY_Y_MIN) {
+          return;
+        }
+        const x = leftPad + index * slotWidth + (slotWidth - barWidth) / 2;
+        const y = yForValue(plottedCost);
+        const height = Math.max(topPad + chartHeight - y, 1);
+        context.fillStyle = MODE_COLORS[slot.mode] || "#95a5a6";
+        context.fillRect(x, y, barWidth, height);
+      });
+
+      const separatorX = leftPad + SLOTS_PER_DAY * slotWidth;
+      context.setLineDash([4, 4]);
+      context.strokeStyle = "#6b7280";
+      context.beginPath();
+      context.moveTo(separatorX, topPad);
+      context.lineTo(separatorX, topPad + chartHeight);
+      context.stroke();
+      context.setLineDash([]);
+
+      context.fillStyle = "#111827";
+      context.font = "12px Arial";
+      context.fillText("Day 1", leftPad, logicalHeight - 8);
+      context.fillText("Day 2", separatorX + 6, logicalHeight - 8);
+      context.fillText(String(DISPLAY_Y_MAX), 8, topPad + 10);
+      context.fillText(String(DISPLAY_Y_MIN), 8, topPad + chartHeight);
+    }
+
+    async function loadBatteryPlan() {
+      statusLabel.textContent = "Loading battery plan...";
+      summaryLabel.textContent = "";
+      drawHistogram([], null, null);
+
+      const selectedDate = toIsoDate(currentDate);
+      const collectionHours = selectedCollectionHours();
+
+      try {
+        const response = await fetch(
+          `/api/battery-charge-plan?date=${selectedDate}&hours=${collectionHours}`,
+          {
+            cache: "no-store",
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const payload = await response.json();
+        const chargeEntries = Array.isArray(payload.chargeEntries)
+          ? payload.chargeEntries
+          : [];
+        const presentValues = chargeEntries
+          .map((entry) => Number(entry?.cost))
+          .filter((value) => Number.isFinite(value));
+        const requestedHours = payload.requestedHours === 24 ? 24 : 48;
+        const requestedSlots = requestedHours * 4;
+
+        drawHistogram(chargeEntries, payload.deliveryStart, payload.deliveryEnd);
+
+        if (presentValues.length) {
+          const minValue = Math.min(...presentValues);
+          const maxValue = Math.max(...presentValues);
+          const averageValue = presentValues.reduce((sum, value) => sum + value, 0)
+            / presentValues.length;
+          const unit = payload.unitOfMeasurement || "SEK/kWh";
+          const mode = payload.mode || "standby";
+          const reason = payload.reason || "";
+
+          summaryLabel.textContent =
+            `Mode: ${mode}. Min: ${minValue.toFixed(2)} | Max: ${maxValue.toFixed(2)} | Avg: ${averageValue.toFixed(2)} (${unit}). ${reason}`;
+        } else {
+          summaryLabel.textContent = "No charge entries available from BatteryChargeModeSensor.";
+        }
+
+        statusLabel.textContent =
+          `Collected ${presentValues.length}/${requestedSlots} slots (${requestedHours}h), rendered ${SLOTS_48H} slots (48h). ` +
+          `deliveryStart=${payload.deliveryStart}, deliveryEnd=${payload.deliveryEnd}, rates=${payload.ratesCount ?? 0}`;
+      } catch (error) {
+        statusLabel.textContent = `Failed to load battery plan: ${error.message}`;
+      }
+    }
+
+    function changeDate(days) {
+      currentDate.setDate(currentDate.getDate() + days);
+      renderDate();
+      loadBatteryPlan();
+    }
+
+    previousButton.addEventListener("click", () => changeDate(-1));
+    nextButton.addEventListener("click", () => changeDate(1));
+    collect48Checkbox.addEventListener("change", () => loadBatteryPlan());
+    window.addEventListener("resize", () => drawHistogram());
+
+    renderDate();
+    loadBatteryPlan();
+  </script>
+</body>
+</html>
