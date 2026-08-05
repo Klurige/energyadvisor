@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to release (without leading v)
+        description: Version to release
         required: true
         type: string
 
@@ -27,7 +27,7 @@ jobs:
             exit 1
           fi
 
-          TAG="v$VERSION"
+          TAG="$VERSION"
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
             echo "Tag $TAG already exists on origin."
             exit 1
