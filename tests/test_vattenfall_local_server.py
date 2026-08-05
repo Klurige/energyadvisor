@@ -33,7 +33,9 @@ def _build_vattenfall_payload(for_day: date) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_build_battery_charge_payload_uses_price_sensor_compact_rates(monkeypatch):
+async def test_build_battery_charge_payload_uses_price_sensor_compact_rates(
+    monkeypatch,
+):
     """Battery plan payload should expose ratesCount without accessing private internals."""
     selected_day = date(2026, 8, 5)
     stub_payload = _build_vattenfall_payload(selected_day)

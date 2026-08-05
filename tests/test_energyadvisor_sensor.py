@@ -581,9 +581,7 @@ async def test_async_update_data_with_malformed_data(sensor_instance):
         "currency": "EUR",
         "raw": [{"start": "bad-time", "end": None, "price": 10}],
     }
-    with patch(
-        "custom_components.energyadvisor.sensor.price._LOGGER"
-    ) as mock_logger:
+    with patch("custom_components.energyadvisor.sensor.price._LOGGER") as mock_logger:
         await sensor_instance.async_update_data(malformed_nordpool_data_2)
         mock_logger.error.assert_called_once()
         assert sensor_instance._level == "Error Processing Data"
