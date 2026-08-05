@@ -2,7 +2,14 @@
 
 ## Purpose
 
-An optional sensor that refines an [Open Meteo](https://open-meteo.com/) solar production forecast using your inverter's actual output. Over time it learns how the OM forecast systematically overestimates or underestimates production for your specific installation and conditions, and applies those corrections to future forecasts.
+An optional sensor that refines an [Open Meteo](https://open-meteo.com/) solar
+production forecast using your inverter's actual output. Over time it learns how
+the OM forecast systematically overestimates or underestimates production for
+your specific installation and conditions, and applies those corrections to
+future forecasts. Each 15-minute point is adjusted in two steps: first by a
+learned correction factor for the current solar-position bin (sun elevation +
+azimuth), then (for today's remaining slots only) by an intraday scaling factor
+based on how actual production has tracked so far today.
 
 ---
 
@@ -41,7 +48,10 @@ Additional entries receive the usual Home Assistant numeric suffixes, such as
 
 ### State
 
-Corrected power estimate (kW) for the current 15-minute slot — the first forecast entry whose end time is after now.
+Corrected power estimate (kW) for the current 15-minute slot — the first
+forecast entry whose end time is after now. The value is
+`raw forecast × solar-position correction × intraday scaling` (intraday scaling
+applies to today's future slots only).
 
 Unit: `kW` | Device class: `power`
 
