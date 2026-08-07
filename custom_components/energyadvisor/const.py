@@ -79,15 +79,7 @@ ATTR_INTRADAY_SCALING = "intraday_scaling"
 PREFERRED_SENSOR_ENTITY_IDS: dict[str, str] = {
     "price": "sensor.energy_advisor_price",
     "compactlevels": "sensor.energy_advisor_compact_levels",
-    "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
     "solarforecast": "sensor.energy_advisor_solar_forecast",
-    "base_load": "sensor.energy_advisor_base_load",
-    "strategy": "sensor.energy_advisor_strategy",
-    "battery_floor": "sensor.energy_advisor_battery_floor",
-    "battery_floor_pct": "sensor.energy_advisor_battery_floor_pct",
-    "learning_nights": "sensor.energy_advisor_learning_nights",
-    "sell_safety_margin": "sensor.energy_advisor_sell_safety_margin",
-    "battery_soc_forecast": "sensor.energy_advisor_battery_soc_forecast",
 }
 
 

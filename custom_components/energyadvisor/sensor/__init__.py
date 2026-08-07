@@ -1,9 +1,8 @@
 """Sensor platform wiring for Energy Advisor.
 
-This package assembles the price sensor, compact level sensor, battery
-planner, diagnostic sensors, and optional refined solar forecast sensor. Each
-entity reads one or more integration inputs and publishes a single state plus
-a small set of structured attributes.
+This package assembles the price sensor, compact level sensor, and optional
+refined solar forecast sensor. Each entity reads one or more integration inputs
+and publishes a single state plus a small set of structured attributes.
 """
 
 from __future__ import annotations
@@ -24,18 +23,8 @@ from ..const import (
     DOMAIN,
 )
 from ..models import EnergyAdvisorRuntimeData
-from .batterychargemodesensor import BatteryChargeModeSensor
 from ..solar_forecast_coordinator import SolarForecastCoordinator
 from .compactlevels import CompactLevelsSensor
-from .diagnosticsensors import (
-    BaseLoadSensor,
-    BatteryFloorPercentSensor,
-    BatteryFloorSensor,
-    BatterySocForecastSensor,
-    LearningNightsSensor,
-    SellSafetyMarginSensor,
-    StrategySensor,
-)
 from .price import PriceSensor
 from .nordpool_coordinator import NordpoolDataCoordinator
 from .solarforecastsensor import SolarForecastSensor
@@ -98,18 +87,9 @@ async def async_setup_entry(
 
     levels_sensor = PriceSensor(hass, entry, device_info)
     compact_levels_sensor = CompactLevelsSensor(hass, entry, device_info, levels_sensor)
-    battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, levels_sensor)
     entities = [
         levels_sensor,
         compact_levels_sensor,
-        battery_sensor,
-        BaseLoadSensor(entry, device_info, battery_sensor),
-        StrategySensor(entry, device_info, battery_sensor),
-        BatteryFloorSensor(entry, device_info, battery_sensor),
-        BatteryFloorPercentSensor(entry, device_info, battery_sensor),
-        LearningNightsSensor(entry, device_info, battery_sensor),
-        SellSafetyMarginSensor(entry, device_info, battery_sensor),
-        BatterySocForecastSensor(entry, device_info, battery_sensor),
     ]
 
     solar_coordinator: SolarForecastCoordinator | None = None
