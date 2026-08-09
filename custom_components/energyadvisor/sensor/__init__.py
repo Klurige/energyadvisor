@@ -1,8 +1,9 @@
 """Sensor platform wiring for Energy Advisor.
 
-This package assembles the price sensor, compact level sensor, and optional
-refined solar forecast sensor. Each entity reads one or more integration inputs
-and publishes a single state plus a small set of structured attributes.
+This package assembles the price sensor, compact level sensor, battery planner,
+and  solar forecast sensor. The battery planner uses price sensor and
+solar forecast sensor internally, the other sensors are dependent on external
+data only.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from ..const import (
     DOMAIN,
 )
 from ..models import EnergyAdvisorRuntimeData
+from .batterychargemodesensor import BatteryChargeModeSensor
 from ..solar_forecast_coordinator import SolarForecastCoordinator
 from .compactlevels import CompactLevelsSensor
 from .price import PriceSensor
@@ -87,9 +89,11 @@ async def async_setup_entry(
 
     levels_sensor = PriceSensor(hass, entry, device_info)
     compact_levels_sensor = CompactLevelsSensor(hass, entry, device_info, levels_sensor)
+    battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, levels_sensor)
     entities = [
         levels_sensor,
         compact_levels_sensor,
+        battery_sensor,
     ]
 
     solar_coordinator: SolarForecastCoordinator | None = None

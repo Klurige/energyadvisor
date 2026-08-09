@@ -44,6 +44,7 @@ from ..const import (
     parse_unit_of_measurement,
 )
 from ..util import build_levels_payload_from_rates, level_to_compact
+import threading
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -143,6 +144,8 @@ class PriceSensor(SensorEntity):
         self._icon = "mdi:flash"
         self._rates = []
         self._rank = 0
+
+        self._rates_lock = threading.Lock()
 
         self._attr_device_info = device_info
         self._attr_exclude_from_recording = entry.options.get(
@@ -343,6 +346,7 @@ class PriceSensor(SensorEntity):
         _LOGGER.info(
             f"Sensor state refreshed: Cost={self._state} {self._currency}/{self._unit}, Level={self._level}, RawSpot={self._spot_price}, Rank={self._rank}"
         )
+        self._notify_update_listeners()
 
     @property
     def state(self):
