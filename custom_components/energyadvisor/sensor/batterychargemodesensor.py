@@ -14,6 +14,7 @@ The modes are
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from homeassistant.components.sensor import (
@@ -23,6 +24,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.util import dt as dt_util
 
 from ..const import (
     CONF_EXCLUDE_FROM_RECORDING,
@@ -54,11 +56,12 @@ class BatteryChargeModeSensor(SensorEntity):
         hass: HomeAssistant,
         entry: ConfigEntry,
         device_info: DeviceInfo,
-        source_sensor: PriceSensor,
+        price_sensor: PriceSensor,
     ) -> None:
         self._entry = entry
-        self._source_sensor = source_sensor
-        self._attr_native_value = None
+        self._price_sensor = price_sensor
+        self._current_mode = None
+        self._modes = self.default_mode()
         self._attr_icon = "mdi:battery"
         self._remove_source_listener = None
 
@@ -78,38 +81,105 @@ class BatteryChargeModeSensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         _LOGGER.debug(f"Battery charge mode sensor registering listener with price sensor")
-        self._remove_source_listener = self._source_sensor.async_add_update_listener(
+        self._remove_source_listener = self._price_sensor.async_add_update_listener(
             self._handle_source_update
         )
         self.async_on_remove(self._remove_source_listener)
 
     def _handle_source_update(self) -> None:
         _LOGGER.debug("Prices coming in - updating battery charge mode")
-        self._attr_native_value = "standby"
-        _LOGGER.debug(f"Sending out modes: {self._attr_native_value}")
+        self.calculate_battery_mode()
+        _LOGGER.debug(f"Sending out modes: {self._current_mode}")
         self.async_write_ha_state()
 
     @property
     def icon(self) -> str:
-        return MODE_ICONS.get(self._attr_native_value, "mdi:battery-unknown")
+        return MODE_ICONS.get(self._current_mode, "mdi:battery-unknown")
 
     @property
     def state(self) -> str | None:
-        return self._attr_native_value
+        return self._current_mode
 
     @property
     def extra_state_attributes(self) -> dict:
-       """Return modes schedule matching price sensor rates."""
-       modes = []
-       for rate in self._source_sensor._rates:
-           start = rate.get("start")
-           if start is None:
-               continue
-           modes.append(
-               {
-                   "from": start.strftime("%Y-%m-%dT%H:%M"),
-                   "mode": self._attr_native_value or "standby",
-                   "cost": rate.get("cost"),
-               }
-           )
-       return {"modes": modes}
+       return {"modes": self._modes}
+
+    def calculate_battery_mode(self):
+        # Calculate the battery mode.
+        # If modes are missing for any price period, calculate the base mode. Then update the current mode.
+        if not self._modes:
+            self._modes = self.default_mode()
+
+        now = dt_util.now()
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
+        modes_kv = {mode.get("from"): mode for mode in self._modes}
+
+        _LOGGER.debug(f"Calculating battery mode at {now}, today_midnight: {today_midnight}")
+        if self._price_sensor is not None:
+            _LOGGER.debug(f"Got price sensor: {self._price_sensor.entity_id}, state: {self._price_sensor.state}")
+            rates = self._price_sensor._rates
+            if rates is not None:
+                _LOGGER.debug(f"Got rates from price sensor: {rates}")
+                # Build the modes based on the price data.
+                randomiser = "charge"
+                for rate in rates:
+                    _LOGGER.debug(f"Processing rate: {rate}")
+                    slot_start = rate.get("start")
+                    if not isinstance(slot_start, datetime):
+                        _LOGGER.warning(
+                            "Skipping rate without a valid start timestamp: %s", rate
+                        )
+                        continue
+                    if slot_start.tzinfo is None:
+                        slot_start = slot_start.replace(tzinfo=now.tzinfo)
+                    else:
+                        slot_start = dt_util.as_local(slot_start)
+                    slot_from = slot_start.strftime("%Y-%m-%dT%H:%M")
+                    _LOGGER.debug(f"Slot_from: {slot_from}")
+                    slot_cost = rate.get("cost")
+                    slot_mode = randomiser
+                    if randomiser == "charge":
+                        randomiser = "maxuse"
+                    elif randomiser == "maxuse":
+                        randomiser = "discharge"
+                    elif randomiser == "discharge":
+                        randomiser = "sell"
+                    elif randomiser == "sell":
+                        randomiser = "standby"
+                    elif randomiser == "standby":
+                        randomiser = "charge"
+                    modes_kv[slot_from] = {"from": slot_from, "mode": slot_mode, "cost": slot_cost}
+
+        self._modes = [modes_kv[key] for key in sorted(modes_kv)]
+        _LOGGER.debug(f"Battery charge modes: {self._modes}")
+        now = dt_util.now()
+        previous_slot = None
+        _LOGGER.debug(f"Start looking for current mode at {now}")
+        for slot in self._modes:
+            slot_from = dt_util.parse_datetime(slot.get("from"))
+            if slot_from is None:
+                _LOGGER.warning(f"Skipping mode slot with invalid from value: {slot}")
+                continue
+            if slot_from.tzinfo is None:
+                slot_from = slot_from.replace(tzinfo=now.tzinfo)
+            else:
+                slot_from = dt_util.as_local(slot_from)
+            if slot_from <= now:
+                previous_slot = slot
+                _LOGGER.debug(f"Found current mode slot: {slot}")
+            else:
+                _LOGGER.debug(f"Slot is in the future: {slot}")
+                break
+
+        if previous_slot:
+            _LOGGER.debug(f"Setting to previous_slot: {previous_slot}")
+            self._current_mode = previous_slot.get("mode", "standby")
+        else:
+            _LOGGER.debug(f"No previous slot found, setting to standby")
+            self._current_mode = "standby"
+
+
+    def default_mode(self):
+        # Default mode is maxuse if no price data is available.
+        today_midnight = dt_util.now().replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
+        return [{"from": today_midnight, "mode": "maxuse", "cost": 1.0}]
