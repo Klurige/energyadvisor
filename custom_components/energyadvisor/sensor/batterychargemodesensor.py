@@ -35,6 +35,13 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+MODE_ICONS = {
+    "standby": "mdi:battery-off",
+    "charge": "mdi:battery-charging",
+    "maxuse": "mdi:battery-check",
+    "discharge": "mdi:battery-minus",
+    "sell": "mdi:battery-arrow-up",
+}
 
 class BatteryChargeModeSensor(SensorEntity):
     """Battery charge mode sensor."""
@@ -79,16 +86,12 @@ class BatteryChargeModeSensor(SensorEntity):
     def _handle_source_update(self) -> None:
         _LOGGER.debug("Prices coming in - updating battery charge mode")
         self._attr_native_value = "standby"
-        mode_icons = {
-            "standby": "mdi:battery-inactive",
-            "charge": "mdi:battery-charging",
-            "maxuse": "mdi:battery-check",
-            "discharge": "mdi:battery-minus",
-            "sell": "mdi:battery-arrow-up",
-        }
-        self._attr_icon = mode_icons.get(self._attr_native_value, "mdi:battery-unknown")
         _LOGGER.debug(f"Sending out modes: {self._attr_native_value}")
         self.async_write_ha_state()
+
+    @property
+    def icon(self) -> str:
+        return MODE_ICONS.get(self._attr_native_value, "mdi:battery-unknown")
 
     @property
     def state(self) -> str | None:
