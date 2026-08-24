@@ -76,12 +76,12 @@
         "description": "Konfigurera valfria solindata för biasjusterade produktionsprognoser. Lämna fälten tomma för att hoppa över solprognosen.",
         "data": {
           "forecast_entity": "Solprognosenhet (idag)",
-          "power_entity": "Växelriktarens effektsensor (W)",
+          "power_entity": "Solpanelernas effektsensor (W)",
           "forecast_tomorrow_entity": "Solprognosenhet (imorgon) – valfritt"
         },
         "data_description": {
           "forecast_entity": "Sensor som ger dagens solprognos.",
-          "power_entity": "Uppmätt AC-effekt från växelriktaren i watt, används för att justera prognosen.",
+          "power_entity": "Uppmätt AC-effekt från solpanelerna i watt, används för att justera prognosen.",
           "forecast_tomorrow_entity": "Valfri sensor som ger morgondagens solprognos."
         }
       },
@@ -243,12 +243,12 @@
         "description": "Konfigurera valfria solindata för biasjusterade produktionsprognoser. Lämna fälten tomma för att hoppa över solprognosen.",
         "data": {
           "forecast_entity": "Solprognosenhet (idag)",
-          "power_entity": "Växelriktarens effektsensor (W)",
+          "power_entity": "Solpanelernas effektsensor (W)",
           "forecast_tomorrow_entity": "Solprognosenhet (imorgon) – valfritt"
         },
         "data_description": {
           "forecast_entity": "Sensor som ger dagens solprognos.",
-          "power_entity": "Uppmätt AC-effekt från växelriktaren i watt, används för att justera prognosen.",
+          "power_entity": "Uppmätt AC-effekt från solpanelerna i watt, används för att justera prognosen.",
           "forecast_tomorrow_entity": "Valfri sensor som ger morgondagens solprognos."
         }
       },

@@ -25,10 +25,10 @@ from ..const import (
 )
 from ..models import EnergyAdvisorRuntimeData
 from .batterychargemodesensor import BatteryChargeModeSensor
-from ..solar_forecast_coordinator import SolarForecastCoordinator
+from ..coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 from .compactlevels import CompactLevelsSensor
 from .price import PriceSensor
-from .nordpool_coordinator import NordpoolDataCoordinator
+from ..coordinators.nordpool_coordinator import NordpoolDataCoordinator
 from .solarforecastsensor import SolarForecastSensor
 
 _LOGGER = logging.getLogger(__name__)

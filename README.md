@@ -18,7 +18,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
   - Allows for setting thresholds for low and high prices.
   - Adds support for credits when exporting electricity.
 - Provides a ranking system for prices to help identify the best times to use electricity.
-- Can refine a solar production forecast using your inverter's measured output.
+- Can refine a solar production forecast using your solar's measured output.
 - Can suggest battery `maxuse` by default and `sell` during the top six morning/evening price slots in the current summer strategy.
 ## Prerequisites
 - Home Assistant (2025.0 or newer recommended)
@@ -74,7 +74,7 @@ called differently for other grids and suppliers.
 | `electricity_vat`          | Electricity VAT              | 0.25          |
 | `exclude_from_recording`   | Exclude integration sensors from recorder/history | `true` |
 | `forecast_entity`          | Optional solar forecast sensor for today | `sensor.home_energy_production_today` |
-| `power_entity`             | Optional inverter actual power sensor in watts | `sensor.inverter_active_power` |
+| `power_entity`             | Optional solar actual power sensor in watts | `sensor.solar_active_power` |
 | `forecast_tomorrow_entity` | Optional solar forecast sensor for tomorrow | `sensor.home_energy_production_tomorrow` |
 | `battery_capacity_kwh`     | Optional battery capacity; provide together with max charge power to override default timings | `10.0` |
 | `battery_max_charge_power_w` | Optional maximum battery charge power; provide together with capacity | `5000` |
@@ -107,7 +107,7 @@ In addition, the `rates` attribute on `sensor.energy_advisor_price`, the `charge
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
   - `sensor.energy_advisor_battery_charge_mode` provides the current summer battery recommendation: `maxuse` by default and `sell` during the six highest-valued slots per day that start between 00:00-10:00 and 17:00-24:00.
-  - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and inverter power sensors.
+  - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).
 
@@ -147,7 +147,7 @@ The integration also provides `sensor.energy_advisor_compact_levels`, which expo
    Typically, there is one hour of data for history and twelve hours for future, but that is not guaranteed.
 
 ### `sensor.energy_advisor_solar_forecast`
-- **Description:** Optional refined solar production forecast learned from the difference between your forecast source and the inverter's measured output.
+- **Description:** Optional refined solar production forecast learned from the difference between your forecast source and the solar's measured output.
 - **Default Entity ID:** `sensor.energy_advisor_solar_forecast` for the first config entry.
 - **State:** Corrected power estimate in `kW` for the current 15-minute slot.
 - **Attributes:**

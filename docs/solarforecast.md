@@ -3,7 +3,7 @@
 ## Purpose
 
 An optional sensor that refines an [Open Meteo](https://open-meteo.com/) solar
-production forecast using your inverter's actual output. Over time it learns how
+production forecast using your solar's actual output. Over time it learns how
 the OM forecast systematically overestimates or underestimates production for
 your specific installation and conditions, and applies those corrections to
 future forecasts. Each 15-minute point is adjusted in two steps: first by a
@@ -17,10 +17,10 @@ based on how actual production has tracked so far today.
 
 ### Required configuration
 
-| Option | Key | Example |
-|---|---|---|
+| Option                        | Key | Example |
+|-------------------------------|---|---|
 | Solar forecast sensor (today) | `forecast_entity` | `sensor.home_energy_production_today` |
-| Inverter AC power output sensor | `power_entity` | `sensor.inverter_active_power` |
+| Solar AC power output sensor  | `power_entity` | `sensor.solar_active_power` |
 
 ### Optional configuration
 
@@ -62,7 +62,7 @@ Unit: `kW` | Device class: `power`
 | `forecasts` | list[dict] | 192 entries covering today 00:00 – tomorrow 24:00 (local time), one per 15-minute slot |
 | `energy_today_kwh` | float | Total corrected kWh for today (full calendar day) |
 | `energy_tomorrow_kwh` | float | Total corrected kWh for tomorrow |
-| `total_samples` | int | Number of (OM forecast W, actual inverter W) pairs stored |
+| `total_samples` | int | Number of (OM forecast W, actual solar W) pairs stored |
 | `data_since` | str | ISO date of the oldest stored reading |
 | `intraday_scaling` | float | Real-time scaling factor applied to today's remaining slots |
 
@@ -86,15 +86,15 @@ storage.
 ### Recording cycle
 
 Every 15 minutes, the coordinator:
-1. Collects all inverter power readings buffered during the slot.
+1. Collects all solar power readings buffered during the slot.
 2. Computes a time-weighted average (trapezoidal integration).
 3. Reads the OM forecast value for that slot.
 4. Stores the pair `(om_watts, actual_watts)` in a local SQLite database.
 
 **Recordings are skipped when:**
-- No inverter power readings were collected (e.g. HA just started).
-- Both OM forecast and inverter reading are below 10 W (night or deep overcast).
-- The current export credit price is negative — when credit is negative an inverter may cap output at household consumption to avoid paying to export, understating true solar production and corrupting the correction model.
+- No solar power readings were collected (e.g. HA just started).
+- Both OM forecast and solar reading are below 10 W (night or deep overcast).
+- The current export credit price is negative — when credit is negative an solar may cap output at household consumption to avoid paying to export, understating true solar production and corrupting the correction model.
 
 ### Solar-position bins
 
@@ -160,7 +160,7 @@ Stale DB files (belonging to removed config entries) are deleted on startup.
 
 ## Dev mode
 
-When `custom_components/energyadvisor/dev_config.py` defines `HA_TOKEN` and `HA_URL`, the coordinator polls the remote HA REST API for inverter power every 30 seconds instead of listening to a local state change event. This allows development against a live production instance without `remote_homeassistant`.
+When `custom_components/energyadvisor/dev_config.py` defines `HA_TOKEN` and `HA_URL`, the coordinator polls the remote HA REST API for solar power every 30 seconds instead of listening to a local state change event. This allows development against a live production instance without `remote_homeassistant`.
 
 See `custom_components/energyadvisor/const.py` and the gitignored `custom_components/energyadvisor/dev_config.py` for details.
 
@@ -168,9 +168,9 @@ See `custom_components/energyadvisor/const.py` and the gitignored `custom_compon
 
 ## Continuation notes
 
-- `solar_forecast_coordinator.py` — all logic: DB, correction model, intraday scaling, forecast assembly, dev-mode polling, and export-credit guarding via the main Energy Advisor sensor (`sensor/energyadvisor.py`).
+- `coordinators/solar_forecast_coordinator.py` — all logic: DB, correction model, intraday scaling, forecast assembly, dev-mode polling, and export-credit guarding via the main Energy Advisor sensor (`sensor/energyadvisor.py`).
 - `sensor/solarforecastsensor.py` — HA sensor wrapper; caches state/attribute summaries and keeps the large `forecasts` payload out of recorder attribute storage.
 - `sensor/__init__.py` — conditionally creates `SolarForecastCoordinator` + sensor when both `forecast_entity` and `power_entity` are configured in entry options.
 - `config_flow.py` — `solar_forecast` config step (after `thresholds`); options flow includes the same three fields.
-- Algorithm constants are at the top of `solar_forecast_coordinator.py`: `MAX_HISTORY_DAYS`, `CORRECTION_HALF_LIFE_DAYS`, `MIN_CORRECTION_SAMPLES`, `SLOT_ELEVATION_STEP`, `SLOT_AZIMUTH_BINS`.
+- Algorithm constants are at the top of `coordinators/solar_forecast_coordinator.py`: `MAX_HISTORY_DAYS`, `CORRECTION_HALF_LIFE_DAYS`, `MIN_CORRECTION_SAMPLES`, `SLOT_ELEVATION_STEP`, `SLOT_AZIMUTH_BINS`.
 - Tests: `tests/test_solar_forecast_coordinator.py` and `tests/test_solar_forecast_sensor.py`.

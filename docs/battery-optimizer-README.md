@@ -14,7 +14,7 @@ agent or computer restarts.
 - [x] `nordpool_prices_sensor` — existing price input.
 - [x] `forecast_entity` — existing solar forecast input for today.
 - [x] `forecast_tomorrow_entity` — existing solar forecast input for tomorrow.
-- [x] `power_entity` — existing inverter power input for the refined solar forecast.
+- [x] `power_entity` — existing solar power input for the refined solar forecast.
 - [x] `battery_soc_entity` — required to know how much usable energy is currently stored.
 - [ ] `power_meter_consumption` — cumulative household energy meter (kWh). Used to compute the 01:00–04:00 consumption diff on nights when all big consumers are off.
 - [ ] `water_heater_active_entity` — binary sensor (on/off) indicating whether the water heater is actively heating. Used to filter nights unsuitable for base-load learning.

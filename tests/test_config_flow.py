@@ -296,14 +296,14 @@ async def test_main_flow_solar_forecast_rejects_missing_tomorrow_entity() -> Non
     hass = MagicMock()
     hass.states.get.side_effect = lambda entity_id: {
         "sensor.solar_today": _make_state("500", {"watts": {}}),
-        "sensor.inverter_power": _make_state("1500"),
+        "sensor.solar_power": _make_state("1500"),
     }.get(entity_id)
     handler.hass = hass
 
     result = await handler.async_step_solar_forecast(
         {
             CONF_FORECAST_ENTITY: "sensor.solar_today",
-            CONF_POWER_ENTITY: "sensor.inverter_power",
+            CONF_POWER_ENTITY: "sensor.solar_power",
             CONF_FORECAST_TOMORROW_ENTITY: "sensor.solar_tomorrow",
         }
     )
@@ -323,7 +323,7 @@ async def test_main_flow_solar_forecast_prefills_dev_default_entities(
         "DEV_DEFAULTS",
         {
             CONF_FORECAST_ENTITY: "sensor.solar_today",
-            CONF_POWER_ENTITY: "sensor.remote_inverterpower",
+            CONF_POWER_ENTITY: "sensor.remote_solarpower",
             CONF_FORECAST_TOMORROW_ENTITY: "sensor.solar_tomorrow",
         },
     )
@@ -337,7 +337,7 @@ async def test_main_flow_solar_forecast_prefills_dev_default_entities(
     assert result["type"] == "form"
     validated = result["data_schema"]({})
     assert validated[CONF_FORECAST_ENTITY] == "sensor.solar_today"
-    assert validated[CONF_POWER_ENTITY] == "sensor.remote_inverterpower"
+    assert validated[CONF_POWER_ENTITY] == "sensor.remote_solarpower"
     assert validated[CONF_FORECAST_TOMORROW_ENTITY] == "sensor.solar_tomorrow"
 
 
@@ -350,14 +350,14 @@ async def test_main_flow_valid_solar_forecast_proceeds_to_battery() -> None:
     hass = MagicMock()
     hass.states.get.side_effect = lambda entity_id: {
         "sensor.solar_today": _make_state("500", {"watts": {}}),
-        "sensor.inverter_power": _make_state("1500"),
+        "sensor.solar_power": _make_state("1500"),
     }.get(entity_id)
     handler.hass = hass
 
     result = await handler.async_step_solar_forecast(
         {
             CONF_FORECAST_ENTITY: "sensor.solar_today",
-            CONF_POWER_ENTITY: "sensor.inverter_power",
+            CONF_POWER_ENTITY: "sensor.solar_power",
         }
     )
 
@@ -578,14 +578,14 @@ async def test_options_flow_rejects_missing_tomorrow_entity() -> None:
     hass = MagicMock()
     hass.states.get.side_effect = lambda entity_id: {
         "sensor.solar_today": _make_state("500"),
-        "sensor.inverter_power": _make_state("1500"),
+        "sensor.solar_power": _make_state("1500"),
     }.get(entity_id)
     handler.hass = hass
 
     result = await handler.async_step_solar_forecast(
         {
             CONF_FORECAST_ENTITY: "sensor.solar_today",
-            CONF_POWER_ENTITY: "sensor.inverter_power",
+            CONF_POWER_ENTITY: "sensor.solar_power",
             CONF_FORECAST_TOMORROW_ENTITY: "sensor.solar_tomorrow",
         }
     )

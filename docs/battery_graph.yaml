@@ -1,0 +1,123 @@
+type: custom:config-template-card
+card_mod: null
+entities:
+  - sensor.energy_advisor_battery_charge_mode
+card:
+  type: custom:apexcharts-card
+  header:
+    title: Batteriläge (idag)
+    show: true
+    show_states: false
+  graph_span: 48h
+  span:
+    start: day
+  now:
+    show: true
+    label: Nu
+  apex_config:
+    xaxis:
+      type: datetime
+    yaxis:
+      min: 0
+      max: 7
+    chart:
+      height: 700
+      animations:
+        enabled: false
+    legend:
+      show: true
+      position: bottom
+      horizontalAlign: center
+      showForSingleSeries: true
+      customLegendItems:
+        - Charge
+        - Maxuse
+        - Discharge
+        - Sell
+        - Standby
+        - Unknown
+      markers:
+        width: 12
+        height: 12
+        radius: 2
+        fillColors:
+          - deepskyblue
+          - orange
+          - crimson
+          - mediumpurple
+          - mediumseagreen
+          - grey
+      onItemClick:
+        toggleDataSeries: false
+      onItemHover:
+        highlightDataSeries: false
+    tooltip:
+      enabledOnSeries:
+        - 0
+  all_series_config:
+    show:
+      legend_value: false
+  series:
+    - entity: sensor.energy_advisor_battery_charge_mode
+      name: Charge
+      type: column
+      float_precision: 2
+      extend_to: end
+      data_generator: |
+        const modes = entity?.attributes?.modes ?? [];
+
+        const colorByMode = {
+          charge: 'deepskyblue',
+          maxuse: 'orange',
+          discharge: 'crimson',
+          sell: 'mediumpurple',
+          standby: 'mediumseagreen',
+          unknown: 'grey'
+        };
+
+        const result = [];
+
+        for (let i = 0; i < modes.length; i++) {
+          const current = modes[i];
+
+          const start = new Date(current.from).getTime();
+
+          const end = i < modes.length - 1
+            ? new Date(modes[i + 1].from).getTime()
+            : new Date(start + 15 * 60 * 1000).getTime();
+
+          for (let t = start; t < end; t += 15 * 60 * 1000) {
+            result.push({
+              x: t,
+              y: Number(current.cost),
+              fillColor: colorByMode[current.mode] ?? '#95a5a6',
+              mode: current.mode
+            });
+          }
+        }
+        return result;
+    - entity: sensor.energy_advisor_battery_charge_mode
+      name: Maxuse
+      type: line
+      data_generator: |
+        return [];
+    - entity: sensor.energy_advisor_battery_charge_mode
+      name: Discharge
+      type: line
+      data_generator: |
+        return [];
+    - entity: sensor.energy_advisor_battery_charge_mode
+      name: Sell
+      type: line
+      data_generator: |
+        return [];
+    - entity: sensor.energy_advisor_battery_charge_mode
+      name: Standby
+      type: line
+      data_generator: |
+        return [];
+    - entity: sensor.energy_advisor_battery_charge_mode
+      name: Unknown
+      type: line
+      data_generator: |
+        return [];

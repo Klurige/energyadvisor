@@ -2,7 +2,7 @@
 
 Responsibilities
 ----------------
-* Collect (OM-forecast-W, actual-inverter-W) pairs every 15 minutes.
+* Collect (OM-forecast-W, actual-solar-W) pairs every 15 minutes.
 * Persist them in a local SQLite database (up to MAX_HISTORY_DAYS).
 * Compute per-slot exponentially-weighted bias-correction factors.
 * Apply an intra-day real-time scaling based on how today is tracking.
@@ -71,7 +71,7 @@ from homeassistant.helpers.event import (
     async_track_utc_time_change,
 )
 
-from .const import (
+from ..const import (
     CONF_FORECAST_ENTITY,
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_POWER_ENTITY,
@@ -79,7 +79,7 @@ from .const import (
 )
 
 if TYPE_CHECKING:
-    from .sensor.price import PriceSensor
+    from ..sensor.price import PriceSensor
 
 # Algorithm tuning constants
 SLOTS_PER_DAY = 96  # 15-min intervals per day
@@ -116,7 +116,7 @@ _DEV_HA_TOKEN: str | None = None
 _DEV_POWER_ENTITY: str | None = None
 
 try:
-    from . import dev_config as _dev_cfg  # type: ignore[import]
+    from .. import dev_config as _dev_cfg  # type: ignore[import]
 
     if getattr(_dev_cfg, "HA_TOKEN", None) and getattr(_dev_cfg, "HA_URL", None):
         _DEV_HA_URL = _dev_cfg.HA_URL
@@ -311,7 +311,7 @@ class SolarForecastCoordinator:
                 date     TEXT    NOT NULL,   -- ISO date, local calendar day
                 slot     INTEGER NOT NULL,   -- solar-position bin (elev×azim)
                 om_w     REAL    NOT NULL,   -- Open Meteo forecast watts
-                actual_w REAL    NOT NULL,   -- Inverter actual watts (15-min avg)
+                actual_w REAL    NOT NULL,   -- Solar actual watts (15-min avg)
                 PRIMARY KEY (date, slot)
             )
             """)
@@ -854,7 +854,7 @@ class SolarForecastCoordinator:
 
     @callback
     def _on_power_state_change(self, event) -> None:
-        """Append every inverter power reading to the rolling buffer."""
+        """Append every solar power reading to the rolling buffer."""
         new_state = event.data.get("new_state")
         if new_state is None or new_state.state in ("unknown", "unavailable"):
             return
@@ -865,7 +865,7 @@ class SolarForecastCoordinator:
         self._power_buffer.append((datetime.now(timezone.utc), val))
 
     async def _dev_poll_power(self, _now=None) -> None:
-        """Poll the remote HA REST API for the inverter power value (dev mode only).
+        """Poll the remote HA REST API for the solar power value (dev mode only).
 
         Runs once immediately then reschedules itself every 30 seconds so that
         the power buffer receives regular readings even when remote_homeassistant
@@ -961,11 +961,11 @@ class SolarForecastCoordinator:
             return
 
         # Skip slots where the export credit price is negative. When credit < 0
-        # the inverter may cap output at household consumption to avoid paying
+        # the solar may cap output at household consumption to avoid paying
         # to export, so the power reading can understate true solar production.
         if self._has_negative_export_credit():
             _LOGGER.debug(
-                "Skipping slot recording: export credit is negative, inverter "
+                "Skipping slot recording: export credit is negative, solar "
                 "may be curtailed"
             )
             return

@@ -28,9 +28,12 @@ from homeassistant.util import dt as dt_util
 
 from ..const import (
     CONF_EXCLUDE_FROM_RECORDING,
+    CONF_BATTERY_DEGRADATION_COST,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
 )
+
+from .chargemodehelpers import find_current_mode, default_modes, find_peaks_in_modes
 
 if TYPE_CHECKING:
     from .price import PriceSensor
@@ -43,6 +46,7 @@ MODE_ICONS = {
     "maxuse": "mdi:battery-check",
     "discharge": "mdi:battery-minus",
     "sell": "mdi:battery-arrow-up",
+    "unknown": "mdi:battery-unknown",
 }
 
 class BatteryChargeModeSensor(SensorEntity):
@@ -60,9 +64,8 @@ class BatteryChargeModeSensor(SensorEntity):
     ) -> None:
         self._entry = entry
         self._price_sensor = price_sensor
-        self._current_mode = None
-        self._modes = self.default_mode()
-        self._attr_icon = "mdi:battery"
+        self._modes = default_modes()
+        self._current_mode = find_current_mode(self._modes).get("mode", "unknown")
         self._remove_source_listener = None
 
         description = SensorEntityDescription(
@@ -108,7 +111,7 @@ class BatteryChargeModeSensor(SensorEntity):
         # Calculate the battery mode.
         # If modes are missing for any price period, calculate the base mode. Then update the current mode.
         if not self._modes:
-            self._modes = self.default_mode()
+            self._modes = default_modes()
 
         now = dt_util.now()
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
@@ -119,11 +122,9 @@ class BatteryChargeModeSensor(SensorEntity):
             _LOGGER.debug(f"Got price sensor: {self._price_sensor.entity_id}, state: {self._price_sensor.state}")
             rates = self._price_sensor._rates
             if rates is not None:
-                _LOGGER.debug(f"Got rates from price sensor: {rates}")
+                _LOGGER.debug(f"Got rates from price sensor.")
                 # Build the modes based on the price data.
-                randomiser = "charge"
                 for rate in rates:
-                    _LOGGER.debug(f"Processing rate: {rate}")
                     slot_start = rate.get("start")
                     if not isinstance(slot_start, datetime):
                         _LOGGER.warning(
@@ -134,52 +135,32 @@ class BatteryChargeModeSensor(SensorEntity):
                         slot_start = slot_start.replace(tzinfo=now.tzinfo)
                     else:
                         slot_start = dt_util.as_local(slot_start)
+                    slot_end = rate.get("end")
+                    if not isinstance(slot_end, datetime):
+                        _LOGGER.warning(
+                            "Skipping rate without a valid end timestamp: %s", rate
+                        )
+                        continue
+                    if slot_end.tzinfo is None:
+                        slot_end = slot_end.replace(tzinfo=now.tzinfo)
+                    else:
+                        slot_end = dt_util.as_local(slot_end)
+                    #if slot_end < now:
+                    #    continue
+
                     slot_from = slot_start.strftime("%Y-%m-%dT%H:%M")
-                    _LOGGER.debug(f"Slot_from: {slot_from}")
                     slot_cost = rate.get("cost")
-                    slot_mode = randomiser
-                    if randomiser == "charge":
-                        randomiser = "maxuse"
-                    elif randomiser == "maxuse":
-                        randomiser = "discharge"
-                    elif randomiser == "discharge":
-                        randomiser = "sell"
-                    elif randomiser == "sell":
-                        randomiser = "standby"
-                    elif randomiser == "standby":
-                        randomiser = "charge"
-                    modes_kv[slot_from] = {"from": slot_from, "mode": slot_mode, "cost": slot_cost}
+                    slot_credit = rate.get("credit")
+                    modes_kv[slot_from] = {"from": slot_from, "mode": "unknown", "cost": slot_cost, "credit": slot_credit}
 
+        modes = [modes_kv[key] for key in sorted(modes_kv)]
+        margin = self._attr_exclude_from_recording = self._entry.options.get(CONF_BATTERY_DEGRADATION_COST, True)
+        peaks = find_peaks_in_modes(modes, margin)
+        _LOGGER.debug(f"Found peaks in battery modes: {peaks}")
+        for peak in peaks:
+            peak_from = peak.get("from")
+            if peak_from in modes_kv:
+                modes_kv[peak_from]["mode"] = "sell"
         self._modes = [modes_kv[key] for key in sorted(modes_kv)]
-        _LOGGER.debug(f"Battery charge modes: {self._modes}")
-        now = dt_util.now()
-        previous_slot = None
-        _LOGGER.debug(f"Start looking for current mode at {now}")
-        for slot in self._modes:
-            slot_from = dt_util.parse_datetime(slot.get("from"))
-            if slot_from is None:
-                _LOGGER.warning(f"Skipping mode slot with invalid from value: {slot}")
-                continue
-            if slot_from.tzinfo is None:
-                slot_from = slot_from.replace(tzinfo=now.tzinfo)
-            else:
-                slot_from = dt_util.as_local(slot_from)
-            if slot_from <= now:
-                previous_slot = slot
-                _LOGGER.debug(f"Found current mode slot: {slot}")
-            else:
-                _LOGGER.debug(f"Slot is in the future: {slot}")
-                break
+        self._current_mode = find_current_mode(self._modes).get("mode", "unknown")
 
-        if previous_slot:
-            _LOGGER.debug(f"Setting to previous_slot: {previous_slot}")
-            self._current_mode = previous_slot.get("mode", "standby")
-        else:
-            _LOGGER.debug(f"No previous slot found, setting to standby")
-            self._current_mode = "standby"
-
-
-    def default_mode(self):
-        # Default mode is maxuse if no price data is available.
-        today_midnight = dt_util.now().replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
-        return [{"from": today_midnight, "mode": "maxuse", "cost": 1.0}]

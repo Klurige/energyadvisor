@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 from homeassistant.exceptions import ServiceValidationError
 
-from custom_components.energyadvisor.sensor.nordpool_coordinator import (
+from custom_components.energyadvisor.coordinators.nordpool_coordinator import (
     NordpoolDataCoordinator,
 )
 
@@ -268,9 +268,9 @@ async def test_trigger_rollover_promotes_next_day_data(coordinator):
     coordinator._date_of_next_data = datetime.date(2025, 8, 10)
 
     with patch(
-        "custom_components.energyadvisor.sensor.nordpool_coordinator.datetime"
+        "custom_components.energyadvisor.coordinators.nordpool_coordinator.datetime"
     ) as mock_datetime, patch(
-        "custom_components.energyadvisor.sensor.nordpool_coordinator.async_call_later",
+        "custom_components.energyadvisor.coordinators.nordpool_coordinator.async_call_later",
         return_value=lambda: None,
     ), patch.object(
         coordinator,
@@ -301,9 +301,9 @@ async def test_trigger_fetches_today_when_missing(coordinator):
     coordinator._date_of_current_data = None
 
     with patch(
-        "custom_components.energyadvisor.sensor.nordpool_coordinator.datetime"
+        "custom_components.energyadvisor.coordinators.nordpool_coordinator.datetime"
     ) as mock_datetime, patch(
-        "custom_components.energyadvisor.sensor.nordpool_coordinator.async_call_later",
+        "custom_components.energyadvisor.coordinators.nordpool_coordinator.async_call_later",
         return_value=lambda: None,
     ), patch.object(
         coordinator,
@@ -334,9 +334,9 @@ async def test_trigger_fetches_tomorrow_when_missing(coordinator):
     coordinator._date_of_next_data = None
 
     with patch(
-        "custom_components.energyadvisor.sensor.nordpool_coordinator.datetime"
+        "custom_components.energyadvisor.coordinators.nordpool_coordinator.datetime"
     ) as mock_datetime, patch(
-        "custom_components.energyadvisor.sensor.nordpool_coordinator.async_call_later",
+        "custom_components.energyadvisor.coordinators.nordpool_coordinator.async_call_later",
         return_value=lambda: None,
     ), patch.object(
         coordinator,

@@ -29,7 +29,7 @@ from ..const import (
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
 )
-from ..solar_forecast_coordinator import SolarForecastCoordinator
+from ..coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 
 
 class SolarForecastSensor(SensorEntity):

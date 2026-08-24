@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .sensor.compactlevels import CompactLevelsSensor
     from .sensor.price import PriceSensor
-    from .sensor.nordpool_coordinator import NordpoolDataCoordinator
+    from .coordinators.nordpool_coordinator import NordpoolDataCoordinator
     from .sensor.solarforecastsensor import SolarForecastSensor
-    from .solar_forecast_coordinator import SolarForecastCoordinator
+    from .coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 
 
 @dataclass(slots=True)

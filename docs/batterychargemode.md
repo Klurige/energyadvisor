@@ -126,5 +126,5 @@ Background task: _periodic_update()
 
 - Battery timing overrides are optional. If `battery_capacity_kwh` and `battery_max_charge_power_w` are both left empty, the integration falls back to the default 160-minute charge and 240-minute discharge timings.
 - `battery_capacity_kwh` and `battery_max_charge_power_w` must be provided together when overriding the defaults.
-- The current summer strategy does not apply SoC or solar-forecast constraints in the sensor itself. If battery export should stop above a specific floor, configure that limit in the battery/inverter.
+- The current summer strategy does not apply SoC or solar-forecast constraints in the sensor itself. If battery export should stop above a specific floor, configure that limit in the battery/solar.
 - Battery timing and SoC-related config values are still stored so the richer planner can be brought back later without changing the config flow again.

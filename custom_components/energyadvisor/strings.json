@@ -76,12 +76,12 @@
         "description": "Configure optional solar inputs for bias-corrected production forecasts. Leave these fields empty to skip solar forecasting.",
         "data": {
           "forecast_entity": "Solar forecast sensor (today)",
-          "power_entity": "Inverter actual power sensor (W)",
+          "power_entity": "Solar actual power sensor (W)",
           "forecast_tomorrow_entity": "Solar forecast sensor (tomorrow) – optional"
         },
         "data_description": {
           "forecast_entity": "Sensor that provides today's solar forecast.",
-          "power_entity": "Measured inverter AC power in watts, used to refine the forecast.",
+          "power_entity": "Measured solar AC power in watts, used to refine the forecast.",
           "forecast_tomorrow_entity": "Optional sensor that provides tomorrow's solar forecast."
         }
       },
@@ -241,12 +241,12 @@
         "description": "Configure optional solar inputs for bias-corrected production forecasts. Leave these fields empty to skip solar forecasting.",
         "data": {
           "forecast_entity": "Solar forecast sensor (today)",
-          "power_entity": "Inverter actual power sensor (W)",
+          "power_entity": "Solar actual power sensor (W)",
           "forecast_tomorrow_entity": "Solar forecast sensor (tomorrow) – optional"
         },
         "data_description": {
           "forecast_entity": "Sensor that provides today's solar forecast.",
-          "power_entity": "Measured inverter AC power in watts, used to refine the forecast.",
+          "power_entity": "Measured solar AC power in watts, used to refine the forecast.",
           "forecast_tomorrow_entity": "Optional sensor that provides tomorrow's solar forecast."
         }
       },

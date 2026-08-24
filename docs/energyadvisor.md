@@ -187,7 +187,7 @@ CompactLevelsSensor
 | `sensor/__init__.py` | Wires up coordinator + sensors, registers entities |
 | `sensor/energyadvisor.py` | Core sensor: price calc, level, rank, rates |
 | `sensor/compactlevels.py` | Compact level string sensor |
-| `sensor/nordpool_coordinator.py` | Calls Nordpool service, feeds data to sensor |
+| `coordinators/nordpool_coordinator.py` | Calls Nordpool service, feeds data to sensor |
 | `coordinator.py` | (Does not exist — see `sensor/__init__.py`) |
 | `config_flow.py` | Multi-step UI setup wizard |
 | `const.py` | All `CONF_*` constants and dev-config import |
@@ -222,7 +222,7 @@ is absent.
 ### `scripts/fetch_ha_history.py`
 
 Fetches historical sensor data from a live HA instance over the REST API.
-Used to seed inverter/price history for solar forecast calibration.
+Used to seed solar/price history for solar forecast calibration.
 Requires `HA_URL` and `HA_TOKEN` in `custom_components/energyadvisor/dev_config.py`.
 
 ### Tests
