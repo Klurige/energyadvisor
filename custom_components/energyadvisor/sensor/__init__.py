@@ -1,7 +1,7 @@
 """Sensor platform wiring for Energy Advisor.
 
 This package assembles the price sensor, compact level sensor, battery planner,
-household base-load sensor, and solar forecast sensor. The battery planner uses
+household Load forecast sensor, and solar forecast sensor. The battery planner uses
 the price and solar sensors internally, the other sensors are dependent on
 external data only.
 """

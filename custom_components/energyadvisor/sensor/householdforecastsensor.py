@@ -1,4 +1,4 @@
-"""Household base-load forecast sensor."""
+"""Household Load forecast sensor."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from ..coordinators.household_forecast_coordinator import HouseholdForecastCoord
 
 
 class HouseholdForecastSensor(SensorEntity):
-    """Expose the learned household base-load forecast."""
+    """Expose the household load forecast value."""
 
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.POWER
@@ -37,8 +37,8 @@ class HouseholdForecastSensor(SensorEntity):
         self._entry = entry
         self._coordinator = coordinator
         description = SensorEntityDescription(
-            key="base_load",
-            translation_key="base_load",
+            key="load_forecast",
+            translation_key="load_forecast",
         )
         self.entity_description = description
         self.entity_id = PREFERRED_SENSOR_ENTITY_IDS[description.key]
@@ -62,29 +62,38 @@ class HouseholdForecastSensor(SensorEntity):
 
     @property
     def native_value(self) -> float | None:
-        """Return the learned base load in kW."""
-        base_load_kw = self._coordinator.base_load_kw
-        if base_load_kw is None:
+        """Return the current load forecast in kW."""
+        load_forecast_kw = self._coordinator.load_forecast_kw
+        if load_forecast_kw is None:
             return None
-        return round(base_load_kw, 3)
+        return round(load_forecast_kw, 3)
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        """Expose the learned sample summary for dashboards and automations."""
-        household_base_load_w = self._coordinator.household_base_load_w
+        """Expose household Load forecast metadata for dashboards and automations."""
+        household_load_forecast_w = self._coordinator.household_load_forecast_w
         last_sample_kw = self._coordinator.last_sample_kw
         return {
+            "household_load_forecast_w": (
+                round(household_load_forecast_w, 1)
+                if household_load_forecast_w is not None
+                else None
+            ),
+            # Backward-compatible attribute alias.
             "household_base_load_w": (
-                round(household_base_load_w, 1)
-                if household_base_load_w is not None
+                round(household_load_forecast_w, 1)
+                if household_load_forecast_w is not None
                 else None
             ),
             "learning_nights": self._coordinator.learning_nights,
             "data_since": self._coordinator.data_since,
             "last_sample_date": self._coordinator.last_sample_date,
-            "last_sample_kw": round(last_sample_kw, 3) if last_sample_kw is not None else None,
+            "last_sample_kw": (
+                round(last_sample_kw, 3) if last_sample_kw is not None else None
+            ),
             "reason": self._coordinator.reason,
         }
 
 
+LoadForecastSensor = HouseholdForecastSensor
 BaseLoadSensor = HouseholdForecastSensor

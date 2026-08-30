@@ -1,0 +1,133 @@
+Analyze the entire codebase of this existing Home Assistant HACS integration before making any changes.
+
+Goal:
+Add a battery optimization engine based on linear programming, preferably using CVXPY with HiGHS as solver if compatible with the existing architecture.
+
+Initially, the optimization shall consider ONLY electricity prices. Ignore load forecasts, solar forecasts, weather forecasts, battery degradation costs, and any other factors.
+
+Battery Modes
+
+The optimizer must support the following battery modes:
+
+- standby
+    * Charge from excess solar production only.
+    * Do not charge from the grid.
+    * Do not discharge the battery to household loads or to the grid.
+
+- maxuse
+    * Charge from excess solar production only.
+    * Discharge the battery to cover household consumption.
+    * Do not charge from the grid.
+    * Do not export battery energy to the grid.
+
+- charge
+    * Charge the battery from solar production and/or the grid.
+    * Do not discharge the battery to household loads or to the grid.
+
+- discharge
+    * Discharge the battery to cover household consumption.
+    * Do not charge the battery from the grid.
+    * Do not charge the battery from solar production.
+    * Solar production should be used for household consumption.
+    * Any solar surplus should be exported to the grid.
+
+- sell
+    * Discharge the battery for household consumption and grid export.
+    * Any battery surplus should be exported to the grid.
+    * Any solar surplus should be exported to the grid.
+
+These modes result in the following allowed energy flows:
+
+Mode        PV→Batt  Grid→Batt  Batt→House  Batt→Grid
+-----------------------------------------------------
+standby       Yes       No          No          No
+maxuse        Yes       No          Yes         No
+charge        Yes       Yes         No          No
+discharge     No        No          Yes         No
+sell          No        No          Yes         Yes
+
+Target Battery Percentage
+
+The following modes shall support a target battery state of charge (SOC):
+
+- charge
+- discharge
+- sell
+
+Examples:
+- charge to 80%
+- discharge to 30%
+- sell to 20%
+
+standby and maxuse do not use a target SOC.
+Assume that maxuse is the default when a target soc has been reached.
+
+Optimization Objective
+
+Using electricity prices as the only input, determine the economically optimal sequence of battery modes over the optimization horizon.
+
+The optimizer should determine:
+- when charging is beneficial
+- when discharging is beneficial
+- when selling/exporting is beneficial
+- which target SOC should be reached
+
+The objective is to maximize economic benefit while respecting battery constraints.
+
+Battery Constraints
+
+Respect all existing battery parameters already available within the integration, including:
+
+- battery capacity
+- current SOC
+- minimum SOC
+- maximum SOC
+- maximum charge power
+- maximum discharge power
+- charge efficiency
+- discharge efficiency
+
+Reuse existing configuration values whenever possible and do not introduce duplicates.
+
+Optimization Output
+
+Generate a schedule consisting of sequential actions.
+
+Each schedule entry must include:
+- from time
+- mode
+- target SOC, or empty if not applicable
+
+Configuration
+
+Add configuration options for:
+
+- optimization horizon
+- enable/disable optimization
+- minimum allowed SOC
+- maximum allowed SOC
+
+Reuse existing configuration infrastructure whenever possible.
+
+Implementation Requirements
+
+- Analyze the existing codebase before proposing changes.
+- Identify where optimization logic best fits within the architecture.
+- Explain the proposed architecture before implementation.
+- Generate a detailed implementation plan.
+- Implement the solution following Home Assistant and HACS best practices.
+- Minimize breaking changes.
+- Use type hints throughout.
+- Add unit tests for the optimization logic.
+- Document all new entities, services, and configuration options.
+
+Provide the following sections:
+
+1. Architecture analysis
+2. Proposed design
+3. Detailed implementation plan
+4. Code changes
+5. Unit tests
+6. Documentation updates
+
+Do not change any functionality regarding load forecast, price, solar forecast. These functions are already in production and should remain untouched. The output of price sensor should of course be used.

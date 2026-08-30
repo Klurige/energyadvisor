@@ -1,16 +1,12 @@
-# Household Forecast Sensor
+# Household Load Forecast Sensor
 
 ## Purpose
 
-An optional sensor that learns the household's quiet-night base load from the
-energy meter. It watches the cumulative household meter between 01:00 and
-04:00, but only accepts the sample when the water heater and central heating
-stay off for the whole window. The learned value is exposed as an average base
-load in kW and is intended for the future battery reserve math.
+An optional sensor that currently exposes a static household Load forecast
+placeholder while the quiet-night learning logic is being rebuilt.
 
-The 01:00-04:00 quiet-night rule comes from the staged optimizer plan, and the
-learned samples are persisted in Home Assistant storage so restarts do not
-clear the value.
+The coordinator still keeps lifecycle housekeeping and persists a minimal state
+under `.storage/energyadvisor_household_forecast_<entry_id>`.
 
 ---
 
@@ -38,7 +34,7 @@ such as `sensor.energy_advisor_base_load_2`.
 
 ### State
 
-The current rolling average household base load in `kW`.
+Static household Load forecast placeholder in `kW` (currently `0.0`).
 
 Unit: `kW` | Device class: `power`
 
@@ -46,27 +42,14 @@ Unit: `kW` | Device class: `power`
 
 | Attribute | Type | Description |
 |---|---|---|
-| `household_base_load_w` | float \| null | Rolling average base load in watts |
-| `learning_nights` | int | Number of valid quiet-night samples in the average |
-| `data_since` | str \| null | ISO date of the oldest retained sample |
-| `last_sample_date` | str \| null | ISO date of the most recent sample |
-| `last_sample_kw` | float \| null | Most recent sample in kW |
+| `household_load_forecast_w` | float | Static placeholder in watts (`0.0`) |
+| `household_base_load_w` | float | Backward-compatible alias for `household_load_forecast_w` |
+| `learning_nights` | int | Always `0` while learning is disabled |
+| `data_since` | str \| null | Always `null` while learning is disabled |
+| `last_sample_date` | str \| null | Always `null` while learning is disabled |
+| `last_sample_kw` | float \| null | Always `null` while learning is disabled |
 | `reason` | str | Human-readable status message |
 
----
+The `reason` attribute currently reports:
 
-## How it works
-
-1. At 01:00 local time, the coordinator snapshots the household meter.
-2. During the 01:00-04:00 window, any `on` event from the water-heater or
-   central-heating binary sensors invalidates the sample.
-3. At 04:00 local time, the coordinator snapshots the meter again.
-4. If both quiet-night sensors stayed off and the meter never moved backwards,
-   the sample is accepted.
-5. The base-load sample is computed as `(meter_at_04:00 - meter_at_01:00) / 3`.
-6. The sensor exposes the rolling average of all retained quiet-night samples.
-
-When there are no valid samples yet, the sensor state is `unknown` and the
-`reason` attribute explains that it is still waiting for the first quiet night.
-
-Persisted data lives under `.storage/energyadvisor_household_forecast_<entry_id>`.
+`Load forecast learning is disabled while the coordinator is being rebuilt.`

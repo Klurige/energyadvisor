@@ -37,7 +37,7 @@ Otherwise falls back to 160 min charge / 240 min discharge.
 
 The config flow also stores additional planner inputs such as
 `battery_charge_power_entity`, `grid_import_entity`, `grid_export_entity`,
-`outdoor_temperature_entity`, `household_base_load_w`,
+`outdoor_temperature_entity`, `household_load_forecast_w`,
 `water_heater_power_entity`, `water_heater_power_w`, `water_heater_max_hours`,
 `bathroom_humidity_entity`, `pool_pump_power_entity`, `pool_pump_power_w`,
 `dehumidifier_power_entity`, and `dehumidifier_power_w`. Those fields are for

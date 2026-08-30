@@ -17,8 +17,8 @@ agent or computer restarts.
 - [x] `power_entity` — existing solar power input for the refined solar forecast.
 - [x] `battery_soc_entity` — required to know how much usable energy is currently stored.
 - [ ] `power_meter_consumption` — cumulative household energy meter (kWh). Used to compute the 01:00–04:00 consumption diff on nights when all big consumers are off.
-- [ ] `water_heater_active_entity` — binary sensor (on/off) indicating whether the water heater is actively heating. Used to filter nights unsuitable for base-load learning.
-- [ ] `central_heating_active_entity` — binary sensor (on/off) indicating whether the central heating is running. Used to filter nights unsuitable for base-load learning.
+- [ ] `water_heater_active_entity` — binary sensor (on/off) indicating whether the water heater is actively heating. Used to filter nights unsuitable for Load forecast learning.
+- [ ] `central_heating_active_entity` — binary sensor (on/off) indicating whether the central heating is running. Used to filter nights unsuitable for Load forecast learning.
 - [ ] `bathroom_humidity_entity` — when humidity reaches `100%`, treat it as a shower and reset the water-heater 24-hour timer.
 - [ ] `outdoor_temperature_entity` or temperature forecast entity — required to predict heating-driven winter load.
 - [ ] `water_heater_power_entity` and `water_heater_power_w` — required to measure actual reheating energy after a hot-water event and verify heater recovery.
@@ -70,9 +70,8 @@ agent or computer restarts.
   - `sensor.energy_advisor_battery_charge_mode` currently uses a simplified
     summer strategy: `maxuse` by default, plus `sell` for the top six daily
     slots that start between `00:00-10:00` and `17:00-24:00`
-  - `sensor.energy_advisor_base_load` learns the quiet-night household base
-    load from the cumulative meter and the water-heater/central-heating
-    activity sensors
+  - `sensor.energy_advisor_base_load` currently exposes a static placeholder
+    while quiet-night household Load forecast learning is being rebuilt
 - Wired into config storage and not currently used by runtime planning:
   - `battery_soc_entity`
 - Wired into config storage but not yet used by runtime planning:
@@ -146,16 +145,16 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
    - **Deploy:** **Yes — R2.** Release this step to the live system and start the first live soak period.
 
 7. [ ] Replace fixed battery duration with required-energy math.
-   - **Deliverable:** stop assuming a fixed discharge length and instead compute required energy until the next useful solar window, using a learned household base load.
-   - **Base load learning:** each night, if `water_heater_active_entity` and `central_heating_active_entity` are both off for the entire 01:00–04:00 window, compute `base_load_kw = (power_meter_consumption(04:00) − power_meter_consumption(01:00)) / 3` and add to a rolling average. Use this learned value immediately from the first valid night — no static fallback is needed or provided.
+   - **Deliverable:** stop assuming a fixed discharge length and instead compute required energy until the next useful solar window, using a learned household load forecast.
+   - **Load forecast learning:** each night, if `water_heater_active_entity` and `central_heating_active_entity` are both off for the entire 01:00–04:00 window, compute `load_forecast_kw = (power_meter_consumption(04:00) − power_meter_consumption(01:00)) / 3` and add to a rolling average. Use this learned value immediately from the first valid night — no static fallback is needed or provided.
    - **Required energy:** for each battery-output decision, sum the forecast household load from now until the next slot where solar production exceeds `_MIN_USEFUL_SOLAR_KW`. The battery must not sell or discharge below `reserve_kwh + required_energy_kwh`.
-   - **When base load is unknown** (0 valid nights): skip the required-energy reservation and document this in the sensor `reason` attribute.
+   - **When load forecast is unknown** (0 valid nights): skip the required-energy reservation and document this in the sensor `reason` attribute.
    - **Verify:** the same price curve yields a higher reserved energy on a cold winter night (after several valid measurement nights) than on a mild summer night.
    - **Current simplification:** the live helper is temporarily using the fixed summer strategy above instead of reserve math. When this step resumes, start from that simplified baseline.
    - **Deploy:** not yet; keep in development until step 12 so the advisory planner can be released as a coherent whole.
 
 8. [ ] Add a temperature-adjusted household load model.
-   - **Deliverable:** extend the learned base load with a temperature-driven heating component. Compare the 01:00–04:00 energy diff at different outdoor temperatures to derive a heating coefficient (W/°C below a comfort threshold). Apply this to the `outdoor_temperature_entity` forecast to predict elevated winter load without any user-configured parameters.
+   - **Deliverable:** extend the learned load forecast with a temperature-driven heating component. Compare the 01:00–04:00 energy diff at different outdoor temperatures to derive a heating coefficient (W/°C below a comfort threshold). Apply this to the `outdoor_temperature_entity` forecast to predict elevated winter load without any user-configured parameters.
    - **Verify:** winter test scenarios reserve more battery energy than summer scenarios for the same price curve.
    - **Deploy:** not yet; hold for the step 12 advisory-planner release.
 
@@ -175,12 +174,12 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
    - **Deploy:** not yet; hold for the step 12 advisory-planner release.
 
 12. [ ] Make the battery planner reserve energy for planned loads.
-   - **Deliverable:** the battery planner must consider water-heater demand, expected base load, and sunny-only loads before allowing `discharge` or `sell`.
+   - **Deliverable:** the battery planner must consider water-heater demand, expected load forecast, and sunny-only loads before allowing `discharge` or `sell`.
    - **Verify:** the planner does not sell battery energy that is needed later the same night or before the next solar window.
    - **Deploy:** **Yes — R3.** Release steps 7–12 together so the full advisory planner runs live in Energy Advisor, then start the second live soak period.
 
 13. [ ] Add historical learning.
-   - **Deliverable:** learn expected base load from hour, weekday/weekend, season, and temperature; learn solar-surplus confidence from forecast versus actual production. `battery_charge_power_entity` feeds the charge/discharge learning here.
+   - **Deliverable:** learn expected load forecast from hour, weekday/weekend, season, and temperature; learn solar-surplus confidence from forecast versus actual production. `battery_charge_power_entity` feeds the charge/discharge learning here.
    - **Verify:** the learned model outperforms the fixed-load fallback on held-out historical days.
    - **Data strategy:** use `HA_URL` and `HA_TOKEN` (already in `dev_config.py`) to fetch sensor
      history from the live instance and store the result as test fixtures. Tests must be runnable

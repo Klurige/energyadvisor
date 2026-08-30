@@ -194,7 +194,7 @@ async def test_options_flow_init_step_contains_price_and_threshold_fields() -> N
 
 @pytest.mark.asyncio
 async def test_options_flow_household_step_contains_new_load_fields() -> None:
-    """Test options flow household step contains the base-load learning entities."""
+    """Test options flow household step contains the load forecast entities."""
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 

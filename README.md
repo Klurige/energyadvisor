@@ -11,14 +11,14 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 ## Features
 - Uses electricity prices provided by the Home Assistant NordPool integration.
 - Categorizes prices into levels (e.g., low, medium, high).
-- Provides two price sensors plus a battery scheduling sensor, an optional household base-load sensor, and an optional refined solar forecast sensor.
+- Provides two price sensors plus a battery scheduling sensor, an optional household Load forecast sensor, and an optional refined solar forecast sensor.
 - Supports multiple languages (English, Swedish).
 - Easy configuration via the Home Assistant UI.
   - Adds support for extra fees and taxes from your grid and supplier.
   - Allows for setting thresholds for low and high prices.
   - Adds support for credits when exporting electricity.
 - Provides a ranking system for prices to help identify the best times to use electricity.
-- Learns a household base-load forecast from quiet-night meter readings.
+- Exposes a household Load forecast placeholder while learning is rebuilt.
 - Can refine a solar production forecast using your solar's measured output.
 - Can suggest battery `maxuse` by default and `sell` during the top six morning/evening price slots in the current summer strategy.
 ## Prerequisites
@@ -86,17 +86,16 @@ The config UI also stores optional planner inputs for upcoming optimizer work.
 The current summer battery strategy only uses the linked price schedule. The
 stored planner inputs are:
 `battery_charge_power_entity`, `grid_import_entity`, `grid_export_entity`,
-`outdoor_temperature_entity`, `household_base_load_w`,
+`outdoor_temperature_entity`, `household_load_forecast_w`,
 `water_heater_power_entity`, `water_heater_power_w`, `water_heater_max_hours`,
 `bathroom_humidity_entity`, `pool_pump_power_entity`, `pool_pump_power_w`,
 `dehumidifier_power_entity`, and `dehumidifier_power_w`.
 
 When `power_meter_consumption`, `water_heater_active_entity`, and
 `central_heating_active_entity` are configured together, Energy Advisor also
-creates `sensor.energy_advisor_base_load` from the quiet-night household
-meter diff. The learned value is persisted across restarts. See
-[docs/householdforecast.md](docs/householdforecast.md) for the learning rules
-and attributes.
+creates `sensor.energy_advisor_base_load` with a static Load forecast placeholder value.
+See [docs/householdforecast.md](docs/householdforecast.md) for current
+attributes and status messaging.
 
 Those inputs are preserved in the config entry now, but they do not
 change the current battery scheduler yet. The rollout plan for using them lives
@@ -112,11 +111,11 @@ When `exclude_from_recording` is `true` (default), Home Assistant recorder/histo
 In addition, the `rates` attribute on `sensor.energy_advisor_price`, the `charge_entries` attribute on `sensor.energy_advisor_battery_charge_mode`, and the `forecasts` attribute on `sensor.energy_advisor_solar_forecast` are excluded from recorder attribute storage to avoid oversized state attributes.
 
 ## Usage
-- The integration adds two price sensors, one battery charge mode sensor, one optional household base-load sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_base_load` when the household meter inputs are configured, and `sensor.energy_advisor_solar_forecast` when the optional solar sensor is enabled. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
+- The integration adds two price sensors, one battery charge mode sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_base_load` when the household meter inputs are configured, and `sensor.energy_advisor_solar_forecast` when the optional solar sensor is enabled. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
   - `sensor.energy_advisor_battery_charge_mode` provides the current summer battery recommendation: `maxuse` by default and `sell` during the six highest-valued slots per day that start between 00:00-10:00 and 17:00-24:00.
-  - `sensor.energy_advisor_base_load` provides the quiet-night household base load learned from the cumulative household meter.
+  - `sensor.energy_advisor_base_load` currently provides a static household Load forecast placeholder while forecast learning is rebuilt.
   - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).

@@ -15,6 +15,9 @@ PLATFORMS = [Platform.SENSOR]
 
 _OLD_CONF_NORDPOOL_AREA_ID = "nordpool_area_id"
 _NEW_CONF_NORDPOOL_PRICES_SENSOR = "nordpool_prices_sensor"
+_LEGACY_SENSOR_KEYS: dict[str, str] = {
+    "base_load": "load_forecast",
+}
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -53,12 +56,17 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 def _registry_entry_sensor_key(entity_entry: er.RegistryEntry) -> str | None:
     """Resolve the known sensor key for an entity-registry entry."""
-    if entity_entry.translation_key in PREFERRED_SENSOR_ENTITY_IDS:
-        return entity_entry.translation_key
+    translation_key = entity_entry.translation_key
+    if translation_key in PREFERRED_SENSOR_ENTITY_IDS:
+        return translation_key
+    if translation_key in _LEGACY_SENSOR_KEYS:
+        return _LEGACY_SENSOR_KEYS[translation_key]
 
     _, _, suffix = entity_entry.unique_id.rpartition("_")
     if suffix in PREFERRED_SENSOR_ENTITY_IDS:
         return suffix
+    if suffix in _LEGACY_SENSOR_KEYS:
+        return _LEGACY_SENSOR_KEYS[suffix]
 
     preferred_entity_id = PREFERRED_SENSOR_ENTITY_IDS.get("price")
     if preferred_entity_id and entity_entry.entity_id == preferred_entity_id:
