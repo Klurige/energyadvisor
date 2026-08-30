@@ -151,16 +151,9 @@ class BatteryChargeModeSensor(SensorEntity):
                     slot_from = slot_start.strftime("%Y-%m-%dT%H:%M")
                     slot_cost = rate.get("cost")
                     slot_credit = rate.get("credit")
-                    modes_kv[slot_from] = {"from": slot_from, "mode": "unknown", "cost": slot_cost, "credit": slot_credit}
+                    modes_kv[slot_from] = {"from": slot_from, "mode": "sell", "cost": slot_cost, "credit": slot_credit}
 
         modes = [modes_kv[key] for key in sorted(modes_kv)]
-        margin = self._attr_exclude_from_recording = self._entry.options.get(CONF_BATTERY_DEGRADATION_COST, True)
-        peaks = find_peaks_in_modes(modes, margin)
-        _LOGGER.debug(f"Found peaks in battery modes: {peaks}")
-        for peak in peaks:
-            peak_from = peak.get("from")
-            if peak_from in modes_kv:
-                modes_kv[peak_from]["mode"] = "sell"
         self._modes = [modes_kv[key] for key in sorted(modes_kv)]
         self._current_mode = find_current_mode(self._modes).get("mode", "unknown")
 

@@ -9,6 +9,10 @@ if TYPE_CHECKING:
     from .sensor.compactlevels import CompactLevelsSensor
     from .sensor.price import PriceSensor
     from .coordinators.nordpool_coordinator import NordpoolDataCoordinator
+    from .sensor.householdforecastsensor import HouseholdForecastSensor
+    from .coordinators.household_forecast_coordinator import (
+        HouseholdForecastCoordinator,
+    )
     from .sensor.solarforecastsensor import SolarForecastSensor
     from .coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 
@@ -20,5 +24,7 @@ class EnergyAdvisorRuntimeData:
     levels_sensor: PriceSensor
     compact_sensor: CompactLevelsSensor
     coordinator: NordpoolDataCoordinator
+    household_sensor: HouseholdForecastSensor | None = None
+    household_coordinator: HouseholdForecastCoordinator | None = None
     solar_sensor: SolarForecastSensor | None = None
     solar_coordinator: SolarForecastCoordinator | None = None

@@ -1,9 +1,9 @@
 """Sensor platform wiring for Energy Advisor.
 
 This package assembles the price sensor, compact level sensor, battery planner,
-and  solar forecast sensor. The battery planner uses price sensor and
-solar forecast sensor internally, the other sensors are dependent on external
-data only.
+household base-load sensor, and solar forecast sensor. The battery planner uses
+the price and solar sensors internally, the other sensors are dependent on
+external data only.
 """
 
 from __future__ import annotations
@@ -18,15 +18,22 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.loader import async_get_integration
 
 from ..const import (
+    CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_FORECAST_ENTITY,
     CONF_NORDPOOL_PRICES_SENSOR,
+    CONF_POWER_METER_CONSUMPTION,
     CONF_POWER_ENTITY,
+    CONF_WATER_HEATER_ACTIVE_ENTITY,
     DOMAIN,
 )
 from ..models import EnergyAdvisorRuntimeData
 from .batterychargemodesensor import BatteryChargeModeSensor
+from ..coordinators.household_forecast_coordinator import (
+    HouseholdForecastCoordinator,
+)
 from ..coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 from .compactlevels import CompactLevelsSensor
+from .householdforecastsensor import HouseholdForecastSensor
 from .price import PriceSensor
 from ..coordinators.nordpool_coordinator import NordpoolDataCoordinator
 from .solarforecastsensor import SolarForecastSensor
@@ -96,6 +103,22 @@ async def async_setup_entry(
         battery_sensor,
     ]
 
+    household_coordinator: HouseholdForecastCoordinator | None = None
+    household_sensor: HouseholdForecastSensor | None = None
+    meter_entity = entry.options.get(CONF_POWER_METER_CONSUMPTION)
+    water_heater_entity = entry.options.get(CONF_WATER_HEATER_ACTIVE_ENTITY)
+    central_heating_entity = entry.options.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)
+    if meter_entity and water_heater_entity and central_heating_entity:
+        household_coordinator = HouseholdForecastCoordinator(hass, entry)
+        await household_coordinator.async_setup()
+        household_sensor = HouseholdForecastSensor(
+            hass,
+            entry,
+            device_info,
+            household_coordinator,
+        )
+        entities.append(household_sensor)
+
     solar_coordinator: SolarForecastCoordinator | None = None
     solar_sensor: SolarForecastSensor | None = None
     forecast_entity = entry.options.get(CONF_FORECAST_ENTITY)
@@ -111,6 +134,8 @@ async def async_setup_entry(
         hass, prices_sensor_entity_id
     )
     if nordpool_config_entry_id_to_use is None:
+        if household_coordinator is not None:
+            await household_coordinator.async_shutdown()
         if solar_coordinator is not None:
             await solar_coordinator.async_shutdown()
         return
@@ -127,6 +152,8 @@ async def async_setup_entry(
         levels_sensor=levels_sensor,
         compact_sensor=compact_levels_sensor,
         coordinator=coordinator,
+        household_sensor=household_sensor,
+        household_coordinator=household_coordinator,
         solar_sensor=solar_sensor,
         solar_coordinator=solar_coordinator,
     )
@@ -139,6 +166,8 @@ async def async_setup_entry(
     def _async_cleanup_nordpool_task(_event=None) -> None:
         _LOGGER.debug("Cleaning up Nordpool coordinator on unload.")
         coordinator.stop()
+        if household_coordinator is not None:
+            hass.async_create_task(household_coordinator.async_shutdown())
         if solar_coordinator is not None:
             hass.async_create_task(solar_coordinator.async_shutdown())
 

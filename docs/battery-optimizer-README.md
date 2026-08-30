@@ -70,6 +70,9 @@ agent or computer restarts.
   - `sensor.energy_advisor_battery_charge_mode` currently uses a simplified
     summer strategy: `maxuse` by default, plus `sell` for the top six daily
     slots that start between `00:00-10:00` and `17:00-24:00`
+  - `sensor.energy_advisor_base_load` learns the quiet-night household base
+    load from the cumulative meter and the water-heater/central-heating
+    activity sensors
 - Wired into config storage and not currently used by runtime planning:
   - `battery_soc_entity`
 - Wired into config storage but not yet used by runtime planning:
