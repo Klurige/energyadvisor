@@ -92,6 +92,10 @@
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
           "battery_max_discharge_power_w": "Battery max discharge power",
+          "battery_optimization_enabled": "Enable battery optimization",
+          "battery_optimization_horizon_hours": "Optimization horizon",
+          "battery_min_soc_pct": "Minimum SoC",
+          "battery_max_soc_pct": "Maximum SoC",
           "battery_degradation_cost": "Battery degradation cost margin",
           "battery_soc_entity": "Battery state of charge sensor",
           "battery_charge_power_entity": "Battery charge power sensor"
@@ -100,6 +104,10 @@
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
           "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
           "battery_max_discharge_power_w": "Maximum battery discharge power. If left empty, defaults to the configured charge power.",
+          "battery_optimization_enabled": "Enable the linear-programming battery optimizer.",
+          "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
+          "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
+          "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
           "battery_degradation_cost": "Minimum price spread required before the battery is cycled.",
           "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
           "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
@@ -171,7 +179,8 @@
       "low_threshold_higher_than_high_threshold": "The lower threshold must be less than the upper threshold.",
       "entity_not_found": "Entity not found – check the entity ID and try again.",
       "solar_entity_required": "Both forecast sensor and power sensor must be provided together.",
-      "battery_setting_required": "Battery capacity and max charge power must be provided together."
+      "battery_setting_required": "Battery capacity and max charge power must be provided together.",
+      "battery_soc_bounds_invalid": "The minimum SoC must be lower than the maximum SoC."
     }
   },
   "options": {
@@ -259,6 +268,10 @@
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
           "battery_max_discharge_power_w": "Battery max discharge power",
+          "battery_optimization_enabled": "Enable battery optimization",
+          "battery_optimization_horizon_hours": "Optimization horizon",
+          "battery_min_soc_pct": "Minimum SoC",
+          "battery_max_soc_pct": "Maximum SoC",
           "battery_degradation_cost": "Battery degradation cost margin",
           "battery_soc_entity": "Battery state of charge sensor",
           "battery_charge_power_entity": "Battery charge power sensor"
@@ -267,6 +280,10 @@
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
           "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
           "battery_max_discharge_power_w": "Maximum battery discharge power. If left empty, defaults to the configured charge power.",
+          "battery_optimization_enabled": "Enable the linear-programming battery optimizer.",
+          "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
+          "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
+          "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
           "battery_degradation_cost": "Minimum price spread required before the battery is cycled.",
           "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
           "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."

@@ -4,127 +4,123 @@
 
 ## Purpose
 
-Determines whether a home battery should be in **maxuse**, **sell**, or
-occasionally **standby** based on the electricity price schedule from the
-linked price sensor in the same config entry. The current temporary summer
-strategy keeps the battery in `maxuse` by default and marks only the highest
-valued morning/evening slots as `sell`.
+The battery helper computes a price-only schedule for a home battery. When the
+optimizer is enabled and the configured SoC sensor is available, it uses the
+HiGHS solver through the `highspy` Python bindings to choose charge, discharge,
+sell, and idle periods over the requested horizon. If optimization is
+disabled, or the solver stack is not available, it falls back to the legacy
+price schedule.
 
----
+The current optimizer considers only electricity prices. It does not use load
+forecasts, solar forecasts, weather, or battery degradation costs yet.
 
 ## Input
 
-### Required
+### Required for optimization
 
-The linked price sensor for the same config entry must be available. The battery sensor reads the price sensor's compact rate payload directly and follows the same per-entry wiring as the compact and solar sensors.
+- The linked price sensor for the same config entry.
+- `battery_soc_entity` so the current battery SoC can be read.
+- `battery_capacity_kwh`
+- `battery_max_charge_power_w`
+- `battery_max_discharge_power_w` or, if omitted, the configured charge power
+  is used as the discharge limit.
+- `battery_optimization_enabled`
+- `battery_optimization_horizon_hours`
+- `battery_min_soc_pct`
+- `battery_max_soc_pct`
 
-### Configuration (all optional — defaults are reasonable without a battery configured)
+### Optional and stored for later planner stages
 
-Set during the final **battery** step of the initial setup flow or later via **Settings → Devices & Services → Energy Advisor → Configure**:
+The config flow also stores:
 
-| Option | Key | Default | Description |
-|---|---|---|---|
-| Battery capacity | `battery_capacity_kwh` | — | kWh. Retained for future battery planner work. |
-| Max charge power | `battery_max_charge_power_w` | — | W. Retained for future battery planner work. |
-| Degradation cost margin | `battery_degradation_cost` | 0.7 | Retained planner setting for future battery logic. |
-| Battery SoC sensor | `battery_soc_entity` | — | Retained for future battery planner work. |
-
-When capacity and power are both set:
-- `charging_time_minutes = capacity_kwh / (max_power_w / 1000) × 60`
-- `discharging_time_minutes = charging_time_minutes × 1.5`
-
-Otherwise falls back to 160 min charge / 240 min discharge.
-
-The config flow also stores additional planner inputs such as
 `battery_charge_power_entity`, `grid_import_entity`, `grid_export_entity`,
 `outdoor_temperature_entity`, `household_load_forecast_w`,
 `water_heater_power_entity`, `water_heater_power_w`, `water_heater_max_hours`,
 `bathroom_humidity_entity`, `pool_pump_power_entity`, `pool_pump_power_w`,
-`dehumidifier_power_entity`, and `dehumidifier_power_w`. Those fields are for
-the staged optimizer rollout and are not used by the current summer battery
-mode algorithm yet.
+`dehumidifier_power_entity`, and `dehumidifier_power_w`.
 
----
+Those fields are not used by the current price-only optimizer yet.
+
+## Configuration
+
+Set during the **battery** step of the initial setup flow or later via
+**Settings → Devices & Services → Energy Advisor → Configure**.
+
+| Option | Key | Default | Description |
+|---|---|---|---|
+| Battery capacity | `battery_capacity_kwh` | — | Usable battery capacity in kWh. |
+| Max charge power | `battery_max_charge_power_w` | — | Maximum battery charge power in W. |
+| Max discharge power | `battery_max_discharge_power_w` | `battery_max_charge_power_w` | Maximum discharge power in W. |
+| Enable optimization | `battery_optimization_enabled` | `false` | Turns the LP optimizer on or off. |
+| Optimization horizon | `battery_optimization_horizon_hours` | `48` | Look-ahead horizon in hours. |
+| Minimum SoC | `battery_min_soc_pct` | `5` | Lower SoC bound in percent. |
+| Maximum SoC | `battery_max_soc_pct` | `95` | Upper SoC bound in percent. |
+| Battery SoC sensor | `battery_soc_entity` | — | Current battery state of charge sensor. |
 
 ## Output sensor
 
-**Default entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
-Additional entries receive the usual Home Assistant numeric suffixes, such as
-`sensor.energy_advisor_battery_charge_mode_2`.
+**Default entity ID:** `sensor.energy_advisor_battery_charge_mode` for the
+first config entry. Additional entries receive the usual Home Assistant numeric
+suffixes.
 
 ### State
 
-Scheduled slots use `maxuse` or `sell`. `standby` is still used when no price
-data is available or the current time is outside the available horizon.
+The sensor state is the current schedule mode:
 
-Icon changes dynamically: `mdi:home-lightning-bolt-outline` for `maxuse`,
-`mdi:battery-arrow-up-outline` for `sell`, and `mdi:battery-outline` for
-`standby`.
+- `standby` — no battery flow is active and the battery is effectively idle.
+- `maxuse` — battery energy is held ready for self-consumption.
+- `charge` — the optimizer wants the battery SoC to rise.
+- `discharge` — the optimizer wants the battery SoC to fall to cover household load.
+- `sell` — the optimizer wants the battery SoC to fall while exporting.
 
 ### Attributes
 
 | Attribute | Type | Description |
 |---|---|---|
-| `charge_entries` | list[dict] | Full schedule — one dict per price slot with local `from`, `mode`, and `cost` (`YYYY-MM-DDTHH:MM`) |
-| `margin` | float | Retained planner setting for future battery logic |
-| `charging_time_minutes` | int | Retained battery timing value for future battery logic |
-| `discharging_time_minutes` | int | Retained battery timing value for future battery logic |
-| `reason` | str | Human-readable explanation for the currently chosen mode |
-| `next_mode_change` | str \| null | Local time string (`YYYY-MM-DDTHH:MM`) for the next expected mode change |
-| `reserved_kwh` | float | Currently `0.0` in the summer strategy |
-| `required_load_kwh` | float | Currently `0.0` in the summer strategy |
-| `charge_source` | str \| null | Currently `null` in the summer strategy |
-
-When `exclude_from_recording` is enabled for the integration, the whole sensor
-is excluded from recorder/history. Even when recorder is enabled for the
-sensor, the large `charge_entries` attribute is excluded from recorder
-attribute storage.
-
----
+| `charge_entries` | list[dict] | Sequential schedule entries with local `from`, `mode`, and optional `target_soc`. |
+| `modes` | list[dict] | Compatibility alias for `charge_entries`. |
+| `current_soc_pct` | float \| null | Current SoC read from the configured battery sensor. |
+| `current_target_soc` | float \| null | Target SoC for the active schedule segment, if applicable. |
+| `optimization_enabled` | bool | Whether the LP optimizer is enabled. |
+| `reason` | str | Human-readable explanation for the current recommendation. |
+| `solver` | str \| null | Solver used for the latest optimization run, or `null` when falling back. |
 
 ## Algorithm
 
-The schedule is recomputed whenever the linked price sensor changes (i.e. when
-new Nordpool prices arrive). The current temporary summer strategy is simple:
+1. Normalize the price sensor rates into local-time slots within the requested horizon.
+2. Build a linear program with charge, discharge, and sell decision variables.
+3. Constrain SoC between the configured minimum and maximum bounds.
+4. Respect the configured charge and discharge power limits.
+5. Minimize import cost while accounting for avoided import cost when discharging and export credit when selling.
+6. Collapse the solved per-slot result into sequential schedule entries.
 
-1. **Parse the compact price schedule** into local start/end datetimes.
-2. **Default every slot to `maxuse`**.
-3. **Pick sell candidates** whose slot starts between `00:00-10:00` or `17:00-24:00`.
-4. **Rank those candidates by export value** (`credit`, falling back to `cost`).
-5. **Mark the top six candidate slots per local day as `sell`**. Ties are kept deterministic by preserving chronological order.
+When optimization is disabled, the helper falls back to the legacy schedule:
 
-A background task (`_periodic_update`) wakes at each slot boundary to advance the current mode and re-evaluate. The linked price sensor notifies the battery sensor when new rate data arrives, so the schedule is recomputed without relying on fixed entity IDs.
-
-Rate changes are detected via a hash of `(from, cost, credit)` tuples to avoid redundant recomputation.
-
----
+- `maxuse` by default.
+- `sell` during the highest-value morning/evening candidate slots from the price data.
 
 ## Architecture
 
 ```
-PriceSensor (same config entry)
+PriceSensor
     │
-    └─► BatteryChargeModeSensor._handle_source_update()
+    └─► BatteryChargeModeSensor
               │
-              ├── rates hash changed?  →  compute_charge_modes()  →  _charge_entries
-              └── _update_current_mode()  →  self._mode
+              └─► battery_optimizer.optimize_battery_schedule()
                         │
-                        └─► async_write_ha_state()
-
-Background task: _periodic_update()
-    Sleeps until slot boundary, then calls _refresh_from_source()
+                        ├── HiGHS available?         →  optimized schedule
+                        └── otherwise                →  legacy price schedule
 ```
 
-**Key files:**
-- `custom_components/energyadvisor/sensor/batterychargemodesensor.py` — all logic: algorithm functions + battery sensor entity
-- `custom_components/energyadvisor/const.py` — `CONF_BATTERY_CAPACITY_KWH`, `CONF_BATTERY_MAX_CHARGE_POWER_W`, `CONF_BATTERY_DEGRADATION_COST`, `CONF_BATTERY_SOC_ENTITY`
-- `tests/test_energyadvisor_battery_charge_mode_sensor.py` — ~600 lines, covers algorithm edge cases, config defaults, state transitions
-
----
+The battery sensor recomputes the schedule when the price sensor updates.
+When optimization is enabled and a SoC sensor is configured, it also listens
+for SoC changes so the active recommendation updates immediately.
 
 ## Notes
 
-- Battery timing overrides are optional. If `battery_capacity_kwh` and `battery_max_charge_power_w` are both left empty, the integration falls back to the default 160-minute charge and 240-minute discharge timings.
-- `battery_capacity_kwh` and `battery_max_charge_power_w` must be provided together when overriding the defaults.
-- The current summer strategy does not apply SoC or solar-forecast constraints in the sensor itself. If battery export should stop above a specific floor, configure that limit in the battery/solar.
-- Battery timing and SoC-related config values are still stored so the richer planner can be brought back later without changing the config flow again.
+- The current optimizer does not use load forecasts, solar forecasts, weather,
+  or degradation costs yet.
+- If the battery SoC sensor is unavailable, the helper falls back to the legacy
+  schedule.
+- The schedule entries are advisory only; automations remain responsible for
+  actually controlling the battery.

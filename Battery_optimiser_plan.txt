@@ -1,4 +1,4 @@
-Analyze the entire codebase of this existing Home Assistant HACS integration before making any changes.
+Analyze the entire codebase of this existing Home Assistant HACS integration before making any changes. Disregard any existing plans, functional descriptions, or implementation details. Focus on understanding the current architecture, data flow, and how the battery management is currently handled.
 
 Goal:
 Add a battery optimization engine based on linear programming, preferably using CVXPY with HiGHS as solver if compatible with the existing architecture.

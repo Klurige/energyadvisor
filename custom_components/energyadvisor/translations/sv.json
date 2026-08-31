@@ -92,6 +92,10 @@
           "battery_capacity_kwh": "Batterikapacitet",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt",
           "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt",
+          "battery_optimization_enabled": "Aktivera batterioptimering",
+          "battery_optimization_horizon_hours": "Optimeringshorisont",
+          "battery_min_soc_pct": "Minsta SoC",
+          "battery_max_soc_pct": "Högsta SoC",
           "battery_degradation_cost": "Marginal för batterislitage",
           "battery_soc_entity": "Sensor för batteriets laddningsnivå",
           "battery_charge_power_entity": "Sensor för batteriets laddningseffekt"
@@ -100,6 +104,10 @@
           "battery_capacity_kwh": "Användbar batterikapacitet. Ange tillsammans med maximal laddningseffekt för att ersätta standardantagandena.",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt. Ange tillsammans med batterikapaciteten.",
           "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt. Lämnas tomt används laddningseffekten som standardvärde.",
+          "battery_optimization_enabled": "Aktivera den linjära batterioptimeraren.",
+          "battery_optimization_horizon_hours": "Optimeringshorisont i timmar som används av optimeraren.",
+          "battery_min_soc_pct": "Nedre SoC-gräns som används av optimeraren.",
+          "battery_max_soc_pct": "Övre SoC-gräns som används av optimeraren.",
           "battery_degradation_cost": "Minsta prisskillnad som krävs innan batteriet cyklas.",
           "battery_soc_entity": "Sensor som rapporterar batteriets aktuella laddningsnivå i procent.",
           "battery_charge_power_entity": "Sensor som rapporterar aktuell batteriladdningseffekt för verifiering och framtida inlärning."
@@ -172,6 +180,7 @@
       "entity_not_found": "Enheten hittades inte – kontrollera enhets-ID och försök igen.",
       "solar_entity_required": "Både prognosenhet och effektenhet måste anges tillsammans.",
       "battery_setting_required": "Batterikapacitet och maximal laddningseffekt måste anges tillsammans."
+      ,"battery_soc_bounds_invalid": "Det lägsta SoC-värdet måste vara lägre än det högsta."
     }
   },
   "options": {
@@ -259,6 +268,10 @@
           "battery_capacity_kwh": "Batterikapacitet",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt",
           "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt",
+          "battery_optimization_enabled": "Aktivera batterioptimering",
+          "battery_optimization_horizon_hours": "Optimeringshorisont",
+          "battery_min_soc_pct": "Minsta SoC",
+          "battery_max_soc_pct": "Högsta SoC",
           "battery_degradation_cost": "Marginal för batterislitage",
           "battery_soc_entity": "Sensor för batteriets laddningsnivå",
           "battery_charge_power_entity": "Sensor för batteriets laddningseffekt"
@@ -267,6 +280,10 @@
           "battery_capacity_kwh": "Användbar batterikapacitet. Ange tillsammans med maximal laddningseffekt för att ersätta standardantagandena.",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt. Ange tillsammans med batterikapaciteten.",
           "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt. Lämnas tomt används laddningseffekten som standardvärde.",
+          "battery_optimization_enabled": "Aktivera den linjära batterioptimeraren.",
+          "battery_optimization_horizon_hours": "Optimeringshorisont i timmar som används av optimeraren.",
+          "battery_min_soc_pct": "Nedre SoC-gräns som används av optimeraren.",
+          "battery_max_soc_pct": "Övre SoC-gräns som används av optimeraren.",
           "battery_degradation_cost": "Minsta prisskillnad som krävs innan batteriet cyklas.",
           "battery_soc_entity": "Sensor som rapporterar batteriets aktuella laddningsnivå i procent.",
           "battery_charge_power_entity": "Sensor som rapporterar aktuell batteriladdningseffekt för verifiering och framtida inlärning."

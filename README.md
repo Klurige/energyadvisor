@@ -20,7 +20,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 - Provides a ranking system for prices to help identify the best times to use electricity.
 - Exposes a household Load forecast placeholder while learning is rebuilt.
 - Can refine a solar production forecast using your solar's measured output.
-- Can suggest battery `maxuse` by default and `sell` during the top six morning/evening price slots in the current summer strategy.
+- Can optimize battery charge, discharge, and sell windows with a price-only linear program when enabled.
 ## Prerequisites
 - Home Assistant (2025.0 or newer recommended)
 - [NordPool integration](https://www.home-assistant.io/integrations/nordpool/) installed and configured in Home Assistant. This integration supplies the electricity prices that this component depends on.
@@ -79,12 +79,18 @@ called differently for other grids and suppliers.
 | `forecast_tomorrow_entity` | Optional solar forecast sensor for tomorrow | `sensor.home_energy_production_tomorrow` |
 | `battery_capacity_kwh`     | Optional battery capacity; provide together with max charge power to override default timings | `10.0` |
 | `battery_max_charge_power_w` | Optional maximum battery charge power; provide together with capacity | `5000` |
+| `battery_max_discharge_power_w` | Optional maximum battery discharge power; defaults to max charge power when empty | `5000` |
+| `battery_optimization_enabled` | Enable the linear-programming battery optimizer | `false` |
+| `battery_optimization_horizon_hours` | Look-ahead horizon used by the optimizer | `48` |
+| `battery_min_soc_pct` | Lower SoC bound used by the optimizer | `5` |
+| `battery_max_soc_pct` | Upper SoC bound used by the optimizer | `95` |
 | `battery_degradation_cost` | Optional planner setting kept for future battery logic | `0.7` |
 | `battery_soc_entity`       | Optional battery state-of-charge sensor kept for future battery logic | `sensor.home_battery_soc` |
 
-The config UI also stores optional planner inputs for upcoming optimizer work.
-The current summer battery strategy only uses the linked price schedule. The
-stored planner inputs are:
+The battery optimizer uses the linked price schedule, the current battery SoC,
+the configured capacity and power limits, the optimization horizon, and the
+SoC bounds above. The config UI also stores additional planner inputs for
+future forecast-aware work:
 `battery_charge_power_entity`, `grid_import_entity`, `grid_export_entity`,
 `outdoor_temperature_entity`, `household_load_forecast_w`,
 `water_heater_power_entity`, `water_heater_power_w`, `water_heater_max_hours`,
@@ -114,7 +120,7 @@ In addition, the `rates` attribute on `sensor.energy_advisor_price`, the `charge
 - The integration adds two price sensors, one battery charge mode sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_base_load` when the household meter inputs are configured, and `sensor.energy_advisor_solar_forecast` when the optional solar sensor is enabled. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
-  - `sensor.energy_advisor_battery_charge_mode` provides the current summer battery recommendation: `maxuse` by default and `sell` during the six highest-valued slots per day that start between 00:00-10:00 and 17:00-24:00.
+  - `sensor.energy_advisor_battery_charge_mode` provides the battery optimizer's current recommendation and sequential schedule.
   - `sensor.energy_advisor_base_load` currently provides a static household Load forecast placeholder while forecast learning is rebuilt.
   - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
@@ -173,24 +179,22 @@ The integration also provides `sensor.energy_advisor_compact_levels`, which expo
 See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast description, correction model, and database behavior.
 
 ### `sensor.energy_advisor_battery_charge_mode`
-- **Description:** Energy Advisor's current summer battery schedule recommendation based on the price rates from the linked `sensor.energy_advisor_price` entry.
+- **Description:** Energy Advisor's price-only battery schedule recommendation based on the linked `sensor.energy_advisor_price` entry.
 - **Default Entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
-- **State:** scheduled slots use `maxuse` or `sell`; `standby` is still used when price data is unavailable.
+- **State:** the current schedule mode, one of `standby`, `maxuse`, `charge`, `discharge`, or `sell`.
 - **Attributes:**
-  - `charge_entries`: Planned per-slot schedule with local `from`, `mode`, and `cost` (`YYYY-MM-DDTHH:MM`).
-  - `margin`: Retained planner setting for future battery logic.
-  - `charging_time_minutes`: Retained battery timing value for future battery logic.
-  - `discharging_time_minutes`: Retained battery timing value for future battery logic.
+  - `charge_entries`: Sequential schedule entries with local `from`, `mode`, and optional `target_soc`.
+  - `modes`: Compatibility alias for `charge_entries`.
+  - `current_soc_pct`: Current battery state of charge read from the configured SoC sensor.
+  - `current_target_soc`: Target SoC for the current schedule segment, if applicable.
+  - `optimization_enabled`: Whether the LP optimizer is active.
   - `reason`: Human-readable explanation for the current recommendation.
-  - `next_mode_change`: Local time string (`YYYY-MM-DDTHH:MM`) for the next expected mode change.
-  - `reserved_kwh`: Currently `0.0` in the summer strategy.
-  - `required_load_kwh`: Currently `0.0` in the summer strategy.
-  - `charge_source`: Currently `null` in the summer strategy.
+  - `solver`: Solver used for the most recent optimization run, or `null` when falling back.
 
-For each local calendar day, the helper keeps every slot in `maxuse`, then
-looks only at slots that start between 00:00-10:00 and 17:00-24:00. It ranks
-those candidate slots by export value (`credit`, falling back to `cost`) and
-marks the top six as `sell`. The remaining slots stay in `maxuse`.
+When optimization is enabled and the SoC sensor is available, the helper uses
+the HiGHS solver through the `highspy` Python bindings to solve a price-only
+linear program over the configured horizon. If the optimizer or solver stack
+is unavailable, it falls back to the legacy price schedule.
 
 See [docs/batterychargemode.md](docs/batterychargemode.md) for the battery scheduling rules and configuration details.
 

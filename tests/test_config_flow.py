@@ -16,7 +16,12 @@ from custom_components.energyadvisor.const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_CHARGE_POWER_ENTITY,
     CONF_BATTERY_DEGRADATION_COST,
+    CONF_BATTERY_MAX_DISCHARGE_POWER_W,
+    CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
+    CONF_BATTERY_MIN_SOC_PCT,
+    CONF_BATTERY_OPTIMIZATION_ENABLED,
+    CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_DEHUMIDIFIER_POWER_ENTITY,
@@ -396,6 +401,29 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
         validated[CONF_BATTERY_CHARGE_POWER_ENTITY]
         == "sensor.remote_batterychargepower"
     )
+    assert validated[CONF_BATTERY_OPTIMIZATION_ENABLED] is False
+    assert validated[CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 48
+    assert validated[CONF_BATTERY_MIN_SOC_PCT] == 5.0
+    assert validated[CONF_BATTERY_MAX_SOC_PCT] == 95.0
+
+
+@pytest.mark.asyncio
+async def test_main_flow_battery_defaults_max_discharge_to_charge_power() -> None:
+    """Test battery step defaults max discharge power to max charge power."""
+    handler = EnergyAdvisorFlowHandler()
+    handler.hass = MagicMock()
+    handler.data = {
+        CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
+        CONF_BATTERY_CAPACITY_KWH: 10.0,
+        CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
+        "unit_of_measurement": "EUR/kWh",
+    }
+
+    result = await handler.async_step_battery()
+
+    assert result["type"] == "form"
+    validated = result["data_schema"]({})
+    assert validated[CONF_BATTERY_MAX_DISCHARGE_POWER_W] == 5000.0
 
 
 @pytest.mark.asyncio
@@ -415,6 +443,26 @@ async def test_main_flow_battery_requires_capacity_and_power_together() -> None:
     assert (
         result["errors"][CONF_BATTERY_MAX_CHARGE_POWER_W] == "battery_setting_required"
     )
+
+
+@pytest.mark.asyncio
+async def test_main_flow_battery_rejects_invalid_soc_bounds() -> None:
+    """Test battery step rejects inverted SoC bounds."""
+    handler = EnergyAdvisorFlowHandler()
+    handler.data = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
+    handler.hass = MagicMock()
+
+    result = await handler.async_step_battery(
+        {
+            CONF_BATTERY_CAPACITY_KWH: 10.0,
+            CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
+            CONF_BATTERY_MIN_SOC_PCT: 90.0,
+            CONF_BATTERY_MAX_SOC_PCT: 10.0,
+        }
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"][CONF_BATTERY_MIN_SOC_PCT] == "battery_soc_bounds_invalid"
 
 
 @pytest.mark.asyncio
@@ -471,6 +519,11 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
         {
             CONF_BATTERY_CAPACITY_KWH: 10.0,
             CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
+            CONF_BATTERY_MAX_DISCHARGE_POWER_W: 4500.0,
+            CONF_BATTERY_OPTIMIZATION_ENABLED: True,
+            CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: 36.0,
+            CONF_BATTERY_MIN_SOC_PCT: 10.0,
+            CONF_BATTERY_MAX_SOC_PCT: 90.0,
             CONF_BATTERY_DEGRADATION_COST: 0.0,
             CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
             CONF_BATTERY_CHARGE_POWER_ENTITY: "sensor.battery_charge_power",
@@ -520,6 +573,11 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
     )
     assert result["type"] == "create_entry"
     assert result["options"][CONF_BATTERY_CAPACITY_KWH] == 10.0
+    assert result["options"][CONF_BATTERY_MAX_DISCHARGE_POWER_W] == 4500.0
+    assert result["options"][CONF_BATTERY_OPTIMIZATION_ENABLED] is True
+    assert result["options"][CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 36.0
+    assert result["options"][CONF_BATTERY_MIN_SOC_PCT] == 10.0
+    assert result["options"][CONF_BATTERY_MAX_SOC_PCT] == 90.0
     assert result["options"][CONF_BATTERY_DEGRADATION_COST] == 0.0
     assert result["options"][CONF_BATTERY_SOC_ENTITY] == "sensor.battery_soc"
     assert result["options"][CONF_GRID_IMPORT_ENTITY] == "sensor.grid_import"
@@ -691,6 +749,11 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
         {
             CONF_BATTERY_CAPACITY_KWH: 10.0,
             CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
+            CONF_BATTERY_MAX_DISCHARGE_POWER_W: 4500.0,
+            CONF_BATTERY_OPTIMIZATION_ENABLED: True,
+            CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: 36.0,
+            CONF_BATTERY_MIN_SOC_PCT: 10.0,
+            CONF_BATTERY_MAX_SOC_PCT: 90.0,
             CONF_BATTERY_DEGRADATION_COST: 0.0,
         }
     )
@@ -717,6 +780,11 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
     result = await handler.async_step_flexible_loads({})
     assert result["type"] == "create_entry"
     assert result["data"][CONF_BATTERY_DEGRADATION_COST] == 0.0
+    assert result["data"][CONF_BATTERY_MAX_DISCHARGE_POWER_W] == 4500.0
+    assert result["data"][CONF_BATTERY_OPTIMIZATION_ENABLED] is True
+    assert result["data"][CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 36.0
+    assert result["data"][CONF_BATTERY_MIN_SOC_PCT] == 10.0
+    assert result["data"][CONF_BATTERY_MAX_SOC_PCT] == 90.0
     assert (
         result["data"][CONF_OUTDOOR_TEMPERATURE_ENTITY] == "sensor.outdoor_temperature"
     )

@@ -16,8 +16,12 @@ from .const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_CHARGE_POWER_ENTITY,
     CONF_BATTERY_DEGRADATION_COST,
+    CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
+    CONF_BATTERY_MIN_SOC_PCT,
+    CONF_BATTERY_OPTIMIZATION_ENABLED,
+    CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_DEHUMIDIFIER_POWER_ENTITY,
@@ -69,10 +73,16 @@ BATTERY_STEP_ENTITY_KEYS: tuple[str, ...] = (
     CONF_BATTERY_SOC_ENTITY,
     CONF_BATTERY_CHARGE_POWER_ENTITY,
 )
+BATTERY_STEP_BOOL_KEYS: tuple[str, ...] = (
+    CONF_BATTERY_OPTIMIZATION_ENABLED,
+)
 BATTERY_STEP_NUMERIC_KEYS: tuple[str, ...] = (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
+    CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
+    CONF_BATTERY_MIN_SOC_PCT,
+    CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_DEGRADATION_COST,
 )
 GRID_METERING_ENTITY_KEYS: tuple[str, ...] = (
@@ -183,6 +193,13 @@ def _build_battery_schema(
     values: dict[str, Any], unit_of_measurement: str
 ) -> dict[Any, Any]:
     """Build the config schema for battery hardware inputs."""
+    battery_max_charge_power = values.get(CONF_BATTERY_MAX_CHARGE_POWER_W)
+    battery_max_discharge_power = values.get(CONF_BATTERY_MAX_DISCHARGE_POWER_W)
+    battery_optimization_horizon_hours = values.get(
+        CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS
+    )
+    battery_min_soc_pct = values.get(CONF_BATTERY_MIN_SOC_PCT)
+    battery_max_soc_pct = values.get(CONF_BATTERY_MAX_SOC_PCT)
     return {
         vol.Optional(
             CONF_BATTERY_CAPACITY_KWH,
@@ -191,14 +208,45 @@ def _build_battery_schema(
         ): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
         vol.Optional(
             CONF_BATTERY_MAX_CHARGE_POWER_W,
-            default=_schema_default(values.get(CONF_BATTERY_MAX_CHARGE_POWER_W)),
+            default=_schema_default(battery_max_charge_power),
             description={"suffix": "W"},
         ): vol.All(vol.Coerce(float), vol.Range(min=1)),
         vol.Optional(
             CONF_BATTERY_MAX_DISCHARGE_POWER_W,
-            default=_schema_default(values.get(CONF_BATTERY_MAX_DISCHARGE_POWER_W)),
+            default=_schema_default(
+                battery_max_discharge_power
+                if battery_max_discharge_power is not None
+                else battery_max_charge_power
+            ),
             description={"suffix": "W"},
         ): vol.All(vol.Coerce(float), vol.Range(min=1)),
+        vol.Optional(
+            CONF_BATTERY_OPTIMIZATION_ENABLED,
+            default=bool(values.get(CONF_BATTERY_OPTIMIZATION_ENABLED, False)),
+        ): vol.Boolean(),
+        vol.Optional(
+            CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
+            default=_schema_default(
+                battery_optimization_horizon_hours
+                if battery_optimization_horizon_hours is not None
+                else 48
+            ),
+            description={"suffix": "h"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=1, max=48)),
+        vol.Optional(
+            CONF_BATTERY_MIN_SOC_PCT,
+            default=_schema_default(
+                battery_min_soc_pct if battery_min_soc_pct is not None else 5.0
+            ),
+            description={"suffix": "%"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+        vol.Optional(
+            CONF_BATTERY_MAX_SOC_PCT,
+            default=_schema_default(
+                battery_max_soc_pct if battery_max_soc_pct is not None else 95.0
+            ),
+            description={"suffix": "%"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
         vol.Optional(
             CONF_BATTERY_DEGRADATION_COST,
             default=_schema_default(values.get(CONF_BATTERY_DEGRADATION_COST)),
@@ -357,6 +405,8 @@ def _validate_solar_forecast_entities(
 def _validate_battery_settings(
     battery_capacity_kwh: float | None,
     battery_max_charge_power_w: float | None,
+    battery_min_soc_pct: float | None = None,
+    battery_max_soc_pct: float | None = None,
 ) -> dict[str, str]:
     """Validate the optional battery configuration."""
     errors: dict[str, str] = {}
@@ -368,6 +418,13 @@ def _validate_battery_settings(
             errors[CONF_BATTERY_CAPACITY_KWH] = "battery_setting_required"
         else:
             errors[CONF_BATTERY_MAX_CHARGE_POWER_W] = "battery_setting_required"
+
+    if (
+        battery_min_soc_pct is not None
+        and battery_max_soc_pct is not None
+        and battery_min_soc_pct >= battery_max_soc_pct
+    ):
+        errors[CONF_BATTERY_MIN_SOC_PCT] = "battery_soc_bounds_invalid"
 
     return errors
 

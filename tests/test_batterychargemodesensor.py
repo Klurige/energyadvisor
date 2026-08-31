@@ -67,5 +67,4 @@ def test_calculate_battery_mode_formats_rate_start_in_local_time():
     assert [mode["from"] for mode in sensor._modes] == [
         "2026-08-15T00:00",
         "2026-08-16T00:15",
-        "2026-08-16T00:30",
     ]
