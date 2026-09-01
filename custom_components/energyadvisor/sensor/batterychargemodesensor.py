@@ -34,6 +34,7 @@ from .chargemodehelpers import default_modes, find_current_mode
 
 if TYPE_CHECKING:
     from .price import PriceSensor
+    from ..coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class BatteryChargeModeSensor(SensorEntity):
 
     _attr_should_poll = False
     _attr_has_entity_name = True
-    _unrecorded_attributes = frozenset({"charge_entries", "modes"})
+    _unrecorded_attributes = frozenset({"modes"})
 
     def __init__(
         self,
@@ -93,6 +94,7 @@ class BatteryChargeModeSensor(SensorEntity):
         self._solver: str | None = None
         self._remove_source_listener = None
         self._remove_soc_listener = None
+        self._solar_coordinator: SolarForecastCoordinator | None = None
         self._modes = default_modes()
         self._current_mode = find_current_mode(self._modes).get("mode", "unknown")
 
@@ -118,6 +120,18 @@ class BatteryChargeModeSensor(SensorEntity):
             self._handle_source_update
         )
         self.async_on_remove(self._remove_source_listener)
+
+        runtime_data = getattr(self._entry, "runtime_data", None)
+        self._solar_coordinator = getattr(runtime_data, "solar_coordinator", None)
+        if self._solar_coordinator is not None:
+            solar_coordinator = self._solar_coordinator
+            _LOGGER.debug("Battery charge mode sensor registering listener for solar forecast")
+            solar_coordinator.register_update_callback(self._handle_source_update)
+
+            def _remove_solar_listener() -> None:
+                solar_coordinator.unregister_update_callback(self._handle_source_update)
+
+            self.async_on_remove(_remove_solar_listener)
 
         if self._optimization_enabled and self._battery_soc_entity_id:
             _LOGGER.debug(
@@ -158,7 +172,6 @@ class BatteryChargeModeSensor(SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         return {
-            "charge_entries": self._modes,
             "modes": self._modes,
             "current_soc_pct": (
                 round(self._current_soc_pct, 1)
@@ -193,6 +206,7 @@ class BatteryChargeModeSensor(SensorEntity):
     def _build_optimizer_inputs(self) -> BatteryOptimizationInputs:
         """Build the request object used by the optimizer."""
         price_rates = list(getattr(self._price_sensor, "_rates", []) or [])
+        solar_forecasts = self._read_solar_forecasts()
         current_soc_pct = (
             self._read_current_soc_pct() if self._optimization_enabled else None
         )
@@ -220,7 +234,15 @@ class BatteryChargeModeSensor(SensorEntity):
             max_soc_pct=self._battery_max_soc_pct,
             horizon_hours=self._optimization_horizon_hours,
             optimization_enabled=self._optimization_enabled,
+            solar_forecasts=solar_forecasts,
         )
+
+    def _read_solar_forecasts(self) -> list[dict[str, object]]:
+        """Read solar forecast slots from the registered solar coordinator."""
+        if self._solar_coordinator is None:
+            return []
+        forecasts = getattr(self._solar_coordinator, "forecast", []) or []
+        return [dict(entry) for entry in forecasts if isinstance(entry, dict)]
 
     def calculate_battery_mode(self) -> None:
         """Calculate the battery schedule and current mode."""

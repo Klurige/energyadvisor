@@ -64,7 +64,7 @@ card:
       float_precision: 2
       extend_to: end
       data_generator: |
-        const modes = entity?.attributes?.modes ?? [];
+        const entries = entity?.attributes?.modes ?? [];
 
         const colorByMode = {
           charge: 'deepskyblue',
@@ -77,13 +77,13 @@ card:
 
         const result = [];
 
-        for (let i = 0; i < modes.length; i++) {
-          const current = modes[i];
+        for (let i = 0; i < entries.length; i++) {
+          const current = entries[i];
 
           const start = new Date(current.from).getTime();
 
-          const end = i < modes.length - 1
-            ? new Date(modes[i + 1].from).getTime()
+          const end = i < entries.length - 1
+            ? new Date(entries[i + 1].from).getTime()
             : new Date(start + 15 * 60 * 1000).getTime();
 
           for (let t = start; t < end; t += 15 * 60 * 1000) {

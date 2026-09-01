@@ -1,8 +1,8 @@
 # Battery and Flexible-Load Optimizer README
 
 This file is the working plan and progress tracker for expanding the current
-price-only battery scheduler into a profit-first planner that also considers
-solar production, household demand, and flexible loads.
+battery scheduler into a profit-first planner that also considers solar
+production, household demand, and flexible loads.
 
 Update this file as work lands so progress is visible and the plan survives
 agent or computer restarts.
@@ -67,9 +67,9 @@ agent or computer restarts.
 
 - Implemented today:
   - `energyadvisor` is now the only shipped integration and carries the evolving planner work
-  - `sensor.energy_advisor_battery_charge_mode` currently uses a simplified
-    summer strategy: `maxuse` by default, plus `sell` for the top six daily
-    slots that start between `00:00-10:00` and `17:00-24:00`
+  - `sensor.energy_advisor_battery_charge_mode` currently uses a price-aware
+    linear program and reserves battery headroom for the configured solar
+    forecast when available
   - `sensor.energy_advisor_base_load` currently exposes a static placeholder
     while quiet-night household Load forecast learning is being rebuilt
 - Wired into config storage and not currently used by runtime planning:
@@ -98,7 +98,7 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
    - **Done when:** this file exists in `docs/` and becomes the source of truth for progress notes.
 
 2. [x] Lock current battery behavior with tests.
-   - **Deliverable:** add or tighten tests that pin the current price-only battery logic.
+   - **Deliverable:** add or tighten tests that pin the current battery logic.
    - **Verify:** existing battery behavior remains unchanged before new features begin.
    - **Note:** the battery sensor test suite already covers the core algorithm well.
      Added edge-case coverage for flat price curves (no charge/discharge expected), only
@@ -116,7 +116,7 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
    - **Deliverable:** add attributes such as `reason`, `next_mode_change`, `reserved_kwh`, `required_load_kwh`, and `charge_source`.
    - **Verify:** every mode decision can be understood from sensor attributes without reading logs.
    - **Note:** design these attributes to describe the *chosen mode* rather than internals of the
-     current price-only algorithm, so they remain meaningful when the new mode is promoted in
+     current optimization algorithm, so they remain meaningful when the new mode is promoted in
      step 15 without requiring a rewrite.
    - **Done:** the battery helper now exposes human-readable `reason`, block-based `next_mode_change`,
      zeroed `reserved_kwh` / `required_load_kwh` placeholders for future reserve/load logic, and
@@ -126,19 +126,20 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
 5. [x] Add real battery constraints.
    - **Deliverable:** use SoC, reserve floor, and efficiency to block impossible actions.
    - **Verify:** low SoC cannot produce `discharge` or `sell`; a full battery does not force cheap planned charging into `standby`.
-   - **Done:** the battery helper now keeps the price-only plan as a base schedule and applies
+   - **Done:** the battery helper now keeps the price-aware plan as a base schedule and applies
      a SoC-aware feasibility pass from the current slot forward. With battery size/power
      configured, it uses a 5% reserve floor and 95% charge/discharge efficiency assumptions
      to block impossible discharge periods while preserving planned cheap charge windows;
+     when a solar forecast is available, it also keeps headroom for forecast PV production;
      with SoC alone, it still blocks obviously empty current-slot discharge actions.
    - **Deploy:** **Yes — R1.** Release step 3 + step 4 + step 5 together to the live system. Then observe that the new attributes are useful and that SoC only blocks impossible states.
 
 6. [x] Introduce the new mode set in Energy Advisor.
    - **Deliverable:** compute `standby`, `charge`, `maxuse`, `discharge`, and `sell` as the main battery state in `energyadvisor`.
    - **Verify:** the new mode set behaves sensibly for a few live days of real price and solar data.
-   - **Done:** the live battery helper currently uses a temporary summer strategy:
-     `maxuse` everywhere by default, and `sell` during the six highest-valued
-     slots per local day that start between `00:00-10:00` and `17:00-24:00`.
+   - **Done:** the live battery helper now uses the solar-aware price optimizer and
+     falls back to the legacy `maxuse`/`sell` schedule only when optimization is
+     disabled or unavailable.
    - **Note:** after releasing to the live system, let the new mode set soak for at least several days on real
      price and solar data before continuing to step 7. This first live soak is the primary
      quality gate before deeper planner work continues.
@@ -150,7 +151,7 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
    - **Required energy:** for each battery-output decision, sum the forecast household load from now until the next slot where solar production exceeds `_MIN_USEFUL_SOLAR_KW`. The battery must not sell or discharge below `reserve_kwh + required_energy_kwh`.
    - **When load forecast is unknown** (0 valid nights): skip the required-energy reservation and document this in the sensor `reason` attribute.
    - **Verify:** the same price curve yields a higher reserved energy on a cold winter night (after several valid measurement nights) than on a mild summer night.
-   - **Current simplification:** the live helper is temporarily using the fixed summer strategy above instead of reserve math. When this step resumes, start from that simplified baseline.
+   - **Current simplification:** the live helper is temporarily using the price-and-solar-aware LP above instead of full load-reserve math. When this step resumes, start from that simplified baseline.
    - **Deploy:** not yet; keep in development until step 12 so the advisory planner can be released as a coherent whole.
 
 8. [ ] Add a temperature-adjusted household load model.
@@ -234,4 +235,4 @@ Steps 13–14 are **dev/offline only** and do not require a live release.
 
 The cleanest structure is likely to keep `sensor.batterychargemodesensor.py`
 small and move the new optimization logic into dedicated helpers instead of
-continuing to grow one file around the current price-only algorithm.
+continuing to grow one file around the current solar-aware algorithm.

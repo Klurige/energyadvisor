@@ -4,15 +4,17 @@
 
 ## Purpose
 
-The battery helper computes a price-only schedule for a home battery. When the
-optimizer is enabled and the configured SoC sensor is available, it uses the
-HiGHS solver through the `highspy` Python bindings to choose charge, discharge,
-sell, and idle periods over the requested horizon. If optimization is
-disabled, or the solver stack is not available, it falls back to the legacy
-price schedule.
+The battery helper computes a price-aware schedule for a home battery. When
+the optimizer is enabled and the configured SoC sensor is available, it uses
+the HiGHS solver through the `highspy` Python bindings to choose charge,
+discharge, sell, and idle periods over the requested horizon. If a solar
+forecast is configured, it also reserves battery headroom for forecast solar
+production. If optimization is disabled, or the solver stack is not
+available, it falls back to the legacy price schedule.
 
-The current optimizer considers only electricity prices. It does not use load
-forecasts, solar forecasts, weather, or battery degradation costs yet.
+The current optimizer considers electricity prices and forecast solar headroom
+only. It does not use load forecasts, weather, or battery degradation costs
+yet.
 
 ## Input
 
@@ -39,7 +41,9 @@ The config flow also stores:
 `bathroom_humidity_entity`, `pool_pump_power_entity`, `pool_pump_power_w`,
 `dehumidifier_power_entity`, and `dehumidifier_power_w`.
 
-Those fields are not used by the current price-only optimizer yet.
+The solar forecast sensor is used automatically when configured so the battery
+optimizer can leave room for forecast PV production. The remaining fields are
+not used by the current optimizer yet.
 
 ## Configuration
 
@@ -77,8 +81,7 @@ The sensor state is the current schedule mode:
 
 | Attribute | Type | Description |
 |---|---|---|
-| `charge_entries` | list[dict] | Sequential schedule entries with local `from`, `mode`, and optional `target_soc`. |
-| `modes` | list[dict] | Compatibility alias for `charge_entries`. |
+| `modes` | list[dict] | Sequential schedule entries, one per 15-minute input slot, with local `from`, `mode`, and optional `target_soc`. |
 | `current_soc_pct` | float \| null | Current SoC read from the configured battery sensor. |
 | `current_target_soc` | float \| null | Target SoC for the active schedule segment, if applicable. |
 | `optimization_enabled` | bool | Whether the LP optimizer is enabled. |
@@ -88,11 +91,12 @@ The sensor state is the current schedule mode:
 ## Algorithm
 
 1. Normalize the price sensor rates into local-time slots within the requested horizon.
-2. Build a linear program with charge, discharge, and sell decision variables.
-3. Constrain SoC between the configured minimum and maximum bounds.
-4. Respect the configured charge and discharge power limits.
-5. Minimize import cost while accounting for avoided import cost when discharging and export credit when selling.
-6. Collapse the solved per-slot result into sequential schedule entries.
+2. Normalize the solar forecast into the same horizon and compute the battery headroom that should be preserved for future PV production.
+3. Build a linear program with charge, discharge, and sell decision variables.
+4. Constrain SoC between the configured minimum and maximum bounds.
+5. Respect the configured charge and discharge power limits.
+6. Minimize import cost while accounting for avoided import cost when discharging, export credit when selling, the solar headroom reserve, and the value of the remaining SoC at the end of the horizon.
+7. Return the solved result as one schedule entry per 15-minute input slot.
 
 When optimization is disabled, the helper falls back to the legacy schedule:
 
@@ -114,13 +118,17 @@ PriceSensor
 
 The battery sensor recomputes the schedule when the price sensor updates.
 When optimization is enabled and a SoC sensor is configured, it also listens
-for SoC changes so the active recommendation updates immediately.
+for SoC changes so the active recommendation updates immediately. If the solar
+forecast sensor is configured, the helper also updates when the solar forecast
+changes so the reserved headroom stays in sync.
 
 ## Notes
 
-- The current optimizer does not use load forecasts, solar forecasts, weather,
-  or degradation costs yet.
+- The current optimizer does not use load forecasts, weather, or degradation
+  costs yet.
 - If the battery SoC sensor is unavailable, the helper falls back to the legacy
   schedule.
+- The optimizer values the remaining battery SoC at the horizon end so it does
+  not prefer a sell/rebuy cycle when the spread is too small.
 - The schedule entries are advisory only; automations remain responsible for
   actually controlling the battery.

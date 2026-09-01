@@ -94,6 +94,79 @@ def test_optimize_battery_schedule_charges_then_sells_on_price_spread() -> None:
     assert result.schedule[1]["target_soc"] == pytest.approx(20.0, abs=0.2)
 
 
+def test_optimize_battery_schedule_keeps_quarter_hour_slots() -> None:
+    """The optimizer should preserve the 15-minute slot granularity."""
+    pytest.importorskip("highspy")
+
+    reference_time = datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
+    rates = _make_rates(
+        reference_time,
+        costs=[0.10, 0.10, 0.10, 0.10, 0.60, 0.60, 0.60, 0.60],
+        credits=[0.05, 0.05, 0.05, 0.05, 0.90, 0.90, 0.90, 0.90],
+        slot_hours=0.25,
+    )
+    inputs = BatteryOptimizationInputs(
+        rates=rates,
+        reference_time=reference_time,
+        current_soc_pct=50.0,
+        capacity_kwh=10.0,
+        max_charge_power_w=10000.0,
+        max_discharge_power_w=10000.0,
+        min_soc_pct=20.0,
+        max_soc_pct=80.0,
+        horizon_hours=2.0,
+        optimization_enabled=True,
+    )
+
+    result = optimize_battery_schedule(inputs)
+
+    assert result.optimized is True
+    assert result.solver == "HIGHS"
+    assert len(result.schedule) == 8
+    assert [entry["from"] for entry in result.schedule] == [
+        "2026-08-15T12:00",
+        "2026-08-15T12:15",
+        "2026-08-15T12:30",
+        "2026-08-15T12:45",
+        "2026-08-15T13:00",
+        "2026-08-15T13:15",
+        "2026-08-15T13:30",
+        "2026-08-15T13:45",
+    ]
+
+
+def test_optimize_battery_schedule_keeps_remaining_soc_when_sell_spread_is_flat() -> None:
+    """Flat sell/repurchase economics should not trigger a sell cycle."""
+    pytest.importorskip("highspy")
+
+    reference_time = datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
+    rates = _make_rates(
+        reference_time,
+        costs=[0.50, 0.50, 0.50],
+        credits=[0.50, 0.50, 0.50],
+    )
+    inputs = BatteryOptimizationInputs(
+        rates=rates,
+        reference_time=reference_time,
+        current_soc_pct=80.0,
+        capacity_kwh=10.0,
+        max_charge_power_w=10000.0,
+        max_discharge_power_w=10000.0,
+        min_soc_pct=20.0,
+        max_soc_pct=80.0,
+        horizon_hours=3.0,
+        optimization_enabled=True,
+    )
+
+    result = optimize_battery_schedule(inputs)
+
+    assert result.optimized is True
+    assert result.solver == "HIGHS"
+    assert result.current_mode == "maxuse"
+    assert result.current_target_soc_pct is None
+    assert all(entry["mode"] != "sell" for entry in result.schedule)
+
+
 def test_optimize_battery_schedule_discharges_on_high_prices() -> None:
     """High current prices should produce a discharge segment."""
     pytest.importorskip("highspy")
@@ -125,3 +198,44 @@ def test_optimize_battery_schedule_discharges_on_high_prices() -> None:
     assert result.current_target_soc_pct == pytest.approx(20.0, abs=0.2)
     assert result.schedule[0]["mode"] == "discharge"
     assert result.schedule[0]["target_soc"] == pytest.approx(20.0, abs=0.2)
+
+
+def test_optimize_battery_schedule_reserves_room_for_forecast_solar() -> None:
+    """Forecast solar should reduce the target SoC before the solar window."""
+    pytest.importorskip("highspy")
+
+    reference_time = datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
+    rates = _make_rates(
+        reference_time,
+        costs=[0.10, 0.60],
+        credits=[0.05, 0.90],
+    )
+    solar_forecasts: list[dict[str, object]] = []
+    solar_start = reference_time + timedelta(hours=1)
+    for index in range(8):
+        end = solar_start + timedelta(minutes=15 * (index + 1))
+        start = end - timedelta(minutes=15)
+        solar_forecasts.append({"start": start, "end": end, "pow": 2.0})
+
+    inputs = BatteryOptimizationInputs(
+        rates=rates,
+        solar_forecasts=solar_forecasts,
+        reference_time=reference_time,
+        current_soc_pct=50.0,
+        capacity_kwh=10.0,
+        max_charge_power_w=10000.0,
+        max_discharge_power_w=10000.0,
+        min_soc_pct=20.0,
+        max_soc_pct=80.0,
+        horizon_hours=2.0,
+        optimization_enabled=True,
+    )
+
+    result = optimize_battery_schedule(inputs)
+
+    assert result.optimized is True
+    assert result.solver == "HIGHS"
+    assert result.current_mode == "charge"
+    assert result.current_target_soc_pct == pytest.approx(60.0, abs=0.2)
+    assert "forecast solar" in result.reason
+    assert result.schedule[0]["target_soc"] == pytest.approx(60.0, abs=0.2)

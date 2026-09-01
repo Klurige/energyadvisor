@@ -1,4 +1,4 @@
-"""Price-only battery schedule optimization helpers."""
+"""Price-and-solar-aware battery schedule optimization helpers."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ class BatteryOptimizationInputs:
     max_soc_pct: float
     horizon_hours: float
     optimization_enabled: bool
+    solar_forecasts: Sequence[Mapping[str, Any]] | None = None
     charge_efficiency: float = DEFAULT_CHARGE_EFFICIENCY
     discharge_efficiency: float = DEFAULT_DISCHARGE_EFFICIENCY
 
@@ -71,6 +72,16 @@ class _Slot:
     duration_hours: float
     cost: float
     credit: float
+
+
+@dataclass(slots=True)
+class _SolarSlot:
+    """Normalized solar forecast slot used by the optimizer."""
+
+    start: datetime
+    end: datetime
+    duration_hours: float
+    power_kw: float
 
 
 @dataclass(slots=True)
@@ -165,6 +176,160 @@ def _normalize_slots(inputs: BatteryOptimizationInputs) -> list[_Slot]:
     return slots
 
 
+def _coerce_datetime(value: Any, reference_time: datetime) -> datetime | None:
+    """Coerce a datetime-like value and align it with the reference timezone."""
+    if isinstance(value, datetime):
+        return _to_reference_timezone(value, reference_time)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return _to_reference_timezone(parsed, reference_time)
+    return None
+
+
+def _solar_slot_from_forecast(
+    forecast: Mapping[str, Any],
+    reference_time: datetime,
+    horizon_end: datetime,
+) -> _SolarSlot | None:
+    """Normalize a raw solar forecast entry into a bounded solar slot."""
+    start = _coerce_datetime(
+        forecast.get("start") or forecast.get("period_start"), reference_time
+    )
+    end = _coerce_datetime(
+        forecast.get("end") or forecast.get("period_end") or forecast.get("datetime"),
+        reference_time,
+    )
+
+    if start is None and end is None:
+        return None
+    if start is None and end is not None:
+        start = end - timedelta(minutes=15)
+    if end is None and start is not None:
+        end = start + timedelta(minutes=15)
+    if start is None or end is None:
+        return None
+    if end <= start:
+        end = start + timedelta(minutes=15)
+
+    clipped_start = max(start, reference_time)
+    clipped_end = min(end, horizon_end)
+    if clipped_end <= clipped_start:
+        return None
+
+    power_kw_value = (
+        forecast.get("pow")
+        if forecast.get("pow") is not None
+        else forecast.get("power_kw")
+    )
+    if power_kw_value is None:
+        power_kw_value = forecast.get("pv_estimate")
+    if power_kw_value is None:
+        power_kw_value = forecast.get("raw", 0.0)
+
+    try:
+        power_kw = max(0.0, float(power_kw_value))
+    except (TypeError, ValueError):
+        return None
+
+    duration_hours = (clipped_end - clipped_start).total_seconds() / 3600.0
+    if duration_hours <= 0:
+        return None
+
+    return _SolarSlot(
+        start=clipped_start,
+        end=clipped_end,
+        duration_hours=duration_hours,
+        power_kw=power_kw,
+    )
+
+
+def _normalize_solar_slots(inputs: BatteryOptimizationInputs) -> list[_SolarSlot]:
+    """Build normalized solar forecast slots from raw forecast data."""
+    solar_forecasts = inputs.solar_forecasts or ()
+    if not solar_forecasts:
+        return []
+
+    horizon_end = inputs.reference_time + timedelta(hours=inputs.horizon_hours)
+    slots: list[_SolarSlot] = []
+    for forecast in sorted(
+        solar_forecasts,
+        key=lambda item: _coerce_datetime(
+            item.get("start")
+            or item.get("period_start")
+            or item.get("end")
+            or item.get("period_end")
+            or item.get("datetime"),
+            inputs.reference_time,
+        )
+        or inputs.reference_time,
+    ):
+        slot = _solar_slot_from_forecast(forecast, inputs.reference_time, horizon_end)
+        if slot is not None and slot.power_kw > 0:
+            slots.append(slot)
+    return slots
+
+
+def _solar_energy_by_price_slot(
+    slots: Sequence[_Slot], solar_slots: Sequence[_SolarSlot]
+) -> list[float]:
+    """Map solar forecast energy onto each price slot."""
+    if not slots or not solar_slots:
+        return [0.0 for _ in slots]
+
+    energies: list[float] = []
+    for slot in slots:
+        total_kwh = 0.0
+        for solar_slot in solar_slots:
+            overlap_start = max(slot.start, solar_slot.start)
+            overlap_end = min(slot.end, solar_slot.end)
+            if overlap_end <= overlap_start:
+                continue
+            overlap_hours = (overlap_end - overlap_start).total_seconds() / 3600.0
+            total_kwh += solar_slot.power_kw * overlap_hours
+        energies.append(total_kwh)
+    return energies
+
+
+def _solar_reserve_profile(
+    slots: Sequence[_Slot],
+    solar_slots: Sequence[_SolarSlot],
+    capacity_kwh: float,
+    min_soc_kwh: float,
+) -> tuple[list[float], float]:
+    """Build a soft reserve profile that leaves room for forecast solar."""
+    solar_energy_by_slot = _solar_energy_by_price_slot(slots, solar_slots)
+    reserve_profile = [0.0 for _ in range(len(slots) + 1)]
+
+    if not any(energy > _EPSILON for energy in solar_energy_by_slot):
+        return reserve_profile, 0.0
+
+    max_headroom_kwh = max(0.0, capacity_kwh - min_soc_kwh)
+    cumulative = 0.0
+    for index in reversed(range(len(slots))):
+        cumulative += solar_energy_by_slot[index]
+        reserve_profile[index] = min(cumulative, max_headroom_kwh)
+
+    return reserve_profile, min(sum(solar_energy_by_slot), max_headroom_kwh)
+
+
+def _terminal_soc_value_per_kwh(
+    slots: Sequence[_Slot],
+    discharge_efficiency: float,
+) -> float:
+    """Estimate the value of one kWh stored at the horizon end."""
+    if not slots:
+        return 0.0
+
+    terminal_price = max(slots[-1].cost, 0.0)
+    if terminal_price <= 0:
+        return 0.0
+
+    return terminal_price * discharge_efficiency + 0.001
+
+
 def _legacy_default_entry(reference_time: datetime) -> _ScheduleEntry:
     """Build the default legacy schedule entry."""
     midnight = reference_time.replace(
@@ -173,12 +338,12 @@ def _legacy_default_entry(reference_time: datetime) -> _ScheduleEntry:
     return _ScheduleEntry(from_time=midnight, mode="maxuse")
 
 
-def _collapse_schedule(
+def _build_schedule_entries(
     slots: Sequence[_Slot],
     slot_modes: Sequence[str],
     slot_targets: Sequence[float | None] | None = None,
 ) -> list[dict[str, Any]]:
-    """Collapse per-slot modes into sequential schedule entries."""
+    """Build one schedule entry per input slot."""
     if not slots:
         return []
 
@@ -186,30 +351,20 @@ def _collapse_schedule(
         slot_targets = [None] * len(slots)
 
     entries: list[_ScheduleEntry] = []
-    index = 0
-    while index < len(slots):
+    for index, slot in enumerate(slots):
         mode = slot_modes[index]
-        segment_start = index
-        while index + 1 < len(slots) and slot_modes[index + 1] == mode:
-            index += 1
-        segment_end = index
-
         target_soc_pct = (
-            slot_targets[segment_end]
-            if mode in {"charge", "discharge", "sell"}
-            else None
+            slot_targets[index] if mode in {"charge", "discharge", "sell"} else None
         )
-
         entries.append(
             _ScheduleEntry(
-                from_time=slots[segment_start].start,
+                from_time=slot.start,
                 mode=mode,
                 target_soc_pct=target_soc_pct,
-                cost=slots[segment_start].cost,
-                credit=slots[segment_start].credit,
+                cost=slot.cost,
+                credit=slot.credit,
             )
         )
-        index += 1
 
     return [entry.as_dict() for entry in entries]
 
@@ -282,7 +437,7 @@ def build_legacy_schedule(
     rates: Sequence[Mapping[str, Any]],
     reference_time: datetime,
 ) -> list[dict[str, Any]]:
-    """Build the current fallback price-only schedule."""
+    """Build the current fallback legacy schedule."""
     slots = _legacy_slots_from_rates(rates, reference_time)
     default_entry = _legacy_default_entry(reference_time).as_dict()
 
@@ -295,10 +450,8 @@ def build_legacy_schedule(
         for index in range(len(slots))
     ]
 
-    schedule = _collapse_schedule(slots, slot_modes)
-    if schedule and schedule[0]["from"] != default_entry["from"]:
-        schedule.insert(0, default_entry)
-    elif not schedule:
+    schedule = _build_schedule_entries(slots, slot_modes)
+    if not schedule:
         schedule = [default_entry]
 
     return schedule
@@ -342,7 +495,7 @@ def _build_segment_schedule(
         slot_modes.append(mode)
         slot_targets.append(target_soc_pct)
 
-    return _collapse_schedule(slots, slot_modes, slot_targets)
+    return _build_schedule_entries(slots, slot_modes, slot_targets)
 
 
 def _resolve_current_target(
@@ -406,6 +559,8 @@ def _solve_with_highs(
     initial_soc_kwh: float,
     soc_min_kwh: float,
     soc_max_kwh: float,
+    solar_reserve_profile: Sequence[float] | None = None,
+    solar_shortfall_penalty: float = 0.0,
 ) -> _HighsSolveResult | None:
     """Solve the battery optimization model directly with HiGHS."""
     highs = highspy.Highs()
@@ -422,6 +577,7 @@ def _solve_with_highs(
     sell_mode_idx: list[int] = []
     idle_mode_idx: list[int] = []
     soc_idx: list[int] = []
+    solar_shortfall_idx: list[int] = []
 
     for slot_index, _slot in enumerate(slots):
         charge_idx.append(_add_highs_variable(highs, 0.0, charge_limit[slot_index]))
@@ -440,12 +596,28 @@ def _solve_with_highs(
     for _ in slots:
         soc_idx.append(_add_highs_variable(highs, soc_min_kwh, soc_max_kwh))
 
+    has_solar_reserve = bool(
+        solar_reserve_profile
+        and any(value > _EPSILON for value in solar_reserve_profile[1:])
+    )
+    if has_solar_reserve:
+        for _ in slots:
+            solar_shortfall_idx.append(_add_highs_variable(highs, 0.0, infinity))
+
     num_cols = highs.getNumCol()
     costs = np.zeros(num_cols, dtype=float)
     for slot_index, slot in enumerate(slots):
         costs[charge_idx[slot_index]] = slot.cost
         costs[discharge_idx[slot_index]] = -slot.cost
         costs[sell_idx[slot_index]] = -slot.credit
+        if has_solar_reserve:
+            costs[solar_shortfall_idx[slot_index]] = solar_shortfall_penalty
+
+    terminal_soc_value = _terminal_soc_value_per_kwh(
+        slots, inputs.discharge_efficiency
+    )
+    if terminal_soc_value > _EPSILON:
+        costs[soc_idx[-1]] = -terminal_soc_value
 
     status = highs.changeColsCost(
         num_cols,
@@ -510,6 +682,15 @@ def _solve_with_highs(
             ],
         )
 
+        if has_solar_reserve and solar_reserve_profile is not None:
+            _add_highs_row(
+                highs,
+                -infinity,
+                soc_max_kwh - solar_reserve_profile[slot_index + 1],
+                [soc_idx[slot_index + 1], solar_shortfall_idx[slot_index]],
+                [1.0, -1.0],
+            )
+
     try:
         run_status = highs.run()
     except Exception as exc:  # pragma: no cover - defensive solver guard
@@ -565,7 +746,7 @@ def _fallback_result(inputs: BatteryOptimizationInputs, reason: str) -> BatteryO
 def optimize_battery_schedule(
     inputs: BatteryOptimizationInputs,
 ) -> BatteryOptimizationResult:
-    """Optimize a battery schedule using price-only linear programming."""
+    """Optimize a battery schedule using price and solar forecast linear programming."""
     if not inputs.optimization_enabled:
         return _fallback_result(
             inputs, "Battery optimization is disabled; using legacy price schedule."
@@ -606,10 +787,26 @@ def optimize_battery_schedule(
             inputs, "No price slots were available; using legacy price schedule."
         )
 
+    solar_slots = _normalize_solar_slots(inputs)
+
     soc_min_kwh = inputs.capacity_kwh * (inputs.min_soc_pct / 100.0)
     soc_max_kwh = inputs.capacity_kwh * (inputs.max_soc_pct / 100.0)
     initial_soc_kwh = inputs.capacity_kwh * (current_soc_pct / 100.0)
     initial_soc_kwh = min(max(initial_soc_kwh, soc_min_kwh), soc_max_kwh)
+
+    solar_reserve_profile, solar_reserve_kwh = _solar_reserve_profile(
+        slots,
+        solar_slots,
+        inputs.capacity_kwh,
+        soc_min_kwh,
+    )
+    solar_shortfall_penalty = 0.0
+    if solar_reserve_kwh > _EPSILON:
+        solar_shortfall_penalty = max(
+            max((slot.cost for slot in slots), default=0.0),
+            max((slot.credit for slot in slots), default=0.0),
+            1.0,
+        )
 
     charge_limit = [
         inputs.max_charge_power_w * slot.duration_hours / 1000.0 for slot in slots
@@ -626,6 +823,8 @@ def optimize_battery_schedule(
         initial_soc_kwh,
         soc_min_kwh,
         soc_max_kwh,
+        solar_reserve_profile=solar_reserve_profile,
+        solar_shortfall_penalty=solar_shortfall_penalty,
     )
     if solve_result is None:
         return _fallback_result(
@@ -651,13 +850,19 @@ def optimize_battery_schedule(
         except (TypeError, ValueError):
             current_target = None
 
+    solar_reason = (
+        f" while reserving {solar_reserve_kwh:.1f}kWh for forecast solar"
+        if solar_reserve_kwh > _EPSILON
+        else ""
+    )
+
     return BatteryOptimizationResult(
         schedule=schedule,
         current_mode=current_mode,
         current_target_soc_pct=current_target,
         reason=(
             f"Optimized {inputs.horizon_hours:g}h price schedule with HiGHS "
-            f"from {current_soc_pct:.1f}% SoC."
+            f"from {current_soc_pct:.1f}% SoC{solar_reason}."
         ),
         optimized=True,
         solver="HIGHS",
