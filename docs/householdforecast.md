@@ -2,8 +2,8 @@
 
 ## Purpose
 
-An optional sensor that currently exposes a static household Load forecast
-placeholder while the quiet-night learning logic is being rebuilt.
+An optional sensor that currently exposes a fixed household Load forecast
+profile while the quiet-night learning logic is being rebuilt.
 
 The coordinator still keeps lifecycle housekeeping and persists a minimal state
 under `.storage/energyadvisor_household_forecast_<entry_id>`.
@@ -28,13 +28,13 @@ The sensor is only created when all three inputs are present.
 
 ## Output sensor
 
-**Default entity ID:** `sensor.energy_advisor_base_load` for the first config
+**Default entity ID:** `sensor.energy_advisor_load_forecast` for the first config
 entry. Additional entries receive the usual Home Assistant numeric suffixes,
-such as `sensor.energy_advisor_base_load_2`.
+such as `sensor.energy_advisor_load_forecast_2`.
 
 ### State
 
-Static household Load forecast placeholder in `kW` (currently `0.0`).
+Fixed household Load forecast value in `kW` (currently `0.5`).
 
 Unit: `kW` | Device class: `power`
 
@@ -42,7 +42,8 @@ Unit: `kW` | Device class: `power`
 
 | Attribute | Type | Description |
 |---|---|---|
-| `household_load_forecast_w` | float | Static placeholder in watts (`0.0`) |
+| `forecasts` | list[dict] | 192 entries for today+tomorrow (48 hours in 15-minute slots), each at `500 W` |
+| `household_load_forecast_w` | float | Fixed value in watts (`500.0`) |
 | `household_base_load_w` | float | Backward-compatible alias for `household_load_forecast_w` |
 | `learning_nights` | int | Always `0` while learning is disabled |
 | `data_since` | str \| null | Always `null` while learning is disabled |
@@ -52,4 +53,4 @@ Unit: `kW` | Device class: `power`
 
 The `reason` attribute currently reports:
 
-`Load forecast learning is disabled while the coordinator is being rebuilt.`
+`Household forecast learning is disabled; using a fixed 500 W profile.`

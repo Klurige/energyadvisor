@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 
 from ..const import (
+    ATTR_FORECASTS,
     CONF_EXCLUDE_FROM_RECORDING,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
@@ -26,6 +27,7 @@ class HouseholdForecastSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_native_unit_of_measurement = "kW"
     _attr_should_poll = False
+    _unrecorded_attributes = frozenset({ATTR_FORECASTS})
 
     def __init__(
         self,
@@ -61,12 +63,9 @@ class HouseholdForecastSensor(SensorEntity):
         self.async_write_ha_state()
 
     @property
-    def native_value(self) -> float | None:
+    def native_value(self) -> float:
         """Return the current load forecast in kW."""
-        load_forecast_kw = self._coordinator.load_forecast_kw
-        if load_forecast_kw is None:
-            return None
-        return round(load_forecast_kw, 3)
+        return round(self._coordinator.load_forecast_kw, 3)
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
@@ -74,6 +73,7 @@ class HouseholdForecastSensor(SensorEntity):
         household_load_forecast_w = self._coordinator.household_load_forecast_w
         last_sample_kw = self._coordinator.last_sample_kw
         return {
+            ATTR_FORECASTS: self._coordinator.forecast_slots,
             "household_load_forecast_w": (
                 round(household_load_forecast_w, 1)
                 if household_load_forecast_w is not None

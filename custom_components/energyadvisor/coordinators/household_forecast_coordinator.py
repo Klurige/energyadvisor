@@ -2,13 +2,14 @@
 
 The learning logic is intentionally disabled while the household forecast
 feature is rebuilt. The coordinator keeps lifecycle housekeeping and exposes a
-static placeholder value to the sensor.
+fixed 500 W profile for every 15-minute slot across today and tomorrow.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -18,6 +19,7 @@ from homeassistant.helpers.event import (
     async_track_time_change,
 )
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from ..const import (
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
@@ -31,14 +33,18 @@ WINDOW_START_HOUR = 1
 WINDOW_END_HOUR = 4
 STORE_VERSION = 1
 STORE_MODE = "static"
-STATIC_LOAD_FORECAST_KW = 0.0
+SLOT_MINUTES = 15
+FORECAST_HOURS = 48
+FORECAST_SLOT_COUNT = int((FORECAST_HOURS * 60) / SLOT_MINUTES)
+STATIC_LOAD_FORECAST_W = 500.0
+STATIC_LOAD_FORECAST_KW = STATIC_LOAD_FORECAST_W / 1000.0
 STATIC_REASON = (
-    "Load forecast learning is disabled while the coordinator is being rebuilt."
+    "Household forecast learning is disabled; using a fixed 500 W profile."
 )
 
 
 class HouseholdForecastCoordinator:
-    """Expose a static household Load forecast placeholder and keep housekeeping."""
+    """Expose a fixed household Load forecast profile and keep housekeeping."""
 
     def __init__(
         self,
@@ -76,7 +82,7 @@ class HouseholdForecastCoordinator:
 
     @property
     def load_forecast_kw(self) -> float:
-        """Return the static placeholder household load forecast."""
+        """Return the fixed household load forecast."""
         return self._load_forecast_kw
 
     @property
@@ -86,13 +92,30 @@ class HouseholdForecastCoordinator:
 
     @property
     def household_load_forecast_w(self) -> float:
-        """Return the static placeholder household load forecast in watts."""
+        """Return the fixed household load forecast in watts."""
         return self._load_forecast_kw * 1000.0
 
     @property
     def household_base_load_w(self) -> float:
         """Backward-compatible alias for load forecast in watts."""
         return self.household_load_forecast_w
+
+    @property
+    def forecast_slots(self) -> list[dict[str, object]]:
+        """Return fixed 15-minute load slots for today and tomorrow."""
+        start_local = dt_util.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        slots: list[dict[str, object]] = []
+        for index in range(FORECAST_SLOT_COUNT):
+            slot_start = start_local + timedelta(minutes=SLOT_MINUTES * index)
+            slot_end = slot_start + timedelta(minutes=SLOT_MINUTES)
+            slots.append(
+                {
+                    "start": slot_start.strftime("%Y-%m-%dT%H:%M"),
+                    "end": slot_end.strftime("%Y-%m-%dT%H:%M"),
+                    "load_w": STATIC_LOAD_FORECAST_W,
+                }
+            )
+        return slots
 
     @property
     def learning_nights(self) -> int:

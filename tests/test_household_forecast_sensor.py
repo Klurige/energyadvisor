@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.energyadvisor.const import CONF_EXCLUDE_FROM_RECORDING
+from custom_components.energyadvisor.const import (
+    ATTR_FORECASTS,
+    CONF_EXCLUDE_FROM_RECORDING,
+)
 from custom_components.energyadvisor.coordinators.household_forecast_coordinator import (
+    FORECAST_SLOT_COUNT,
+    SLOT_MINUTES,
     HouseholdForecastCoordinator,
     STATIC_LOAD_FORECAST_KW,
+    STATIC_LOAD_FORECAST_W,
     STATIC_REASON,
     STORE_MODE,
 )
@@ -29,9 +36,12 @@ def _make_sensor(
     data_since: str | None = None,
     last_sample_date: str | None = None,
     last_sample_kw: float | None = None,
+    forecast_slots: list[dict[str, object]] | None = None,
     reason: str = STATIC_REASON,
 ) -> HouseholdForecastSensor:
     """Create a household forecast sensor backed by a lightweight stub."""
+    if forecast_slots is None:
+        forecast_slots = []
     coordinator = SimpleNamespace(
         load_forecast_kw=load_forecast_kw,
         base_load_kw=load_forecast_kw,
@@ -41,6 +51,7 @@ def _make_sensor(
         data_since=data_since,
         last_sample_date=last_sample_date,
         last_sample_kw=last_sample_kw,
+        forecast_slots=forecast_slots,
         reason=reason,
         register_update_callback=MagicMock(),
         unregister_update_callback=MagicMock(),
@@ -77,14 +88,15 @@ def test_sensor_uses_preferred_entity_id_and_exposes_static_values() -> None:
     assert BaseLoadSensor is HouseholdForecastSensor
     sensor = _make_sensor(exclude_from_recording=False)
 
-    assert sensor.entity_id == "sensor.energy_advisor_base_load"
+    assert sensor.entity_id == "sensor.energy_advisor_load_forecast"
     assert sensor._attr_suggested_object_id == "load_forecast"
     assert sensor._attr_exclude_from_recording is False
-    assert sensor.native_value == 0.0
+    assert sensor.native_value == STATIC_LOAD_FORECAST_KW
 
     attrs = sensor.extra_state_attributes
-    assert attrs["household_load_forecast_w"] == 0.0
-    assert attrs["household_base_load_w"] == 0.0
+    assert attrs[ATTR_FORECASTS] == []
+    assert attrs["household_load_forecast_w"] == STATIC_LOAD_FORECAST_W
+    assert attrs["household_base_load_w"] == STATIC_LOAD_FORECAST_W
     assert attrs["learning_nights"] == 0
     assert attrs["data_since"] is None
     assert attrs["last_sample_date"] is None
@@ -94,18 +106,27 @@ def test_sensor_uses_preferred_entity_id_and_exposes_static_values() -> None:
 
 def test_sensor_rounds_values_from_coordinator() -> None:
     """The sensor should still round values from its coordinator surface."""
+    forecast_slots = [
+        {
+            "start": "2026-09-01T00:00",
+            "end": "2026-09-01T00:15",
+            "load_w": 500.0,
+        }
+    ]
     sensor = _make_sensor(
         load_forecast_kw=0.8765,
         learning_nights=4,
         data_since="2024-06-01",
         last_sample_date="2024-06-04",
         last_sample_kw=0.9123,
+        forecast_slots=forecast_slots,
         reason="Static placeholder value.",
     )
 
     attrs = sensor.extra_state_attributes
 
     assert sensor.native_value == 0.876
+    assert attrs[ATTR_FORECASTS] == forecast_slots
     assert attrs["household_load_forecast_w"] == 876.5
     assert attrs["household_base_load_w"] == 876.5
     assert attrs["learning_nights"] == 4
@@ -118,11 +139,28 @@ def test_sensor_rounds_values_from_coordinator() -> None:
 def test_coordinator_exposes_static_placeholder_values() -> None:
     """The coordinator should expose a static value while learning is disabled."""
     coordinator = _make_coordinator()
+    slots = coordinator.forecast_slots
+    first_start = datetime.fromisoformat(str(slots[0]["start"]))
+    last_start = datetime.fromisoformat(str(slots[-1]["start"]))
+    first_end = datetime.fromisoformat(str(slots[0]["end"]))
+    last_end = datetime.fromisoformat(str(slots[-1]["end"]))
+    slot_dates = {datetime.fromisoformat(str(slot["start"])).date() for slot in slots}
 
     assert coordinator.load_forecast_kw == STATIC_LOAD_FORECAST_KW
     assert coordinator.base_load_kw == STATIC_LOAD_FORECAST_KW
     assert coordinator.household_load_forecast_w == STATIC_LOAD_FORECAST_KW * 1000.0
     assert coordinator.household_base_load_w == STATIC_LOAD_FORECAST_KW * 1000.0
+    assert len(slots) == FORECAST_SLOT_COUNT
+    assert first_start.hour == 0
+    assert first_start.minute == 0
+    assert len(slot_dates) == 2
+    assert max(slot_dates) - min(slot_dates) == timedelta(days=1)
+    assert first_end - first_start == timedelta(minutes=SLOT_MINUTES)
+    assert last_start - first_start == timedelta(
+        minutes=SLOT_MINUTES * (FORECAST_SLOT_COUNT - 1)
+    )
+    assert last_end - first_start == timedelta(minutes=SLOT_MINUTES * FORECAST_SLOT_COUNT)
+    assert all(slot["load_w"] == STATIC_LOAD_FORECAST_W for slot in slots)
     assert coordinator.learning_nights == 0
     assert coordinator.data_since is None
     assert coordinator.last_sample_date is None

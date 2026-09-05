@@ -176,7 +176,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
         "price": "sensor.energy_advisor_price",
         "compactlevels": "sensor.energy_advisor_compact_levels",
         "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
-        "base_load": "sensor.energy_advisor_base_load_refined",
+        "base_load": "sensor.energy_advisor_load_forecast_refined",
         "solarforecast": "sensor.energy_advisor_solar_forecast_refined",
     }
 
@@ -200,7 +200,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
         "restored-placeholder",
     )
     hass.states.async_set(
-        "sensor.energy_advisor_base_load",
+        "sensor.energy_advisor_load_forecast",
         "restored-placeholder",
     )
     await _async_migrate_entity_registry(hass, entry)

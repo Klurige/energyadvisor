@@ -70,7 +70,7 @@ agent or computer restarts.
   - `sensor.energy_advisor_battery_charge_mode` currently uses a price-aware
     linear program and reserves battery headroom for the configured solar
     forecast when available
-  - `sensor.energy_advisor_base_load` currently exposes a static placeholder
+  - `sensor.energy_advisor_load_forecast` currently exposes a static placeholder
     while quiet-night household Load forecast learning is being rebuilt
 - Wired into config storage and not currently used by runtime planning:
   - `battery_soc_entity`

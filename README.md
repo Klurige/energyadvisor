@@ -100,7 +100,8 @@ inputs for future forecast-aware work:
 
 When `power_meter_consumption`, `water_heater_active_entity`, and
 `central_heating_active_entity` are configured together, Energy Advisor also
-creates `sensor.energy_advisor_base_load` with a static Load forecast placeholder value.
+creates `sensor.energy_advisor_load_forecast` with a fixed `0.5 kW` Load
+forecast value and 15-minute slot attributes for today+tomorrow.
 See [docs/householdforecast.md](docs/householdforecast.md) for current
 attributes and status messaging.
 
@@ -112,17 +113,23 @@ When `exclude_from_recording` is `true` (default), Home Assistant recorder/histo
 - `sensor.energy_advisor_price`
 - `sensor.energy_advisor_compact_levels`
 - `sensor.energy_advisor_battery_charge_mode`
-- `sensor.energy_advisor_base_load` when the household inputs are configured
+- `sensor.energy_advisor_load_forecast` when the household inputs are configured
 - `sensor.energy_advisor_solar_forecast` when the solar forecast feature is configured
 
-In addition, the `rates` attribute on `sensor.energy_advisor_price`, the `modes` attribute on `sensor.energy_advisor_battery_charge_mode`, and the `forecasts` attribute on `sensor.energy_advisor_solar_forecast` are excluded from recorder attribute storage to avoid oversized state attributes.
+In addition, the `rates` attribute on `sensor.energy_advisor_price`, the `modes`
+attribute on `sensor.energy_advisor_battery_charge_mode`, and the `forecasts`
+attributes on `sensor.energy_advisor_solar_forecast` and
+`sensor.energy_advisor_load_forecast` are excluded from recorder attribute
+storage to avoid oversized state attributes.
 
 ## Usage
-- The integration adds two price sensors, one battery charge mode sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_base_load` when the household meter inputs are configured, and `sensor.energy_advisor_solar_forecast` when the optional solar sensor is enabled. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
+- The integration adds two price sensors, one battery charge mode sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_load_forecast` when the household meter inputs are configured, and `sensor.energy_advisor_solar_forecast` when the optional solar sensor is enabled. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
   - `sensor.energy_advisor_battery_charge_mode` provides the battery optimizer's current recommendation and sequential 15-minute schedule, including solar headroom reservation when a solar forecast is configured.
-  - `sensor.energy_advisor_base_load` currently provides a static household Load forecast placeholder while forecast learning is rebuilt.
+  - `sensor.energy_advisor_load_forecast` currently provides a fixed household
+    Load forecast profile (`0.5 kW` and 15-minute `forecasts` entries for
+    today+tomorrow) while forecast learning is rebuilt.
   - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).
