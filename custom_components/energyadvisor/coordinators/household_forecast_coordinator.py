@@ -2,14 +2,14 @@
 
 The learning logic is intentionally disabled while the household forecast
 feature is rebuilt. The coordinator keeps lifecycle housekeeping and exposes a
-fixed 500 W profile for every 15-minute slot across today and tomorrow.
+fixed 0.5 kW profile for every 15-minute slot across the 48-hour horizon.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -58,6 +58,7 @@ class HouseholdForecastCoordinator:
         self._update_callbacks: list[Callable[[], None]] = []
         self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
         self._status_message: str = STATIC_REASON
+        self._last_forecast_generation = dt_util.now().strftime("%Y-%m-%dT%H:%M")
         self._store = Store(
             hass,
             STORE_VERSION,
@@ -102,17 +103,15 @@ class HouseholdForecastCoordinator:
 
     @property
     def forecast_slots(self) -> list[dict[str, object]]:
-        """Return fixed 15-minute load slots for today and tomorrow."""
+        """Return fixed 15-minute load slots for the 48-hour horizon."""
         start_local = dt_util.now().replace(hour=0, minute=0, second=0, microsecond=0)
         slots: list[dict[str, object]] = []
         for index in range(FORECAST_SLOT_COUNT):
             slot_start = start_local + timedelta(minutes=SLOT_MINUTES * index)
-            slot_end = slot_start + timedelta(minutes=SLOT_MINUTES)
             slots.append(
                 {
-                    "start": slot_start.strftime("%Y-%m-%dT%H:%M"),
-                    "end": slot_end.strftime("%Y-%m-%dT%H:%M"),
-                    "load_w": STATIC_LOAD_FORECAST_W,
+                    "from": slot_start.strftime("%Y-%m-%dT%H:%M"),
+                    "load": self.load_forecast_kw,
                 }
             )
         return slots
@@ -141,6 +140,11 @@ class HouseholdForecastCoordinator:
     def reason(self) -> str:
         """Return a human-readable status message."""
         return self._status_message
+
+    @property
+    def last_forecast_generation(self) -> str:
+        """Return the timestamp of the last forecast shell generation."""
+        return self._last_forecast_generation
 
     # -- Lifecycle -------------------------------------------------------
 
@@ -184,6 +188,18 @@ class HouseholdForecastCoordinator:
                 minute=0,
                 second=0,
             )
+        )
+        self._listeners.append(
+            async_track_time_change(
+                self.hass,
+                self._handle_forecast_refresh,
+                minute=[0, 15, 30, 45],
+                second=0,
+            )
+        )
+        _LOGGER.info(
+            "Household forecast refresh cadence set to quarter-hour for validation; "
+            "the 15-minute slot grid remains day-anchored."
         )
         self._set_status(STATIC_REASON)
 
@@ -294,6 +310,16 @@ class HouseholdForecastCoordinator:
     def _handle_quiet_sensor_change(self, _event) -> None:
         """Retained for structure while learning is disabled."""
         self._set_status(STATIC_REASON)
+
+    @callback
+    def _handle_forecast_refresh(self, _now=None) -> None:
+        """Refresh the forecast shell on the validation heartbeat."""
+        self._last_forecast_generation = dt_util.now().strftime("%Y-%m-%dT%H:%M")
+        _LOGGER.info(
+            "Household forecast refresh tick at %s: republishing the day-anchored shell",
+            self._last_forecast_generation,
+        )
+        self._notify_update()
 
     @callback
     def _handle_window_finish(self, _now=None) -> None:

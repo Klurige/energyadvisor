@@ -7,6 +7,10 @@ profile while the quiet-night learning logic is being rebuilt.
 
 The coordinator still keeps lifecycle housekeeping and persists a minimal state
 under `.storage/energyadvisor_household_forecast_<entry_id>`.
+The forecast shell is anchored to local midnight and refreshes on quarter-hour
+boundaries without moving already-published historical slots. The
+`last_forecast_generation` attribute advances on each refresh so HA shows the
+update even when the forecast values themselves are unchanged.
 
 ---
 
@@ -42,13 +46,14 @@ Unit: `kW` | Device class: `power`
 
 | Attribute | Type | Description |
 |---|---|---|
-| `forecasts` | list[dict] | 192 entries for today+tomorrow (48 hours in 15-minute slots), each at `500 W` |
+| `forecasts` | list[dict] | 192 entries for the 48-hour horizon in 15-minute slots; each item has local `from` and `load` fields anchored to the current day |
 | `household_load_forecast_w` | float | Fixed value in watts (`500.0`) |
 | `household_base_load_w` | float | Backward-compatible alias for `household_load_forecast_w` |
 | `learning_nights` | int | Always `0` while learning is disabled |
 | `data_since` | str \| null | Always `null` while learning is disabled |
 | `last_sample_date` | str \| null | Always `null` while learning is disabled |
 | `last_sample_kw` | float \| null | Always `null` while learning is disabled |
+| `last_forecast_generation` | str | Local `YYYY-MM-DDTHH:MM` timestamp of the latest republish |
 | `reason` | str | Human-readable status message |
 
 The `reason` attribute currently reports:

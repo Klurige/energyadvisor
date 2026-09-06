@@ -332,19 +332,19 @@ The next Copilot session should start by reading the latest filled summary.
 
 ### Step 1 summary - Contract shell
 
-- Status: `TBD`
-- Files changed: `TBD`
-- What was implemented: `TBD`
-- Output contract check (state + 192 slots + from/load format): `TBD`
-- Handover to Step 2: `TBD`
+- Status: `done`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `custom_components/energyadvisor/sensor/householdforecastsensor.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `docs/householdforecast.md`
+- What was implemented: The household forecast sensor now exposes a 192-slot `forecasts` array using local `from`/`load` entries anchored to local midnight, while keeping the existing static 0.5 kW shell in place.
+- Output contract check (state + 192 slots + from/load format): `state` stays at 0.5 kW; `forecasts` length is 192; every slot has only `from` and `load`, and historical slots remain fixed when the shell refreshes.
+- Handover to Step 2: add the scheduler heartbeat so the forecast shell can refresh quickly without shifting the midnight anchor.
 
 ### Step 2 summary - 15-minute scheduler
 
-- Status: `TBD`
-- Files changed: `TBD`
-- What was implemented: `TBD`
-- Quarter-hour refresh behavior observed: `TBD`
-- Handover to Step 3: `TBD`
+- Status: `done`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `docs/householdforecast.md`
+- What was implemented: Added a quarter-hour heartbeat that triggers the same forecast refresh callback, so the 192-slot shell is republished on `:00`, `:15`, `:30`, and `:45` while keeping the midnight anchor fixed. A `last_forecast_generation` attribute now changes on each tick so HA surfaces the update.
+- Quarter-hour refresh behavior observed: The coordinator now registers a dedicated refresh listener and the sensor updates through the shared update callback path while previously published slots stay fixed. The generation timestamp advances on each tick, so HA can show the refresh even when the forecast values are unchanged.
+- Handover to Step 3: add raw sample capture and persistence schema so refreshes can survive restart with real history instead of the static shell.
 
 ### Step 3 summary - Raw capture and DB schema
 

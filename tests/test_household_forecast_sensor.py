@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -36,6 +36,7 @@ def _make_sensor(
     data_since: str | None = None,
     last_sample_date: str | None = None,
     last_sample_kw: float | None = None,
+    last_forecast_generation: str | None = "2026-09-01T00:00",
     forecast_slots: list[dict[str, object]] | None = None,
     reason: str = STATIC_REASON,
 ) -> HouseholdForecastSensor:
@@ -51,6 +52,7 @@ def _make_sensor(
         data_since=data_since,
         last_sample_date=last_sample_date,
         last_sample_kw=last_sample_kw,
+        last_forecast_generation=last_forecast_generation,
         forecast_slots=forecast_slots,
         reason=reason,
         register_update_callback=MagicMock(),
@@ -101,6 +103,7 @@ def test_sensor_uses_preferred_entity_id_and_exposes_static_values() -> None:
     assert attrs["data_since"] is None
     assert attrs["last_sample_date"] is None
     assert attrs["last_sample_kw"] is None
+    assert attrs["last_forecast_generation"] == "2026-09-01T00:00"
     assert attrs["reason"] == STATIC_REASON
 
 
@@ -108,9 +111,8 @@ def test_sensor_rounds_values_from_coordinator() -> None:
     """The sensor should still round values from its coordinator surface."""
     forecast_slots = [
         {
-            "start": "2026-09-01T00:00",
-            "end": "2026-09-01T00:15",
-            "load_w": 500.0,
+            "from": "2026-09-01T00:00",
+            "load": 0.8765,
         }
     ]
     sensor = _make_sensor(
@@ -133,18 +135,23 @@ def test_sensor_rounds_values_from_coordinator() -> None:
     assert attrs["data_since"] == "2024-06-01"
     assert attrs["last_sample_date"] == "2024-06-04"
     assert attrs["last_sample_kw"] == 0.912
+    assert attrs["last_forecast_generation"] == "2026-09-01T00:00"
     assert attrs["reason"] == "Static placeholder value."
 
 
 def test_coordinator_exposes_static_placeholder_values() -> None:
     """The coordinator should expose a static value while learning is disabled."""
     coordinator = _make_coordinator()
-    slots = coordinator.forecast_slots
-    first_start = datetime.fromisoformat(str(slots[0]["start"]))
-    last_start = datetime.fromisoformat(str(slots[-1]["start"]))
-    first_end = datetime.fromisoformat(str(slots[0]["end"]))
-    last_end = datetime.fromisoformat(str(slots[-1]["end"]))
-    slot_dates = {datetime.fromisoformat(str(slot["start"])).date() for slot in slots}
+    fixed_now = datetime(2026, 9, 5, 18, 24, 12, tzinfo=timezone.utc)
+    with patch(
+        "custom_components.energyadvisor.coordinators.household_forecast_coordinator.dt_util.now",
+        return_value=fixed_now,
+    ):
+        slots = coordinator.forecast_slots
+
+    slot_starts = [datetime.fromisoformat(str(slot["from"])) for slot in slots]
+    first_start = slot_starts[0]
+    last_start = slot_starts[-1]
 
     assert coordinator.load_forecast_kw == STATIC_LOAD_FORECAST_KW
     assert coordinator.base_load_kw == STATIC_LOAD_FORECAST_KW
@@ -153,14 +160,20 @@ def test_coordinator_exposes_static_placeholder_values() -> None:
     assert len(slots) == FORECAST_SLOT_COUNT
     assert first_start.hour == 0
     assert first_start.minute == 0
-    assert len(slot_dates) == 2
-    assert max(slot_dates) - min(slot_dates) == timedelta(days=1)
-    assert first_end - first_start == timedelta(minutes=SLOT_MINUTES)
+    assert first_start.second == 0
+    assert all(set(slot) == {"from", "load"} for slot in slots)
+    assert all(slot["load"] == STATIC_LOAD_FORECAST_KW for slot in slots)
+    assert all(
+        slot_starts[index + 1] - slot_starts[index] == timedelta(minutes=SLOT_MINUTES)
+        for index in range(len(slot_starts) - 1)
+    )
     assert last_start - first_start == timedelta(
         minutes=SLOT_MINUTES * (FORECAST_SLOT_COUNT - 1)
     )
-    assert last_end - first_start == timedelta(minutes=SLOT_MINUTES * FORECAST_SLOT_COUNT)
-    assert all(slot["load_w"] == STATIC_LOAD_FORECAST_W for slot in slots)
+    assert {slot_starts[0].date(), slot_starts[-1].date()} == {
+        slot_starts[0].date(),
+        slot_starts[0].date() + timedelta(days=1),
+    }
     assert coordinator.learning_nights == 0
     assert coordinator.data_since is None
     assert coordinator.last_sample_date is None
@@ -176,11 +189,31 @@ def test_coordinator_callbacks_keep_static_behavior() -> None:
     coordinator._handle_quiet_sensor_change(
         SimpleNamespace(data={"new_state": SimpleNamespace(state="on")})
     )
+    coordinator._handle_forecast_refresh()
     coordinator._handle_window_finish()
 
     assert coordinator.load_forecast_kw == STATIC_LOAD_FORECAST_KW
     assert coordinator.learning_nights == 0
     assert coordinator.reason == STATIC_REASON
+
+
+def test_coordinator_refresh_updates_generation_timestamp() -> None:
+    """The refresh heartbeat should update the visible generation marker."""
+    with patch(
+        "custom_components.energyadvisor.coordinators.household_forecast_coordinator.dt_util.now",
+        side_effect=[
+            datetime(2026, 9, 5, 18, 24, 12, tzinfo=timezone.utc),
+            datetime(2026, 9, 5, 18, 25, 12, tzinfo=timezone.utc),
+        ],
+    ):
+        coordinator = _make_coordinator()
+        before = coordinator.last_forecast_generation
+        coordinator._handle_forecast_refresh()
+        after = coordinator.last_forecast_generation
+
+    assert before == "2026-09-05T18:24"
+    assert after == "2026-09-05T18:25"
+    assert after != before
 
 
 @pytest.mark.asyncio
@@ -206,11 +239,11 @@ async def test_coordinator_setup_normalizes_legacy_storage() -> None:
         patch(
             "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_state_change_event",
             return_value=lambda: None,
-        ),
+        ) as mock_state_change,
         patch(
             "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_change",
             return_value=lambda: None,
-        ),
+        ) as mock_time_change,
     ):
         store = MagicMock()
         store.async_load = AsyncMock(return_value=payload)
@@ -222,7 +255,13 @@ async def test_coordinator_setup_normalizes_legacy_storage() -> None:
 
     assert coordinator.load_forecast_kw == STATIC_LOAD_FORECAST_KW
     assert coordinator.reason == STATIC_REASON
-    assert len(coordinator._listeners) == 3
+    assert len(coordinator._listeners) == 4
+    assert mock_state_change.call_count == 1
+    assert mock_time_change.call_count == 3
+    assert any(
+        call.kwargs.get("minute") == [0, 15, 30, 45]
+        for call in mock_time_change.call_args_list
+    )
     store.async_save.assert_awaited_once_with(
         {"mode": STORE_MODE, "load_forecast_kw": STATIC_LOAD_FORECAST_KW}
     )

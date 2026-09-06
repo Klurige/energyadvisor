@@ -21,7 +21,7 @@ from ..coordinators.household_forecast_coordinator import HouseholdForecastCoord
 
 
 class HouseholdForecastSensor(SensorEntity):
-    """Expose the household load forecast value."""
+    """Expose the household load forecast value and forecast contract."""
 
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.POWER
@@ -65,6 +65,13 @@ class HouseholdForecastSensor(SensorEntity):
     @property
     def native_value(self) -> float:
         """Return the current load forecast in kW."""
+        forecast_slots = self._coordinator.forecast_slots
+        if forecast_slots:
+            first_slot = forecast_slots[0]
+            try:
+                return round(float(first_slot["load"]), 3)
+            except (KeyError, TypeError, ValueError):
+                pass
         return round(self._coordinator.load_forecast_kw, 3)
 
     @property
@@ -74,6 +81,9 @@ class HouseholdForecastSensor(SensorEntity):
         last_sample_kw = self._coordinator.last_sample_kw
         return {
             ATTR_FORECASTS: self._coordinator.forecast_slots,
+            "last_forecast_generation": getattr(
+                self._coordinator, "last_forecast_generation", None
+            ),
             "household_load_forecast_w": (
                 round(household_load_forecast_w, 1)
                 if household_load_forecast_w is not None
