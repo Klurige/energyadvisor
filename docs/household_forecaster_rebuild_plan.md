@@ -348,11 +348,11 @@ The next Copilot session should start by reading the latest filled summary.
 
 ### Step 3 summary - Raw capture and DB schema
 
-- Status: `TBD`
-- Files changed: `TBD`
-- What was implemented: `TBD`
-- DB schema/retention/checkpoint notes: `TBD`
-- Handover to Step 4: `TBD`
+- Status: `done`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_coordinator.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `docs/householdforecast.md`
+- What was implemented: The coordinator now opens `.storage/energyadvisor_household_forecast_<entry_id>.db`, creates the planned raw capture schema, captures raw numeric samples and quiet-night event rows for the configured household entities, and reloads the latest persisted rows on restart.
+- DB schema/retention/checkpoint notes: The SQLite file now includes `raw_samples`, `interval_energy`, `raw_events`, `slot_rows`, `forecast_runs`, and `meta`; raw rows are pruned on a daily heartbeat with 21-day retention, `slot_rows` retain 180 days, and `forecast_runs` retain 14 days.
+- Handover to Step 4: use the persisted raw meter history to convert interval deltas into `interval_energy` and then into slot-level load rows.
 
 ### Step 4 summary - Energy-delta aggregation
 

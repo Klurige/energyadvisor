@@ -6,7 +6,8 @@ An optional sensor that currently exposes a fixed household Load forecast
 profile while the quiet-night learning logic is being rebuilt.
 
 The coordinator still keeps lifecycle housekeeping and persists a minimal state
-under `.storage/energyadvisor_household_forecast_<entry_id>`.
+through Home Assistant storage, while raw samples and quiet-night event history
+are written to `.storage/energyadvisor_household_forecast_<entry_id>.db`.
 The forecast shell is anchored to local midnight and refreshes on quarter-hour
 boundaries without moving already-published historical slots. The
 `last_forecast_generation` attribute advances on each refresh so HA shows the

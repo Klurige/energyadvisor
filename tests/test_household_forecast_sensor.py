@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -71,6 +72,11 @@ def _make_coordinator(
     """Create a coordinator with a lightweight Home Assistant/config stub."""
     hass = MagicMock()
     hass.async_create_task = MagicMock(side_effect=lambda coro: None)
+    hass.async_add_executor_job = AsyncMock(side_effect=lambda func, *args: func(*args))
+    hass.config = SimpleNamespace(
+        config_dir=tempfile.mkdtemp(prefix="energyadvisor-household-")
+    )
+    hass.states = MagicMock()
 
     entry = MagicMock()
     entry.entry_id = "entry-id"
@@ -244,6 +250,10 @@ async def test_coordinator_setup_normalizes_legacy_storage() -> None:
             "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_change",
             return_value=lambda: None,
         ) as mock_time_change,
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_interval",
+            return_value=lambda: None,
+        ) as mock_time_interval,
     ):
         store = MagicMock()
         store.async_load = AsyncMock(return_value=payload)
@@ -256,8 +266,9 @@ async def test_coordinator_setup_normalizes_legacy_storage() -> None:
     assert coordinator.load_forecast_kw == STATIC_LOAD_FORECAST_KW
     assert coordinator.reason == STATIC_REASON
     assert len(coordinator._listeners) == 4
-    assert mock_state_change.call_count == 1
+    assert mock_state_change.call_count == 2
     assert mock_time_change.call_count == 3
+    assert mock_time_interval.call_count == 1
     assert any(
         call.kwargs.get("minute") == [0, 15, 30, 45]
         for call in mock_time_change.call_args_list
