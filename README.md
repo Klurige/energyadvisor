@@ -108,7 +108,8 @@ boundaries without moving already-published historical slots. The
 `last_forecast_generation` attribute advances on each refresh so HA shows the
 update even when the forecast values themselves are unchanged. A companion
 SQLite history file at `.storage/energyadvisor_household_forecast_<entry_id>.db`
-stores the raw meter samples and quiet-night event rows for the rebuild.
+stores the raw meter samples, interval-energy rows, slot rows, forecast
+checkpoints, and quiet-night event rows for the rebuild.
 See [docs/householdforecast.md](docs/householdforecast.md) for current
 attributes and status messaging.
 

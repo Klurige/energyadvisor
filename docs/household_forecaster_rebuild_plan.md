@@ -356,11 +356,11 @@ The next Copilot session should start by reading the latest filled summary.
 
 ### Step 4 summary - Energy-delta aggregation
 
-- Status: `TBD`
-- Files changed: `TBD`
-- What was implemented: `TBD`
-- Interval/cadence/gap handling outcome: `TBD`
-- Handover to Step 5: `TBD`
+- Status: `done`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_coordinator.py`, `docs/household_forecaster_rebuild_plan.md`
+- What was implemented: The coordinator now rebuilds `interval_energy` from retained raw meter samples, allocates interval energy into closed 15-minute `slot_rows`, persists 192-slot `forecast_runs` when history exists, and stores `last_finalized_slot_utc` / `last_generation_utc` checkpoints.
+- Interval/cadence/gap handling outcome: Power and energy-counter samples are normalized to kW/kWh before aggregation; intervals longer than 300 s are marked `sparse_gap`, and the slot quality score is reduced when sparse intervals contribute to a slot.
+- Handover to Step 5: Fit the statistical baseline on top of the persisted slot rows while keeping the new interval-energy checkpoint flow intact.
 
 ### Step 5 summary - Baseline statistical model
 

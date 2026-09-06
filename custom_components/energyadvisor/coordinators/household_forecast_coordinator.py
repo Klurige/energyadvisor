@@ -9,6 +9,8 @@ steps can rebuild the forecast from stored samples.
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import logging
 import os
 import re
@@ -51,15 +53,20 @@ STATIC_LOAD_FORECAST_KW = STATIC_LOAD_FORECAST_W / 1000.0
 STATIC_REASON = (
     "Household forecast learning is disabled; using a fixed 500 W profile."
 )
+MAX_INTERVAL_FOR_SPIKES_SEC = 120
+MAX_INTERVAL_FOR_TRAINING_SEC = 300
+HARD_GAP_SEC = 1800
 RAW_REQUIRED_POLL_INTERVAL = timedelta(seconds=60)
 RAW_OPTIONAL_POLL_INTERVAL = timedelta(seconds=120)
-RAW_HEARTBEAT_SECONDS = 120.0
+RAW_HEARTBEAT_SECONDS = float(MAX_INTERVAL_FOR_SPIKES_SEC)
 RAW_SAMPLE_RETENTION_DAYS = 21
 SLOT_ROW_RETENTION_DAYS = 180
 FORECAST_RUN_RETENTION_DAYS = 14
 _NUMERIC_STATE_PATTERN = re.compile(r"[-+]?(?:\d+(?:[.,]\d*)?|[.,]\d+)")
 _ACTIVE_EVENT_STATES = {"on", "true", "active", "heating", "home"}
 _INACTIVE_EVENT_STATES = {"off", "false", "inactive", "idle", "standby"}
+_POWER_UNITS = {"w", "kw", "mw"}
+_ENERGY_UNITS = {"wh", "kwh", "mwh"}
 
 
 @dataclass(slots=True)
@@ -88,6 +95,39 @@ class _LatestEventSample:
     ts_utc: datetime
     state_num: float
     state_text: str
+
+
+@dataclass(slots=True)
+class _RawMeterSample:
+    """Track one raw meter sample loaded from SQLite."""
+
+    ts_utc: datetime
+    value: float
+    unit: str | None
+    quality: str
+
+
+@dataclass(slots=True)
+class _IntervalEnergyRow:
+    """Track one interval-energy row derived from consecutive meter samples."""
+
+    ts_from_utc: datetime
+    ts_to_utc: datetime
+    delta_kwh: float
+    interval_sec: int
+    interval_kw: float
+    quality: str
+
+
+@dataclass(slots=True)
+class _SlotAccumulator:
+    """Accumulate interval energy into one 15-minute slot."""
+
+    slot_start_utc: datetime
+    slot_energy_kwh: float = 0.0
+    observed_seconds: float = 0.0
+    sample_count: int = 0
+    sparse_interval_count: int = 0
 
 
 class HouseholdForecastCoordinator:
@@ -120,6 +160,8 @@ class HouseholdForecastCoordinator:
         self._latest_event_samples: dict[str, _LatestEventSample] = {}
         self._last_polled_utc_by_key: dict[str, datetime] = {}
         self._last_raw_prune_utc: datetime | None = None
+        self._last_finalized_slot_utc: datetime | None = None
+        self._last_generation_utc: datetime | None = None
 
     # -- Config helpers --------------------------------------------------
 
@@ -276,6 +318,11 @@ class HouseholdForecastCoordinator:
             "the 15-minute slot grid remains day-anchored."
         )
         self._set_status(STATIC_REASON)
+        rebuild_now = dt_util.utcnow()
+        if await self._async_finalize_history(rebuild_now):
+            self._last_forecast_generation = dt_util.as_local(rebuild_now).strftime(
+                "%Y-%m-%dT%H:%M"
+            )
 
     async def async_shutdown(self) -> None:
         """Remove listeners and stop scheduling updates."""
@@ -393,11 +440,13 @@ class HouseholdForecastCoordinator:
     @callback
     def _handle_forecast_refresh(self, _now=None) -> None:
         """Refresh the forecast shell on the validation heartbeat."""
-        self._last_forecast_generation = dt_util.now().strftime("%Y-%m-%dT%H:%M")
+        refresh_now = dt_util.now()
+        self._last_forecast_generation = refresh_now.strftime("%Y-%m-%dT%H:%M")
         _LOGGER.info(
             "Household forecast refresh tick at %s: republishing the day-anchored shell",
             self._last_forecast_generation,
         )
+        self._schedule_async_task(self._async_finalize_history(refresh_now))
         self._notify_update()
 
     @callback
@@ -695,7 +744,7 @@ class HouseholdForecastCoordinator:
         for target in self._capture_targets.values():
             if target.is_event:
                 row = db.execute(
-                    "SELECT ts_utc, state_num, state_text FROM raw_events "
+                    "SELECT ts_utc, state_num, state_text, quality FROM raw_events "
                     "WHERE event_key = ? ORDER BY ts_utc DESC LIMIT 1",
                     (target.key,),
                 ).fetchone()
@@ -709,7 +758,7 @@ class HouseholdForecastCoordinator:
                 continue
 
             row = db.execute(
-                "SELECT ts_utc, value, unit FROM raw_samples "
+                "SELECT ts_utc, value, unit, quality FROM raw_samples "
                 "WHERE sensor_key = ? ORDER BY ts_utc DESC LIMIT 1",
                 (target.key,),
             ).fetchone()
@@ -719,6 +768,24 @@ class HouseholdForecastCoordinator:
                 ts_utc=self._parse_utc_timestamp(str(row[0])),
                 value=float(row[1]),
                 unit=str(row[2]).strip() if row[2] is not None else None,
+            )
+        generation_row = db.execute(
+            "SELECT value FROM meta WHERE key = ?",
+            ("last_generation_utc",),
+        ).fetchone()
+        if generation_row and generation_row[0]:
+            self._last_generation_utc = self._parse_utc_timestamp(str(generation_row[0]))
+            self._last_forecast_generation = dt_util.as_local(
+                self._last_generation_utc
+            ).strftime("%Y-%m-%dT%H:%M")
+
+        finalized_row = db.execute(
+            "SELECT value FROM meta WHERE key = ?",
+            ("last_finalized_slot_utc",),
+        ).fetchone()
+        if finalized_row and finalized_row[0]:
+            self._last_finalized_slot_utc = self._parse_utc_timestamp(
+                str(finalized_row[0])
             )
 
         prune_row = db.execute(
@@ -910,3 +977,438 @@ class HouseholdForecastCoordinator:
             )
 
         await self._async_prune_raw_history(poll_now)
+
+    # -- Energy aggregation ----------------------------------------------
+
+    def _unit_family(self, unit: str | None) -> str | None:
+        """Classify a unit as power or energy."""
+        if unit is None:
+            return None
+        normalized = unit.strip().lower()
+        if normalized in _POWER_UNITS:
+            return "power"
+        if normalized in _ENERGY_UNITS:
+            return "energy"
+        return None
+
+    def _unit_scale(self, unit: str | None) -> float | None:
+        """Return the scale needed to convert a unit to kW or kWh."""
+        if unit is None:
+            return None
+        normalized = unit.strip().lower()
+        return {
+            "w": 0.001,
+            "kw": 1.0,
+            "mw": 1000.0,
+            "wh": 0.001,
+            "kwh": 1.0,
+            "mwh": 1000.0,
+        }.get(normalized)
+
+    def _value_to_kw(self, value: float, unit: str | None) -> float | None:
+        """Convert a power value to kW."""
+        if self._unit_family(unit) != "power":
+            return None
+        scale = self._unit_scale(unit)
+        if scale is None:
+            return None
+        return value * scale
+
+    def _value_to_kwh(self, value: float, unit: str | None) -> float | None:
+        """Convert an energy counter value to kWh."""
+        if self._unit_family(unit) != "energy":
+            return None
+        scale = self._unit_scale(unit)
+        if scale is None:
+            return None
+        return value * scale
+
+    def _floor_to_slot_start_utc(self, timestamp: datetime) -> datetime:
+        """Floor a timestamp to the start of its 15-minute slot."""
+        normalized = self._normalize_utc_timestamp(timestamp)
+        slot_minute = (normalized.minute // SLOT_MINUTES) * SLOT_MINUTES
+        return normalized.replace(minute=slot_minute, second=0, microsecond=0)
+
+    def _slot_day_type(self, slot_start_utc: datetime) -> str:
+        """Map a slot start to the default day-type bucket."""
+        local_slot_start = dt_util.as_local(slot_start_utc)
+        weekday = local_slot_start.weekday()
+        if weekday < 5:
+            return "workday"
+        if weekday == 5:
+            return "saturday"
+        return "sunday"
+
+    def _slot_index(self, slot_start_utc: datetime) -> int:
+        """Return the local 15-minute slot index within the day."""
+        local_slot_start = dt_util.as_local(slot_start_utc)
+        return (local_slot_start.hour * 60 + local_slot_start.minute) // SLOT_MINUTES
+
+    def _event_flag_value(self, key: str) -> int:
+        """Return 1 when the latest cached event sample is active."""
+        sample = self._latest_event_samples.get(key)
+        if sample is None:
+            return 0
+        return 1 if sample.state_num > 0.0 else 0
+
+    def _build_interval_energy_row(
+        self,
+        previous: _RawMeterSample,
+        current: _RawMeterSample,
+    ) -> _IntervalEnergyRow | None:
+        """Convert two meter samples into one interval-energy row."""
+        interval_sec = int((current.ts_utc - previous.ts_utc).total_seconds())
+        if interval_sec <= 0:
+            return None
+
+        previous_family = self._unit_family(previous.unit)
+        current_family = self._unit_family(current.unit)
+        if previous_family is None or current_family is None:
+            return None
+        if previous_family != current_family:
+            return None
+
+        quality = "ok"
+        if interval_sec > MAX_INTERVAL_FOR_TRAINING_SEC:
+            quality = "sparse_gap"
+        elif previous.quality == "heartbeat" or current.quality == "heartbeat":
+            quality = "heartbeat"
+
+        if previous_family == "power":
+            previous_kw = self._value_to_kw(previous.value, previous.unit)
+            current_kw = self._value_to_kw(current.value, current.unit)
+            if previous_kw is None or current_kw is None:
+                return None
+            delta_kwh = ((previous_kw + current_kw) / 2.0) * (
+                interval_sec / 3600.0
+            )
+        else:
+            previous_kwh = self._value_to_kwh(previous.value, previous.unit)
+            current_kwh = self._value_to_kwh(current.value, current.unit)
+            if previous_kwh is None or current_kwh is None:
+                return None
+            delta_kwh = current_kwh - previous_kwh
+            if delta_kwh < 0:
+                return None
+
+        interval_hours = interval_sec / 3600.0
+        interval_kw = delta_kwh / interval_hours if interval_hours > 0 else 0.0
+        if not math.isfinite(delta_kwh) or not math.isfinite(interval_kw):
+            return None
+        if delta_kwh < 0:
+            return None
+
+        return _IntervalEnergyRow(
+            ts_from_utc=previous.ts_utc,
+            ts_to_utc=current.ts_utc,
+            delta_kwh=delta_kwh,
+            interval_sec=interval_sec,
+            interval_kw=interval_kw,
+            quality=quality,
+        )
+
+    def _build_slot_features_json(
+        self,
+        slot_start_utc: datetime,
+        accumulator: _SlotAccumulator,
+    ) -> str:
+        """Serialize the slot feature contract for persistence."""
+        slot_duration_seconds = SLOT_MINUTES * 60
+        features = {
+            "slot_index": self._slot_index(slot_start_utc),
+            "day_type": self._slot_day_type(slot_start_utc),
+            "is_holiday": False,
+            "interval_count": accumulator.sample_count,
+            "sparse_interval_count": accumulator.sparse_interval_count,
+            "required_missing": (
+                accumulator.sample_count == 0
+                or accumulator.observed_seconds + 1e-6 < slot_duration_seconds
+            ),
+            "outdoor_temp_c": None,
+            "event_flags": {
+                "water_heater_active": self._event_flag_value(
+                    CONF_WATER_HEATER_ACTIVE_ENTITY
+                ),
+                "central_heating_active": self._event_flag_value(
+                    CONF_CENTRAL_HEATING_ACTIVE_ENTITY
+                ),
+            },
+        }
+        return json.dumps(features, separators=(",", ":"), sort_keys=True)
+
+    def _build_slot_row(
+        self,
+        slot_start_utc: datetime,
+        accumulator: _SlotAccumulator,
+    ) -> tuple[str, float, float, int, float, str]:
+        """Convert one slot accumulator into a database row."""
+        slot_duration_hours = SLOT_MINUTES / 60.0
+        slot_energy_kwh = accumulator.slot_energy_kwh
+        load_kw = slot_energy_kwh / slot_duration_hours if slot_duration_hours > 0 else 0.0
+        slot_duration_seconds = SLOT_MINUTES * 60
+        coverage_fraction = min(1.0, accumulator.observed_seconds / slot_duration_seconds)
+        quality_score = 0.0
+        if accumulator.sample_count > 0:
+            quality_score = coverage_fraction
+            if accumulator.sparse_interval_count:
+                sparse_fraction = accumulator.sparse_interval_count / accumulator.sample_count
+                quality_score *= max(0.0, 1.0 - (0.5 * sparse_fraction))
+        return (
+            self._format_utc_timestamp(slot_start_utc),
+            slot_energy_kwh,
+            load_kw,
+            accumulator.sample_count,
+            quality_score,
+            self._build_slot_features_json(slot_start_utc, accumulator),
+        )
+
+    def _load_meter_samples_sync(self) -> list[_RawMeterSample]:
+        """Load all retained raw meter samples ordered by timestamp."""
+        db = self._ensure_db()
+        rows = db.execute(
+            "SELECT ts_utc, value, unit, quality FROM raw_samples "
+            "WHERE sensor_key = ? ORDER BY ts_utc ASC",
+            (CONF_POWER_METER_CONSUMPTION,),
+        ).fetchall()
+        return [
+            _RawMeterSample(
+                ts_utc=self._parse_utc_timestamp(str(row[0])),
+                value=float(row[1]),
+                unit=str(row[2]).strip() if row[2] is not None else None,
+                quality=str(row[3] or "ok"),
+            )
+            for row in rows
+        ]
+
+    def _build_interval_energy_rows(
+        self, samples: list[_RawMeterSample]
+    ) -> list[_IntervalEnergyRow]:
+        """Derive interval-energy rows from a sequence of meter samples."""
+        interval_rows: list[_IntervalEnergyRow] = []
+        previous_sample: _RawMeterSample | None = None
+        for sample in samples:
+            if previous_sample is None:
+                previous_sample = sample
+                continue
+            interval_row = self._build_interval_energy_row(previous_sample, sample)
+            previous_sample = sample
+            if interval_row is not None:
+                interval_rows.append(interval_row)
+        return interval_rows
+
+    def _persist_interval_energy_rows_sync(
+        self, interval_rows: list[_IntervalEnergyRow]
+    ) -> None:
+        """Store the rebuilt interval-energy rows in SQLite."""
+        if not interval_rows:
+            return
+        db = self._ensure_db()
+        db.executemany(
+            "INSERT OR REPLACE INTO interval_energy "
+            "(ts_from_utc, ts_to_utc, sensor_key, delta_kwh, interval_sec, "
+            "interval_kw, quality) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    self._format_utc_timestamp(row.ts_from_utc),
+                    self._format_utc_timestamp(row.ts_to_utc),
+                    CONF_POWER_METER_CONSUMPTION,
+                    row.delta_kwh,
+                    row.interval_sec,
+                    row.interval_kw,
+                    row.quality,
+                )
+                for row in interval_rows
+            ],
+        )
+
+    def _build_slot_accumulators(
+        self,
+        interval_rows: list[_IntervalEnergyRow],
+        rebuild_start_slot_utc: datetime,
+        latest_closed_slot_utc: datetime,
+    ) -> list[_SlotAccumulator]:
+        """Allocate interval energy across closed 15-minute slots."""
+        slot_accumulators: list[_SlotAccumulator] = []
+        slot_lookup: dict[datetime, _SlotAccumulator] = {}
+
+        slot_start = rebuild_start_slot_utc
+        while slot_start <= latest_closed_slot_utc:
+            accumulator = _SlotAccumulator(slot_start_utc=slot_start)
+            slot_accumulators.append(accumulator)
+            slot_lookup[slot_start] = accumulator
+            slot_start += timedelta(minutes=SLOT_MINUTES)
+
+        if not slot_accumulators:
+            return slot_accumulators
+
+        slot_duration = timedelta(minutes=SLOT_MINUTES)
+        for interval in interval_rows:
+            interval_start = interval.ts_from_utc
+            interval_end = interval.ts_to_utc
+            if interval_end <= interval_start:
+                continue
+
+            first_slot = max(
+                rebuild_start_slot_utc, self._floor_to_slot_start_utc(interval_start)
+            )
+            last_slot = min(
+                latest_closed_slot_utc,
+                self._floor_to_slot_start_utc(interval_end - timedelta(microseconds=1)),
+            )
+            if last_slot < first_slot:
+                continue
+
+            slot_start = first_slot
+            while slot_start <= last_slot:
+                slot_end = slot_start + slot_duration
+                overlap_start = max(interval_start, slot_start)
+                overlap_end = min(interval_end, slot_end)
+                overlap_seconds = (overlap_end - overlap_start).total_seconds()
+                if overlap_seconds > 0:
+                    accumulator = slot_lookup[slot_start]
+                    accumulator.slot_energy_kwh += interval.delta_kwh * (
+                        overlap_seconds / interval.interval_sec
+                    )
+                    accumulator.observed_seconds += overlap_seconds
+                    accumulator.sample_count += 1
+                    if interval.quality == "sparse_gap":
+                        accumulator.sparse_interval_count += 1
+                slot_start += slot_duration
+
+        return slot_accumulators
+
+    def _persist_slot_rows_sync(
+        self, slot_accumulators: list[_SlotAccumulator], rebuild_start_slot_utc: datetime
+    ) -> None:
+        """Replace the rebuilt slot rows for the finalized window."""
+        if not slot_accumulators:
+            return
+        db = self._ensure_db()
+        latest_closed_slot_utc = slot_accumulators[-1].slot_start_utc
+        db.execute(
+            "DELETE FROM slot_rows WHERE slot_start_utc >= ? AND slot_start_utc <= ?",
+            (
+                self._format_utc_timestamp(rebuild_start_slot_utc),
+                self._format_utc_timestamp(latest_closed_slot_utc),
+            ),
+        )
+        db.executemany(
+            "INSERT OR REPLACE INTO slot_rows "
+            "(slot_start_utc, slot_energy_kwh, load_kw, sample_count, "
+            "quality_score, features_json) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                self._build_slot_row(accumulator.slot_start_utc, accumulator)
+                for accumulator in slot_accumulators
+            ],
+        )
+
+    def _persist_forecast_runs_sync(self, generated_at_utc: datetime) -> None:
+        """Store the current shell forecast in the forecast history table."""
+        db = self._ensure_db()
+        local_tz = dt_util.now().tzinfo or timezone.utc
+        forecast_rows: list[tuple[str, str, float]] = []
+        for forecast_slot in self.forecast_slots:
+            slot_from_text = str(forecast_slot.get("from", ""))
+            slot_load = float(forecast_slot.get("load", self.load_forecast_kw))
+            slot_from_local = datetime.fromisoformat(slot_from_text)
+            if slot_from_local.tzinfo is None:
+                slot_from_local = slot_from_local.replace(tzinfo=local_tz)
+            slot_start_utc = slot_from_local.astimezone(timezone.utc)
+            forecast_rows.append(
+                (
+                    self._format_utc_timestamp(generated_at_utc),
+                    self._format_utc_timestamp(slot_start_utc),
+                    slot_load,
+                )
+            )
+
+        db.executemany(
+            "INSERT OR REPLACE INTO forecast_runs "
+            "(generated_at_utc, slot_start_utc, load_kw) VALUES (?, ?, ?)",
+            forecast_rows,
+        )
+
+    def _set_meta_timestamp_sync(self, key: str, timestamp: datetime) -> None:
+        """Store a UTC timestamp in the meta table."""
+        db = self._ensure_db()
+        db.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (key, self._format_utc_timestamp(timestamp)),
+        )
+
+    def _rebuild_history_sync(self, now_utc: datetime) -> bool:
+        """Rebuild interval energy, slot rows, and forecast history."""
+        samples = self._load_meter_samples_sync()
+        interval_rows = self._build_interval_energy_rows(samples)
+
+        if not interval_rows and self._last_finalized_slot_utc is None:
+            return False
+
+        db = self._ensure_db()
+        if interval_rows:
+            self._persist_interval_energy_rows_sync(interval_rows)
+
+        latest_closed_slot_utc = self._floor_to_slot_start_utc(now_utc) - timedelta(
+            minutes=SLOT_MINUTES
+        )
+
+        rebuild_start_slot_utc: datetime | None = None
+        if interval_rows:
+            earliest_interval_slot_utc = self._floor_to_slot_start_utc(
+                interval_rows[0].ts_from_utc
+            )
+            rebuild_start_slot_utc = earliest_interval_slot_utc
+            if self._last_finalized_slot_utc is not None:
+                rebuild_start_slot_utc = min(
+                    rebuild_start_slot_utc,
+                    self._floor_to_slot_start_utc(self._last_finalized_slot_utc)
+                    - timedelta(minutes=SLOT_MINUTES),
+                )
+        elif self._last_finalized_slot_utc is not None:
+            rebuild_start_slot_utc = (
+                self._floor_to_slot_start_utc(self._last_finalized_slot_utc)
+                - timedelta(minutes=SLOT_MINUTES)
+            )
+
+        if (
+            rebuild_start_slot_utc is not None
+            and rebuild_start_slot_utc <= latest_closed_slot_utc
+        ):
+            slot_accumulators = self._build_slot_accumulators(
+                interval_rows,
+                rebuild_start_slot_utc,
+                latest_closed_slot_utc,
+            )
+            if slot_accumulators:
+                self._persist_slot_rows_sync(
+                    slot_accumulators,
+                    rebuild_start_slot_utc,
+                )
+                self._last_finalized_slot_utc = latest_closed_slot_utc
+                self._set_meta_timestamp_sync(
+                    "last_finalized_slot_utc",
+                    latest_closed_slot_utc,
+                )
+                self._persist_forecast_runs_sync(now_utc)
+                self._last_generation_utc = now_utc
+                self._set_meta_timestamp_sync("last_generation_utc", now_utc)
+                db.commit()
+                return True
+
+        if interval_rows:
+            self._persist_forecast_runs_sync(now_utc)
+            self._last_generation_utc = now_utc
+            self._set_meta_timestamp_sync("last_generation_utc", now_utc)
+            db.commit()
+            return True
+
+        return False
+
+    async def _async_finalize_history(self, now_utc: datetime | None = None) -> bool:
+        """Rebuild the interval, slot, and forecast history for the meter."""
+        finalize_now = self._normalize_utc_timestamp(now_utc)
+        async with self._db_write_lock:
+            return await self.hass.async_add_executor_job(
+                self._rebuild_history_sync,
+                finalize_now,
+            )
