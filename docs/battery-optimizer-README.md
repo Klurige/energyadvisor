@@ -33,6 +33,7 @@ agent or computer restarts.
 
 - [ ] `battery_charge_power_entity` — helps verify real charge/discharge behavior and improve the planner.
 - [ ] Grid power input (`grid_import_entity`, `grid_export_entity`, or a net grid power entity) — helps verify that the chosen mode really reduced cost or increased profit.
+- [ ] Sensor input quality audit — for each sensor used by the planner or learner, verify update cadence/frequency, freshness, units, whether it is cumulative or instantaneous, and whether it has gaps or heartbeats before depending on it.
 
 ## Target one-word battery modes
 

@@ -18,7 +18,8 @@ This integration works particularly well with the [LevelIndicatorClock](https://
   - Allows for setting thresholds for low and high prices.
   - Adds support for credits when exporting electricity.
 - Provides a ranking system for prices to help identify the best times to use electricity.
-- Exposes a household Load forecast placeholder while learning is rebuilt.
+- Exposes a household Load forecast that falls back to a cold-start shell and
+  learns a seasonal baseline from retained slot history.
 - Can refine a solar production forecast using your solar's measured output.
 - Can optimize battery charge, discharge, and sell windows with a price-aware linear program that also preserves room for forecast solar when enabled.
 ## Prerequisites
@@ -100,16 +101,18 @@ inputs for future forecast-aware work:
 
 When `power_meter_consumption`, `water_heater_active_entity`, and
 `central_heating_active_entity` are configured together, Energy Advisor also
-creates `sensor.energy_advisor_load_forecast` with a fixed `0.5 kW` Load
-forecast value and a 192-slot 48-hour `forecasts` attribute. Each forecast
-entry uses the local wall-clock `{"from": "...", "load": ...}` contract, and
-the shell is anchored to local midnight and refreshes on quarter-hour
-boundaries without moving already-published historical slots. The
-`last_forecast_generation` attribute advances on each refresh so HA shows the
-update even when the forecast values themselves are unchanged. A companion
-SQLite history file at `.storage/energyadvisor_household_forecast_<entry_id>.db`
-stores the raw meter samples, interval-energy rows, slot rows, forecast
-checkpoints, and quiet-night event rows for the rebuild.
+creates `sensor.energy_advisor_load_forecast` with a 192-slot 48-hour
+`forecasts` attribute. The sensor starts from a fixed `0.60 kW` cold-start
+profile and then shifts to a learned seasonal baseline once enough slot
+history has been retained. Each forecast entry uses the local wall-clock
+`{"from": "...", "load": ...}` contract, and the shell is anchored to local
+midnight and refreshes on quarter-hour boundaries without moving already-
+published historical slots. The `last_forecast_generation` attribute advances
+on each refresh so HA shows the update when the forecast changes or refreshes.
+A companion SQLite history file at
+`.storage/energyadvisor_household_forecast_<entry_id>.db` stores the raw meter
+samples, interval-energy rows, slot rows, forecast checkpoints, and quiet-night
+event rows for the rebuild.
 See [docs/householdforecast.md](docs/householdforecast.md) for current
 attributes and status messaging.
 
@@ -135,9 +138,9 @@ storage to avoid oversized state attributes.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
   - `sensor.energy_advisor_battery_charge_mode` provides the battery optimizer's current recommendation and sequential 15-minute schedule, including solar headroom reservation when a solar forecast is configured.
-  - `sensor.energy_advisor_load_forecast` currently provides a fixed household
-    Load forecast profile (`0.5 kW` and 15-minute `forecasts` entries for
-    today+tomorrow) while forecast learning is rebuilt.
+  - `sensor.energy_advisor_load_forecast` currently provides a learned
+    household Load forecast profile with a `0.60 kW` cold-start shell and
+    15-minute `forecasts` entries for today+tomorrow.
   - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).

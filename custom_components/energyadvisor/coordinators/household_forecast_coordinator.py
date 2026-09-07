@@ -1,9 +1,9 @@
 """Coordinator for the household Load forecast sensor.
 
-The learning logic is intentionally disabled while the household forecast
-feature is rebuilt. The coordinator keeps lifecycle housekeeping, exposes a
-fixed 0.5 kW profile, and persists raw capture history in SQLite so later
-steps can rebuild the forecast from stored samples.
+The coordinator stores raw meter history in SQLite and rebuilds a seasonal
+baseline forecast from retained slot rows once enough history is available.
+Until then it keeps a cold-start fallback profile so the sensor always
+publishes a full 192-slot contract.
 """
 
 from __future__ import annotations
@@ -48,10 +48,16 @@ DB_SCHEMA_VERSION = 1
 SLOT_MINUTES = 15
 FORECAST_HOURS = 48
 FORECAST_SLOT_COUNT = int((FORECAST_HOURS * 60) / SLOT_MINUTES)
-STATIC_LOAD_FORECAST_W = 500.0
+FORECAST_COLD_START_MIN_FINALIZED_SLOTS = 24
+FORECAST_MIN_HISTORY_DAYS = 7
+FORECAST_TRAINING_WINDOW_DAYS = 56
+FORECAST_HISTORY_WINDOW_DAYS = 180
+FORECAST_TREND_WINDOW_SLOTS = 8
+FORECAST_RECENCY_HALF_LIFE_DAYS = 21.0
+STATIC_LOAD_FORECAST_W = 600.0
 STATIC_LOAD_FORECAST_KW = STATIC_LOAD_FORECAST_W / 1000.0
 STATIC_REASON = (
-    "Household forecast learning is disabled; using a fixed 500 W profile."
+    "Household forecast is in cold-start mode; using a fixed 600 W profile."
 )
 MAX_INTERVAL_FOR_SPIKES_SEC = 120
 MAX_INTERVAL_FOR_TRAINING_SEC = 300
@@ -130,8 +136,55 @@ class _SlotAccumulator:
     sparse_interval_count: int = 0
 
 
+@dataclass(slots=True)
+class _WeightedStats:
+    """Track a weighted mean for the seasonal profile."""
+
+    weighted_sum: float = 0.0
+    weight_sum: float = 0.0
+    count: int = 0
+
+    def add(self, value: float, weight: float) -> None:
+        """Accumulate one weighted sample."""
+        if weight <= 0.0 or not math.isfinite(value):
+            return
+        self.weighted_sum += value * weight
+        self.weight_sum += weight
+        self.count += 1
+
+    def mean(self) -> float | None:
+        """Return the weighted mean when at least one sample exists."""
+        if self.weight_sum <= 0.0:
+            return None
+        return self.weighted_sum / self.weight_sum
+
+
+@dataclass(slots=True)
+class _HistoricalSlotRow:
+    """Track one persisted slot row used to fit the seasonal profile."""
+
+    slot_start_utc: datetime
+    load_kw: float
+    quality_score: float
+    sample_count: int
+    slot_index: int
+    day_type: str
+    is_holiday: bool
+
+
+@dataclass(slots=True)
+class _ForecastSummary:
+    """Track the visible learning summary for the sensor attributes."""
+
+    learning_nights: int = 0
+    data_since: str | None = None
+    last_sample_date: str | None = None
+    last_sample_kw: float | None = None
+    reason: str = STATIC_REASON
+
+
 class HouseholdForecastCoordinator:
-    """Expose a fixed household load forecast profile and keep housekeeping."""
+    """Expose a learned household load forecast profile and keep housekeeping."""
 
     def __init__(
         self,
@@ -147,6 +200,8 @@ class HouseholdForecastCoordinator:
         self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
         self._status_message: str = STATIC_REASON
         self._last_forecast_generation = dt_util.now().strftime("%Y-%m-%dT%H:%M")
+        self._forecast_slots: list[dict[str, object]] = []
+        self._forecast_summary = _ForecastSummary()
         self._store = Store(
             hass,
             STORE_VERSION,
@@ -181,7 +236,13 @@ class HouseholdForecastCoordinator:
 
     @property
     def load_forecast_kw(self) -> float:
-        """Return the fixed household load forecast."""
+        """Return the current household load forecast."""
+        if self._forecast_slots:
+            first_slot = self._forecast_slots[0]
+            try:
+                return round(float(first_slot["load"]), 3)
+            except (KeyError, TypeError, ValueError):
+                pass
         return self._load_forecast_kw
 
     @property
@@ -191,7 +252,7 @@ class HouseholdForecastCoordinator:
 
     @property
     def household_load_forecast_w(self) -> float:
-        """Return the fixed household load forecast in watts."""
+        """Return the current household load forecast in watts."""
         return self._load_forecast_kw * 1000.0
 
     @property
@@ -201,43 +262,37 @@ class HouseholdForecastCoordinator:
 
     @property
     def forecast_slots(self) -> list[dict[str, object]]:
-        """Return fixed 15-minute load slots for the 48-hour horizon."""
-        start_local = dt_util.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        slots: list[dict[str, object]] = []
-        for index in range(FORECAST_SLOT_COUNT):
-            slot_start = start_local + timedelta(minutes=SLOT_MINUTES * index)
-            slots.append(
-                {
-                    "from": slot_start.strftime("%Y-%m-%dT%H:%M"),
-                    "load": self.load_forecast_kw,
-                }
-            )
-        return slots
+        """Return 15-minute load slots for the 48-hour horizon."""
+        if self._forecast_slots:
+            return list(self._forecast_slots)
+        return self._build_constant_forecast_slots(self._load_forecast_kw)
 
     @property
     def learning_nights(self) -> int:
-        """Return the number of quiet-night samples retained."""
-        return 0
+        """Return the number of retained learning days."""
+        return self._forecast_summary.learning_nights
 
     @property
     def data_since(self) -> str | None:
-        """Return the oldest retained quiet-night sample date."""
-        return None
+        """Return the oldest retained learning date."""
+        return self._forecast_summary.data_since
 
     @property
     def last_sample_date(self) -> str | None:
-        """Return the most recent quiet-night sample date."""
-        return None
+        """Return the most recent learned sample date."""
+        return self._forecast_summary.last_sample_date
 
     @property
     def last_sample_kw(self) -> float | None:
-        """Return the most recent quiet-night sample in kW."""
-        return None
+        """Return the most recent learned sample in kW."""
+        return self._forecast_summary.last_sample_kw
 
     @property
     def reason(self) -> str:
         """Return a human-readable status message."""
-        return self._status_message
+        if self._status_message != STATIC_REASON:
+            return self._status_message
+        return self._forecast_summary.reason or self._status_message
 
     @property
     def last_forecast_generation(self) -> str:
@@ -367,7 +422,7 @@ class HouseholdForecastCoordinator:
         """Serialize static housekeeping state."""
         return {
             "mode": STORE_MODE,
-            "load_forecast_kw": self._load_forecast_kw,
+            "load_forecast_kw": self.load_forecast_kw,
         }
 
     def _restore_state(self, data: Mapping[str, Any]) -> bool:
@@ -375,28 +430,23 @@ class HouseholdForecastCoordinator:
 
         Returns True when the payload should be normalized and persisted.
         """
-        changed = False
-        if data.get("mode") != STORE_MODE:
-            changed = True
+        legacy_payload = "samples" in data or "window" in data
+        if legacy_payload or "base_load_kw" in data:
+            self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
+            return True
 
         restored_load_forecast = data.get("load_forecast_kw")
-        if restored_load_forecast is None and "base_load_kw" in data:
-            restored_load_forecast = data.get("base_load_kw")
-            changed = True
-
         if restored_load_forecast is None:
-            changed = True
-        else:
-            try:
-                restored_value = float(restored_load_forecast)
-            except (TypeError, ValueError):
-                changed = True
-            else:
-                if restored_value != STATIC_LOAD_FORECAST_KW:
-                    changed = True
+            self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
+            return True
 
-        self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
-        return changed
+        try:
+            self._load_forecast_kw = float(restored_load_forecast)
+        except (TypeError, ValueError):
+            self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
+            return True
+
+        return data.get("mode") != STORE_MODE
 
     async def _async_load_state(self) -> None:
         """Load persisted housekeeping state from storage."""
@@ -446,8 +496,8 @@ class HouseholdForecastCoordinator:
             "Household forecast refresh tick at %s: republishing the day-anchored shell",
             self._last_forecast_generation,
         )
-        self._schedule_async_task(self._async_finalize_history(refresh_now))
         self._notify_update()
+        self._schedule_async_task(self._async_refresh_forecast(refresh_now))
 
     @callback
     def _handle_window_finish(self, _now=None) -> None:
@@ -740,6 +790,8 @@ class HouseholdForecastCoordinator:
         self._latest_numeric_samples.clear()
         self._latest_event_samples.clear()
         self._last_polled_utc_by_key.clear()
+        self._forecast_slots = []
+        self._forecast_summary = _ForecastSummary()
 
         for target in self._capture_targets.values():
             if target.is_event:
@@ -794,6 +846,38 @@ class HouseholdForecastCoordinator:
         ).fetchone()
         if prune_row and prune_row[0]:
             self._last_raw_prune_utc = self._parse_utc_timestamp(str(prune_row[0]))
+
+        latest_forecast_row = db.execute(
+            "SELECT generated_at_utc FROM forecast_runs "
+            "ORDER BY generated_at_utc DESC LIMIT 1"
+        ).fetchone()
+        if latest_forecast_row and latest_forecast_row[0]:
+            latest_generation_utc = self._parse_utc_timestamp(
+                str(latest_forecast_row[0])
+            )
+            forecast_rows = db.execute(
+                "SELECT slot_start_utc, load_kw FROM forecast_runs "
+                "WHERE generated_at_utc = ? ORDER BY slot_start_utc ASC",
+                (self._format_utc_timestamp(latest_generation_utc),),
+            ).fetchall()
+            self._forecast_slots = [
+                {
+                    "from": dt_util.as_local(
+                        self._parse_utc_timestamp(str(row[0]))
+                    ).strftime("%Y-%m-%dT%H:%M"),
+                    "load": round(float(row[1]), 3),
+                }
+                for row in forecast_rows
+            ]
+            if self._forecast_slots:
+                try:
+                    self._load_forecast_kw = float(self._forecast_slots[0]["load"])
+                except (TypeError, ValueError, KeyError):
+                    self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
+
+        history_rows = self._load_historical_slot_rows_sync()
+        if history_rows:
+            self._forecast_summary = self._build_forecast_summary(history_rows)
 
     async def _async_initialize_capture_db(self) -> None:
         """Open the SQLite history file and prime in-memory caches."""
@@ -1196,6 +1280,235 @@ class HouseholdForecastCoordinator:
                 interval_rows.append(interval_row)
         return interval_rows
 
+    def _build_constant_forecast_slots(
+        self,
+        load_kw: float,
+        now_utc: datetime | None = None,
+    ) -> list[dict[str, object]]:
+        """Build a fixed 192-slot forecast anchored to the current local day."""
+        local_now = dt_util.as_local(self._normalize_utc_timestamp(now_utc))
+        start_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        slots: list[dict[str, object]] = []
+        for index in range(FORECAST_SLOT_COUNT):
+            slot_start = start_local + timedelta(minutes=SLOT_MINUTES * index)
+            slots.append(
+                {
+                    "from": slot_start.strftime("%Y-%m-%dT%H:%M"),
+                    "load": round(load_kw, 3),
+                }
+            )
+        return slots
+
+    def _load_historical_slot_rows_sync(
+        self, now_utc: datetime | None = None
+    ) -> list[_HistoricalSlotRow]:
+        """Load retained slot rows used to fit the learned baseline model."""
+        db = self._ensure_db()
+        cutoff_utc = self._format_utc_timestamp(
+            self._normalize_utc_timestamp(now_utc)
+            - timedelta(days=FORECAST_HISTORY_WINDOW_DAYS)
+        )
+        rows = db.execute(
+            "SELECT slot_start_utc, load_kw, sample_count, quality_score, features_json "
+            "FROM slot_rows WHERE slot_start_utc >= ? ORDER BY slot_start_utc ASC",
+            (cutoff_utc,),
+        ).fetchall()
+        history_rows: list[_HistoricalSlotRow] = []
+        for row in rows:
+            slot_start_utc = self._parse_utc_timestamp(str(row[0]))
+            features: Mapping[str, Any] = {}
+            features_json = row[4]
+            if isinstance(features_json, str) and features_json:
+                try:
+                    parsed_features = json.loads(features_json)
+                except json.JSONDecodeError:
+                    parsed_features = {}
+                if isinstance(parsed_features, Mapping):
+                    features = parsed_features
+            slot_index_value = features.get("slot_index")
+            try:
+                slot_index = int(slot_index_value)
+            except (TypeError, ValueError):
+                slot_index = self._slot_index(slot_start_utc)
+            day_type_value = features.get("day_type")
+            day_type = (
+                str(day_type_value)
+                if isinstance(day_type_value, str) and day_type_value
+                else self._slot_day_type(slot_start_utc)
+            )
+            is_holiday = bool(features.get("is_holiday", False))
+            history_rows.append(
+                _HistoricalSlotRow(
+                    slot_start_utc=slot_start_utc,
+                    load_kw=float(row[1]),
+                    quality_score=float(row[3] or 0.0),
+                    sample_count=int(row[2] or 0),
+                    slot_index=slot_index,
+                    day_type=day_type,
+                    is_holiday=is_holiday,
+                )
+            )
+        return history_rows
+
+    def _build_forecast_summary(
+        self, history_rows: list[_HistoricalSlotRow]
+    ) -> _ForecastSummary:
+        """Summarize the retained history for the sensor attributes."""
+        if len(history_rows) < FORECAST_COLD_START_MIN_FINALIZED_SLOTS:
+            return _ForecastSummary()
+
+        local_dates = [
+            dt_util.as_local(row.slot_start_utc).date() for row in history_rows
+        ]
+        unique_dates = sorted(set(local_dates))
+        last_sample = history_rows[-1]
+        learning_nights = len(unique_dates)
+        if learning_nights < FORECAST_MIN_HISTORY_DAYS:
+            reason = (
+                "Household forecast is warming up; using a recency-weighted "
+                f"baseline from {learning_nights} learned days of slot history."
+            )
+        else:
+            reason = (
+                "Household forecast is using a seasonal baseline learned from "
+                f"{learning_nights} days of slot history."
+            )
+
+        return _ForecastSummary(
+            learning_nights=learning_nights,
+            data_since=unique_dates[0].isoformat(),
+            last_sample_date=dt_util.as_local(last_sample.slot_start_utc).date().isoformat(),
+            last_sample_kw=last_sample.load_kw,
+            reason=reason,
+        )
+
+    def _build_forecast_slots_from_history_sync(
+        self, now_utc: datetime
+    ) -> tuple[list[dict[str, object]], _ForecastSummary]:
+        """Build the current 192-slot forecast from retained slot history."""
+        history_rows = self._load_historical_slot_rows_sync(now_utc)
+        summary = self._build_forecast_summary(history_rows)
+        if len(history_rows) < FORECAST_COLD_START_MIN_FINALIZED_SLOTS:
+            return (
+                self._build_constant_forecast_slots(STATIC_LOAD_FORECAST_KW, now_utc),
+                summary,
+            )
+
+        model_rows = history_rows
+        max_model_rows = FORECAST_TRAINING_WINDOW_DAYS * FORECAST_SLOT_COUNT
+        if len(model_rows) > max_model_rows:
+            model_rows = model_rows[-max_model_rows:]
+
+        row_count = len(model_rows)
+        if row_count == 0:
+            return self._build_constant_forecast_slots(self._load_forecast_kw, now_utc), summary
+
+        weighted_stats: dict[tuple[str, int], _WeightedStats] = {}
+        slot_stats: dict[int, _WeightedStats] = {}
+        day_type_stats: dict[str, _WeightedStats] = {}
+        global_stats = _WeightedStats()
+
+        for row in model_rows:
+            age_days = max(
+                0.0,
+                (now_utc - row.slot_start_utc).total_seconds() / 86400.0,
+            )
+            recency_weight = math.exp(
+                -age_days / FORECAST_RECENCY_HALF_LIFE_DAYS
+            )
+            weight = max(0.0, row.quality_score) * recency_weight
+            if weight <= 0.0:
+                continue
+            weighted_stats.setdefault((row.day_type, row.slot_index), _WeightedStats()).add(
+                row.load_kw,
+                weight,
+            )
+            slot_stats.setdefault(row.slot_index, _WeightedStats()).add(
+                row.load_kw,
+                weight,
+            )
+            day_type_stats.setdefault(row.day_type, _WeightedStats()).add(
+                row.load_kw,
+                weight,
+            )
+            global_stats.add(row.load_kw, weight)
+
+        global_mean = global_stats.mean()
+        if global_mean is None:
+            global_mean = self._load_forecast_kw
+
+        recent_rows = [row for row in model_rows if row.quality_score > 0.0]
+        if len(recent_rows) >= FORECAST_TREND_WINDOW_SLOTS * 2:
+            recent_window = recent_rows[-FORECAST_TREND_WINDOW_SLOTS :]
+            previous_window = recent_rows[
+                -FORECAST_TREND_WINDOW_SLOTS * 2 : -FORECAST_TREND_WINDOW_SLOTS
+            ]
+            recent_mean = sum(row.load_kw for row in recent_window) / len(recent_window)
+            previous_mean = sum(row.load_kw for row in previous_window) / len(
+                previous_window
+            )
+            trend_delta = recent_mean - previous_mean
+        else:
+            trend_delta = 0.0
+
+        local_now = dt_util.as_local(now_utc)
+        start_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        learned = summary.learning_nights >= FORECAST_MIN_HISTORY_DAYS
+        forecast_slots: list[dict[str, object]] = []
+
+        for index in range(FORECAST_SLOT_COUNT):
+            slot_start_local = start_local + timedelta(minutes=SLOT_MINUTES * index)
+            slot_start_utc = dt_util.as_utc(slot_start_local)
+            day_type = self._slot_day_type(slot_start_utc)
+            slot_index = self._slot_index(slot_start_utc)
+
+            exact_mean = weighted_stats.get((day_type, slot_index))
+            slot_mean = slot_stats.get(slot_index)
+            day_mean = day_type_stats.get(day_type)
+            if learned and exact_mean is not None and exact_mean.count >= 2:
+                base_load_kw = exact_mean.mean()
+            elif slot_mean is not None and slot_mean.mean() is not None:
+                base_load_kw = slot_mean.mean()
+            elif day_mean is not None and day_mean.mean() is not None:
+                base_load_kw = day_mean.mean()
+            else:
+                base_load_kw = global_mean
+
+            if base_load_kw is None:
+                base_load_kw = self._load_forecast_kw
+
+            if learned:
+                trend_decay = math.exp(-index / 24.0)
+                base_load_kw = max(
+                    0.0,
+                    base_load_kw + (trend_delta * 0.35 * trend_decay),
+                )
+
+            forecast_slots.append(
+                {
+                    "from": slot_start_local.strftime("%Y-%m-%dT%H:%M"),
+                    "load": round(base_load_kw, 3),
+                }
+            )
+
+        return forecast_slots, summary
+
+    def _cache_forecast_slots(
+        self,
+        forecast_slots: list[dict[str, object]],
+        summary: _ForecastSummary,
+    ) -> None:
+        """Store the latest forecast and visible learning summary."""
+        self._forecast_slots = forecast_slots
+        self._forecast_summary = summary
+        if forecast_slots:
+            try:
+                self._load_forecast_kw = float(forecast_slots[0]["load"])
+            except (TypeError, ValueError, KeyError):
+                self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
+        else:
+            self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
+
     def _persist_interval_energy_rows_sync(
         self, interval_rows: list[_IntervalEnergyRow]
     ) -> None:
@@ -1305,14 +1618,15 @@ class HouseholdForecastCoordinator:
     def _persist_forecast_runs_sync(self, generated_at_utc: datetime) -> None:
         """Store the current shell forecast in the forecast history table."""
         db = self._ensure_db()
-        local_tz = dt_util.now().tzinfo or timezone.utc
         forecast_rows: list[tuple[str, str, float]] = []
         for forecast_slot in self.forecast_slots:
             slot_from_text = str(forecast_slot.get("from", ""))
             slot_load = float(forecast_slot.get("load", self.load_forecast_kw))
             slot_from_local = datetime.fromisoformat(slot_from_text)
             if slot_from_local.tzinfo is None:
-                slot_from_local = slot_from_local.replace(tzinfo=local_tz)
+                slot_from_local = slot_from_local.replace(
+                    tzinfo=dt_util.now().tzinfo or timezone.utc
+                )
             slot_start_utc = slot_from_local.astimezone(timezone.utc)
             forecast_rows.append(
                 (
@@ -1341,19 +1655,15 @@ class HouseholdForecastCoordinator:
         samples = self._load_meter_samples_sync()
         interval_rows = self._build_interval_energy_rows(samples)
 
-        if not interval_rows and self._last_finalized_slot_utc is None:
-            return False
-
         db = self._ensure_db()
+        updated = False
         if interval_rows:
             self._persist_interval_energy_rows_sync(interval_rows)
+            latest_closed_slot_utc = self._floor_to_slot_start_utc(now_utc) - timedelta(
+                minutes=SLOT_MINUTES
+            )
 
-        latest_closed_slot_utc = self._floor_to_slot_start_utc(now_utc) - timedelta(
-            minutes=SLOT_MINUTES
-        )
-
-        rebuild_start_slot_utc: datetime | None = None
-        if interval_rows:
+            rebuild_start_slot_utc: datetime | None = None
             earliest_interval_slot_utc = self._floor_to_slot_start_utc(
                 interval_rows[0].ts_from_utc
             )
@@ -1364,45 +1674,35 @@ class HouseholdForecastCoordinator:
                     self._floor_to_slot_start_utc(self._last_finalized_slot_utc)
                     - timedelta(minutes=SLOT_MINUTES),
                 )
-        elif self._last_finalized_slot_utc is not None:
-            rebuild_start_slot_utc = (
-                self._floor_to_slot_start_utc(self._last_finalized_slot_utc)
-                - timedelta(minutes=SLOT_MINUTES)
-            )
 
-        if (
-            rebuild_start_slot_utc is not None
-            and rebuild_start_slot_utc <= latest_closed_slot_utc
-        ):
-            slot_accumulators = self._build_slot_accumulators(
-                interval_rows,
-                rebuild_start_slot_utc,
-                latest_closed_slot_utc,
-            )
-            if slot_accumulators:
-                self._persist_slot_rows_sync(
-                    slot_accumulators,
+            if rebuild_start_slot_utc <= latest_closed_slot_utc:
+                slot_accumulators = self._build_slot_accumulators(
+                    interval_rows,
                     rebuild_start_slot_utc,
-                )
-                self._last_finalized_slot_utc = latest_closed_slot_utc
-                self._set_meta_timestamp_sync(
-                    "last_finalized_slot_utc",
                     latest_closed_slot_utc,
                 )
-                self._persist_forecast_runs_sync(now_utc)
-                self._last_generation_utc = now_utc
-                self._set_meta_timestamp_sync("last_generation_utc", now_utc)
-                db.commit()
-                return True
+                if slot_accumulators:
+                    self._persist_slot_rows_sync(
+                        slot_accumulators,
+                        rebuild_start_slot_utc,
+                    )
+                    self._last_finalized_slot_utc = latest_closed_slot_utc
+                    self._set_meta_timestamp_sync(
+                        "last_finalized_slot_utc",
+                        latest_closed_slot_utc,
+                    )
+                    updated = True
 
-        if interval_rows:
-            self._persist_forecast_runs_sync(now_utc)
-            self._last_generation_utc = now_utc
-            self._set_meta_timestamp_sync("last_generation_utc", now_utc)
+        forecast_slots, summary = self._build_forecast_slots_from_history_sync(now_utc)
+        self._cache_forecast_slots(forecast_slots, summary)
+        self._persist_forecast_runs_sync(now_utc)
+        self._last_generation_utc = now_utc
+        self._set_meta_timestamp_sync("last_generation_utc", now_utc)
+        updated = True
+
+        if updated:
             db.commit()
-            return True
-
-        return False
+        return updated
 
     async def _async_finalize_history(self, now_utc: datetime | None = None) -> bool:
         """Rebuild the interval, slot, and forecast history for the meter."""
@@ -1412,3 +1712,8 @@ class HouseholdForecastCoordinator:
                 self._rebuild_history_sync,
                 finalize_now,
             )
+
+    async def _async_refresh_forecast(self, now_utc: datetime | None = None) -> None:
+        """Refresh the learned forecast and notify listeners when it changes."""
+        if await self._async_finalize_history(now_utc):
+            self._notify_update()

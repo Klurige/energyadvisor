@@ -9,6 +9,7 @@ import voluptuous as vol
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import EntitySelector, EntitySelectorConfig
 
 from .const import (
@@ -223,7 +224,7 @@ def _build_battery_schema(
         vol.Optional(
             CONF_BATTERY_OPTIMIZATION_ENABLED,
             default=bool(values.get(CONF_BATTERY_OPTIMIZATION_ENABLED, False)),
-        ): vol.Boolean(),
+        ): cv.boolean,
         vol.Optional(
             CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
             default=_schema_default(

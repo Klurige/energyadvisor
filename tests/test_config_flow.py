@@ -3,6 +3,8 @@
 from unittest.mock import MagicMock
 
 import pytest
+import voluptuous_serialize
+from homeassistant.helpers import config_validation as cv
 
 from custom_components.energyadvisor import config_flow as config_flow_module
 from custom_components.energyadvisor.config_flow import (
@@ -396,6 +398,9 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
 
     assert result["type"] == "form"
     validated = result["data_schema"]({})
+    serialized = voluptuous_serialize.convert(
+        result["data_schema"], custom_serializer=cv.custom_serializer
+    )
     assert validated[CONF_BATTERY_SOC_ENTITY] == "sensor.remote_batterysoc"
     assert (
         validated[CONF_BATTERY_CHARGE_POWER_ENTITY]
@@ -405,6 +410,11 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
     assert validated[CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 48
     assert validated[CONF_BATTERY_MIN_SOC_PCT] == 5.0
     assert validated[CONF_BATTERY_MAX_SOC_PCT] == 95.0
+    assert any(
+        field["name"] == CONF_BATTERY_OPTIMIZATION_ENABLED
+        and field["type"] == "boolean"
+        for field in serialized
+    )
 
 
 @pytest.mark.asyncio

@@ -122,10 +122,12 @@ Diagnostics live on the same HA sensor as extra state attributes:
 ## 3) Sensor contract (required, optional, precedence, units)
 
 ### Required
+All incoming sensors should be evaluated on data quality and cadence. If any required sensor is missing or invalid, the forecast must still publish a full 192-slot array with a valid state, but the `reason` attribute must indicate the problem.
+If a sensor is deemed not good enough, ask the user for a replacement sensor.
 
 | Key | Expected type | Accepted units/states | Purpose |
 |---|---|---|---|
-| `power_meter_consumption` | sensor | `W`, `kW`, `Wh`, or `kWh` | Main target signal |
+| `household_energy_usage` | sensor | `W`, `kW`, `Wh`, or `kWh` | Main target signal |
 
 ### Optional from current configuration
 
@@ -364,11 +366,11 @@ The next Copilot session should start by reading the latest filled summary.
 
 ### Step 5 summary - Baseline statistical model
 
-- Status: `TBD`
-- Files changed: `TBD`
-- What was implemented: `TBD`
-- Retrain/history window notes: `TBD`
-- Handover to Step 6: `TBD`
+- Status: `done`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_coordinator.py`, `docs/householdforecast.md`, `README.md`
+- What was implemented: The coordinator now fits a seasonal baseline from retained slot rows, with recency weighting and a short-term trend blend, then persists the learned 192-slot forecast into `forecast_runs`. Cold start still publishes a full forecast shell so the sensor never goes empty.
+- Retrain/history window notes: The learned model uses retained slot history up to 180 days, prefers the latest 56 days for fitting, and switches into the learned path once at least 7 distinct learning days are available.
+- Handover to Step 6: add the parallax matcher so delayed active-state transitions can be attributed to the correct meter spike before the next context step.
 
 ### Step 6 summary - Parallax matcher
 
