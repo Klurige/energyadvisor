@@ -25,6 +25,8 @@ from .const import (
     CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
+    CONF_CENTRAL_HEATING_POWER_ENTITY,
+    CONF_CENTRAL_HEATING_POWER_W,
     CONF_DEHUMIDIFIER_POWER_ENTITY,
     CONF_DEHUMIDIFIER_POWER_W,
     CONF_ELECTRICITY_VAT,
@@ -93,10 +95,14 @@ GRID_METERING_ENTITY_KEYS: tuple[str, ...] = (
 HOUSEHOLD_SENSOR_ENTITY_KEYS: tuple[str, ...] = (
     CONF_POWER_METER_CONSUMPTION,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    CONF_CENTRAL_HEATING_POWER_ENTITY,
 )
 HOUSEHOLD_BINARY_ENTITY_KEYS: tuple[str, ...] = (
     CONF_WATER_HEATER_ACTIVE_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
+)
+HOUSEHOLD_NUMERIC_KEYS: tuple[str, ...] = (
+    CONF_CENTRAL_HEATING_POWER_W,
 )
 HOT_WATER_ENTITY_KEYS: tuple[str, ...] = (
     CONF_WATER_HEATER_POWER_ENTITY,
@@ -124,6 +130,7 @@ ALL_OPTIMIZER_ENTITY_KEYS: tuple[str, ...] = (
     *FLEXIBLE_LOADS_ENTITY_KEYS,
 )
 ALL_OPTIMIZER_NUMERIC_KEYS: tuple[str, ...] = (
+    *HOUSEHOLD_NUMERIC_KEYS,
     *HOT_WATER_NUMERIC_KEYS,
     *FLEXIBLE_LOADS_NUMERIC_KEYS,
 )
@@ -321,6 +328,18 @@ def _build_household_schema(values: dict[str, Any]) -> dict[Any, Any]:
                 domain=["binary_sensor", "input_boolean", "sensor", "switch"]
             )
         ),
+        vol.Optional(
+            CONF_CENTRAL_HEATING_POWER_ENTITY,
+            default=_schema_default(values.get(CONF_CENTRAL_HEATING_POWER_ENTITY)),
+            description={
+                "suggested_value": values.get(CONF_CENTRAL_HEATING_POWER_ENTITY)
+            },
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_CENTRAL_HEATING_POWER_W,
+            default=_schema_default(values.get(CONF_CENTRAL_HEATING_POWER_W)),
+            description={"suffix": "W"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=1)),
     }
 
 

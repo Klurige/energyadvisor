@@ -26,6 +26,8 @@ from custom_components.energyadvisor.const import (
     CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
+    CONF_CENTRAL_HEATING_POWER_ENTITY,
+    CONF_CENTRAL_HEATING_POWER_W,
     CONF_DEHUMIDIFIER_POWER_ENTITY,
     CONF_DEHUMIDIFIER_POWER_W,
     CONF_FORECAST_ENTITY,
@@ -221,6 +223,8 @@ async def test_options_flow_household_step_contains_new_load_fields() -> None:
     assert CONF_OUTDOOR_TEMPERATURE_ENTITY in schema_keys
     assert CONF_WATER_HEATER_ACTIVE_ENTITY in schema_keys
     assert CONF_CENTRAL_HEATING_ACTIVE_ENTITY in schema_keys
+    assert CONF_CENTRAL_HEATING_POWER_ENTITY in schema_keys
+    assert CONF_CENTRAL_HEATING_POWER_W in schema_keys
 
 
 @pytest.mark.asyncio
@@ -515,6 +519,7 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
         "binary_sensor.water_heater_active": _make_state("off"),
         "binary_sensor.heating_active": _make_state("off"),
         "sensor.water_heater_power": _make_state("0"),
+        "sensor.central_heating_power": _make_state("0"),
         "sensor.bathroom_humidity": _make_state("65"),
         "sensor.pool_pump_power": _make_state("0"),
         "sensor.dehumidifier_power": _make_state("0"),
@@ -557,6 +562,8 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
             CONF_OUTDOOR_TEMPERATURE_ENTITY: "sensor.outdoor_temp",
             CONF_WATER_HEATER_ACTIVE_ENTITY: "binary_sensor.water_heater_active",
             CONF_CENTRAL_HEATING_ACTIVE_ENTITY: "binary_sensor.heating_active",
+            CONF_CENTRAL_HEATING_POWER_ENTITY: "sensor.central_heating_power",
+            CONF_CENTRAL_HEATING_POWER_W: 2200.0,
         }
     )
     assert result["step_id"] == "hot_water"
@@ -600,6 +607,11 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
         result["options"][CONF_CENTRAL_HEATING_ACTIVE_ENTITY]
         == "binary_sensor.heating_active"
     )
+    assert (
+        result["options"][CONF_CENTRAL_HEATING_POWER_ENTITY]
+        == "sensor.central_heating_power"
+    )
+    assert result["options"][CONF_CENTRAL_HEATING_POWER_W] == 2200.0
     assert result["options"][CONF_WATER_HEATER_POWER_W] == 3500.0
     assert result["options"][CONF_POOL_PUMP_POWER_W] == 500.0
     assert result["options"][CONF_DEHUMIDIFIER_POWER_W] == 1500.0
@@ -732,6 +744,7 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
             }
         ),
         "sensor.outdoor_temperature": _make_state("12"),
+        "sensor.central_heating_power": _make_state("0"),
         "sensor.water_heater_power": _make_state("0"),
         "sensor.bathroom_humidity": _make_state("60"),
     }.get(entity_id)
@@ -773,7 +786,11 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
     assert result["step_id"] == "household"
 
     result = await handler.async_step_household(
-        {CONF_OUTDOOR_TEMPERATURE_ENTITY: "sensor.outdoor_temperature"}
+        {
+            CONF_OUTDOOR_TEMPERATURE_ENTITY: "sensor.outdoor_temperature",
+            CONF_CENTRAL_HEATING_POWER_ENTITY: "sensor.central_heating_power",
+            CONF_CENTRAL_HEATING_POWER_W: 2200.0,
+        }
     )
     assert result["step_id"] == "hot_water"
 
@@ -798,6 +815,11 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
     assert (
         result["data"][CONF_OUTDOOR_TEMPERATURE_ENTITY] == "sensor.outdoor_temperature"
     )
+    assert (
+        result["data"][CONF_CENTRAL_HEATING_POWER_ENTITY]
+        == "sensor.central_heating_power"
+    )
+    assert result["data"][CONF_CENTRAL_HEATING_POWER_W] == 2200.0
     assert result["data"][CONF_WATER_HEATER_POWER_ENTITY] == "sensor.water_heater_power"
     assert result["data"][CONF_WATER_HEATER_POWER_W] == 3500.0
     assert result["data"][CONF_WATER_HEATER_MAX_HOURS] == 4.0

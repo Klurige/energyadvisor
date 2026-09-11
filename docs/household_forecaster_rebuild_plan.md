@@ -35,7 +35,7 @@ Architecture constraint for this plan: **one coordinator + one sensor**.
 `power_meter_consumption` is required.
 
 - **Canonical primitive** for modeling and slot aggregation: `delta_kwh` (energy since previous reading).
-- **Power is still allowed** as a derived/helper signal for spike detection, event attribution, and diagnostics.
+- **Power is still allowed** as a derived/helper signal for candidate edge detection, event attribution, and diagnostics.
 
 1. Power sensor (`W` or `kW`): for consecutive samples `(t0, p0)` and `(t1, p1)`, compute interval energy by trapezoidal integration:  
    `delta_kwh = ((p0_kw + p1_kw) / 2) * ((t1 - t0)_seconds / 3600)`.
@@ -46,7 +46,7 @@ Architecture constraint for this plan: **one coordinator + one sensor**.
 5. Derive helper power per interval for event logic:  
    `interval_kw = delta_kwh / interval_hours`.
 
-Short spikes then only affect the slot by their true delivered energy, reducing sensitivity to brief peaks.
+Short spikes then only affect the slot by their true delivered energy, reducing sensitivity to brief peaks. Any edge threshold below is only for parallax matching and must never be used to discard real appliance load.
 
 If the configured sensor does not represent gross household demand, user must provide a derived/template sensor that does.
 
@@ -136,12 +136,14 @@ If a sensor is deemed not good enough, ask the user for a replacement sensor.
 | `outdoor_temperature_entity` | sensor | `C`/`F` (normalized to C) | Weather sensitivity |
 | `water_heater_active_entity` | binary/switch/sensor | active/inactive mapping | Event feature |
 | `central_heating_active_entity` | binary/switch/sensor | active/inactive mapping | Event feature |
+| `central_heating_power_entity` | sensor | `W`/`kW` | Primary event magnitude when available |
+| `central_heating_power_w` | numeric | watts | Fallback magnitude when the live power sensor is missing |
 | `grid_import_entity` | sensor | `W`/`kW`/energy counter | Context/diagnostic |
 | `grid_export_entity` | sensor | `W`/`kW`/energy counter | Context/diagnostic |
 | `battery_soc_entity` | sensor | `%` | Storage context |
 | `battery_charge_power_entity` | sensor | signed/unsigned `W`/`kW` | Storage context |
-| `water_heater_power_entity` | sensor | `W`/`kW` | Event magnitude |
-| `water_heater_power_w` | numeric | watts | Fallback magnitude |
+| `water_heater_power_entity` | sensor | `W`/`kW` | Primary event magnitude when available |
+| `water_heater_power_w` | numeric | watts | Fallback magnitude when the live power sensor is missing |
 | `bathroom_humidity_entity` | sensor | `%` | Hot-water proxy |
 | `pool_pump_power_entity` | sensor | `W`/`kW` | Flexible load context |
 | `pool_pump_power_w` | numeric | watts | Fallback magnitude |
@@ -163,6 +165,7 @@ If a sensor is deemed not good enough, ask the user for a replacement sensor.
 2. Fallback numeric values are used only when the corresponding live sensor is missing/unavailable.
 3. Unknown/unavailable/non-numeric samples are ignored, never silently coerced to zero.
 4. Optional sensor failure disables only that feature; forecast output must still publish.
+5. When both an appliance active-state signal and a measured power signal are available, the measured power signal takes precedence for load magnitude. The active-state signal is used for gating, timing, and explanation, not for overriding real measured draw.
 
 ### Active/inactive mapping
 
@@ -277,7 +280,7 @@ Measured on rolling 30-day backtest over closed slots:
 
 ### Parallax handling (30s lag) - concrete defaults
 
-- Rising edge threshold (`SPIKE_THRESHOLD_W`): 700 W
+- Rising edge threshold (`SPIKE_THRESHOLD_W`): 700 W above the recent baseline; used only to identify candidate event edges, not to suppress legitimate appliance load
 - Match-back window (`MATCH_BACK_SEC`): 45 s
 - Confirmation timeout (`CONFIRM_TIMEOUT_SEC`): 90 s
 - Spike detection source: interval-derived power estimate  
@@ -290,6 +293,8 @@ Algorithm:
 2. If device-active signal appears within timeout, match backward to nearest unmatched spike within 45 s.
 3. Use spike timestamp as effective event start.
 4. If not confirmed, keep as unknown transient event.
+
+If the configured inputs are already energy counters and you do not need lagged active-state attribution, this step can be skipped entirely.
 
 ### Online residual correction - concrete defaults
 
@@ -382,11 +387,11 @@ The next Copilot session should start by reading the latest filled summary.
 
 ### Step 7 summary - Context features and precedence
 
-- Status: `TBD`
-- Files changed: `TBD`
-- What was implemented: `TBD`
-- Optional-sensor degradation behavior: `TBD`
-- Handover to Step 8: `TBD`
+- Status: `done`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `custom_components/energyadvisor/sensor/__init__.py`, `custom_components/energyadvisor/config_flow.py`, `custom_components/energyadvisor/config_flow_helpers.py`, `custom_components/energyadvisor/const.py`, `tests/test_household_forecast_coordinator.py`, `tests/test_config_flow.py`, `README.md`, `docs/householdforecast.md`
+- What was implemented: The household forecast now starts from the household meter alone, keeps optional appliance sensors available, and subtracts the measured water-heater, central-heating, pool-pump, and dehumidifier loads before fitting the seasonal model. Live appliance power sensors take precedence over fallback watt values, and the docs/config flow now expose central-heating power alongside the other subtractable loads.
+- Optional-sensor degradation behavior: Missing optional sensors no longer block the forecast; the subtraction for that appliance simply drops out and the sensor keeps publishing the full 192-slot baseline.
+- Handover to Step 8: add residual correction on top of the net household base load.
 
 ### Step 8 summary - Residual correction
 

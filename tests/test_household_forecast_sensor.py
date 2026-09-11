@@ -292,7 +292,7 @@ async def test_coordinator_setup_without_required_entities_stays_idle() -> None:
     assert len(coordinator._listeners) == 0
     assert (
         coordinator.reason
-        == "Household forecast is waiting for the required meter and quiet-night sensors."
+        == "Household forecast is waiting for the required household meter."
     )
 
 

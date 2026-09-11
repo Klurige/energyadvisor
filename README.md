@@ -95,16 +95,19 @@ solar forecast when available. The config UI also stores additional planner
 inputs for future forecast-aware work:
 `battery_charge_power_entity`, `grid_import_entity`, `grid_export_entity`,
 `outdoor_temperature_entity`, `household_load_forecast_w`,
-`water_heater_power_entity`, `water_heater_power_w`, `water_heater_max_hours`,
-`bathroom_humidity_entity`, `pool_pump_power_entity`, `pool_pump_power_w`,
-`dehumidifier_power_entity`, and `dehumidifier_power_w`.
+`water_heater_power_entity`, `water_heater_power_w`,
+`central_heating_power_entity`, `central_heating_power_w`,
+`water_heater_max_hours`, `bathroom_humidity_entity`,
+`pool_pump_power_entity`, `pool_pump_power_w`, `dehumidifier_power_entity`,
+and `dehumidifier_power_w`.
 
-When `power_meter_consumption`, `water_heater_active_entity`, and
-`central_heating_active_entity` are configured together, Energy Advisor also
-creates `sensor.energy_advisor_load_forecast` with a 192-slot 48-hour
-`forecasts` attribute. The sensor starts from a fixed `0.60 kW` cold-start
-profile and then shifts to a learned seasonal baseline once enough slot
-history has been retained. Each forecast entry uses the local wall-clock
+When `power_meter_consumption` is configured, Energy Advisor also creates
+`sensor.energy_advisor_load_forecast` with a 192-slot 48-hour `forecasts`
+attribute. The forecast learns a household base load by subtracting the
+configured appliance power sensors when present; the matching active-state
+sensors remain optional context. The sensor starts from a fixed `0.60 kW`
+cold-start profile and then shifts to a learned seasonal baseline once enough
+slot history has been retained. Each forecast entry uses the local wall-clock
 `{"from": "...", "load": ...}` contract, and the shell is anchored to local
 midnight and refreshes on quarter-hour boundaries without moving already-
 published historical slots. The `last_forecast_generation` attribute advances

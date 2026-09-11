@@ -15,8 +15,16 @@ from homeassistant.util import dt as dt_util
 from custom_components.energyadvisor.const import (
     CONF_BATTERY_SOC_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
+    CONF_CENTRAL_HEATING_POWER_ENTITY,
+    CONF_CENTRAL_HEATING_POWER_W,
+    CONF_DEHUMIDIFIER_POWER_ENTITY,
+    CONF_DEHUMIDIFIER_POWER_W,
     CONF_POWER_METER_CONSUMPTION,
+    CONF_POOL_PUMP_POWER_ENTITY,
+    CONF_POOL_PUMP_POWER_W,
     CONF_WATER_HEATER_ACTIVE_ENTITY,
+    CONF_WATER_HEATER_POWER_ENTITY,
+    CONF_WATER_HEATER_POWER_W,
 )
 from custom_components.energyadvisor.coordinators.household_forecast_coordinator import (
     DB_SCHEMA_VERSION,
@@ -125,6 +133,52 @@ async def test_coordinator_creates_sqlite_schema_and_capture_targets(tmp_path: P
         seconds=120
     )
     assert mock_state_change.call_count == 2
+    assert mock_time_change.call_count == 3
+    assert mock_time_interval.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_coordinator_starts_with_meter_only_optional_sensors_missing(
+    tmp_path: Path,
+) -> None:
+    """The coordinator should still start when only the household meter is set."""
+    coordinator, _hass = _make_coordinator(
+        tmp_path,
+        with_required_entities=False,
+        extra_options={CONF_POWER_METER_CONSUMPTION: "sensor.household_meter"},
+    )
+
+    store = MagicMock()
+    store.async_load = AsyncMock(return_value=None)
+    store.async_save = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.Store",
+            return_value=store,
+        ),
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_state_change_event",
+            return_value=lambda: None,
+        ) as mock_state_change,
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_change",
+            return_value=lambda: None,
+        ) as mock_time_change,
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_interval",
+            return_value=lambda: None,
+        ) as mock_time_interval,
+    ):
+        coordinator._store = store
+        await coordinator.async_setup()
+
+    assert len(coordinator._listeners) == 3
+    assert len(coordinator._capture_listeners) == 2
+    assert coordinator._capture_targets["sensor.household_meter"].key == (
+        CONF_POWER_METER_CONSUMPTION
+    )
+    assert mock_state_change.call_count == 1
     assert mock_time_change.call_count == 3
     assert mock_time_interval.call_count == 1
 
@@ -448,6 +502,154 @@ async def test_coordinator_finalizes_interval_energy_and_slot_rows(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_coordinator_subtracts_known_appliance_loads_from_slot_rows(
+    tmp_path: Path,
+) -> None:
+    """Household slots should subtract the configured appliance power sensors."""
+    coordinator, _hass = _make_coordinator(
+        tmp_path,
+        extra_options={
+            CONF_WATER_HEATER_POWER_ENTITY: "sensor.water_heater_power",
+            CONF_WATER_HEATER_POWER_W: 4000.0,
+            CONF_CENTRAL_HEATING_POWER_ENTITY: "sensor.central_heating_power",
+            CONF_CENTRAL_HEATING_POWER_W: 3000.0,
+            CONF_POOL_PUMP_POWER_ENTITY: "sensor.pool_pump_power",
+            CONF_POOL_PUMP_POWER_W: 1500.0,
+            CONF_DEHUMIDIFIER_POWER_ENTITY: "sensor.dehumidifier_power",
+            CONF_DEHUMIDIFIER_POWER_W: 2000.0,
+        },
+    )
+    store = MagicMock()
+    store.async_load = AsyncMock(return_value=None)
+    store.async_save = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.Store",
+            return_value=store,
+        ),
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_state_change_event",
+            return_value=lambda: None,
+        ),
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_change",
+            return_value=lambda: None,
+        ),
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_interval",
+            return_value=lambda: None,
+        ),
+    ):
+        coordinator._store = store
+        await coordinator.async_setup()
+
+    meter_target = coordinator._capture_targets["sensor.household_meter"]
+    water_target = coordinator._capture_targets["sensor.water_heater_power"]
+    central_target = coordinator._capture_targets["sensor.central_heating_power"]
+    pool_target = coordinator._capture_targets["sensor.pool_pump_power"]
+    dehumidifier_target = coordinator._capture_targets["sensor.dehumidifier_power"]
+    water_active_target = coordinator._capture_targets[
+        "binary_sensor.water_heater_active"
+    ]
+    heating_active_target = coordinator._capture_targets[
+        "binary_sensor.central_heating_active"
+    ]
+
+    first_ts = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
+    second_ts = datetime(2026, 9, 5, 12, 15, tzinfo=UTC)
+
+    async def _capture_pair(target, first_state: str, second_state: str) -> None:
+        await coordinator._async_capture_target(
+            target,
+            SimpleNamespace(
+                entity_id=target.entity_id,
+                state=first_state,
+                attributes={"unit_of_measurement": "W"},
+                last_updated=first_ts,
+            ),
+            source="event",
+        )
+        await coordinator._async_capture_target(
+            target,
+            SimpleNamespace(
+                entity_id=target.entity_id,
+                state=second_state,
+                attributes={"unit_of_measurement": "W"},
+                last_updated=second_ts,
+            ),
+            source="event",
+        )
+
+    await _capture_pair(meter_target, "4000", "4000")
+    await _capture_pair(water_target, "1000", "1000")
+    await _capture_pair(central_target, "500", "500")
+    await _capture_pair(pool_target, "500", "500")
+    await _capture_pair(dehumidifier_target, "250", "250")
+
+    await coordinator._async_capture_target(
+        water_active_target,
+        SimpleNamespace(
+            entity_id=water_active_target.entity_id,
+            state="on",
+            attributes={},
+            last_updated=first_ts,
+        ),
+        source="event",
+    )
+    await coordinator._async_capture_target(
+        water_active_target,
+        SimpleNamespace(
+            entity_id=water_active_target.entity_id,
+            state="on",
+            attributes={},
+            last_updated=second_ts,
+        ),
+        source="event",
+    )
+    await coordinator._async_capture_target(
+        heating_active_target,
+        SimpleNamespace(
+            entity_id=heating_active_target.entity_id,
+            state="on",
+            attributes={},
+            last_updated=first_ts,
+        ),
+        source="event",
+    )
+    await coordinator._async_capture_target(
+        heating_active_target,
+        SimpleNamespace(
+            entity_id=heating_active_target.entity_id,
+            state="on",
+            attributes={},
+            last_updated=second_ts,
+        ),
+        source="event",
+    )
+
+    assert await coordinator._async_finalize_history(
+        datetime(2026, 9, 5, 12, 30, tzinfo=UTC)
+    )
+
+    with sqlite3.connect(coordinator._db_path()) as conn:
+        slot_row = conn.execute(
+            "SELECT slot_energy_kwh, load_kw, sample_count, quality_score, "
+            "features_json FROM slot_rows ORDER BY slot_start_utc"
+        ).fetchone()
+        assert slot_row[0] == pytest.approx(0.4375)
+        assert slot_row[1] == pytest.approx(1.75)
+        assert slot_row[2] == 1
+        assert slot_row[3] == pytest.approx(0.5)
+        features = json.loads(slot_row[4])
+        assert features["gross_load_kwh"] == pytest.approx(1.0)
+        assert features["known_load_kwh"] == pytest.approx(0.5625)
+        assert features["known_load_kw"] == pytest.approx(2.25)
+        assert features["event_flags"]["water_heater_active"] == 1
+        assert features["event_flags"]["central_heating_active"] == 1
+
+
+@pytest.mark.asyncio
 async def test_coordinator_marks_sparse_interval_quality(tmp_path: Path) -> None:
     """Long energy-counter gaps should be flagged as sparse in slot rows."""
     coordinator, _hass = _make_coordinator(tmp_path)
@@ -630,6 +832,53 @@ async def test_coordinator_builds_learned_forecast_from_slot_history(
     assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.72)
     assert coordinator.forecast_slots[1]["load"] == pytest.approx(1.28)
     assert coordinator.forecast_slots[0]["load"] != coordinator.forecast_slots[1]["load"]
+
+
+def test_coordinator_keeps_historical_forecast_slots_stable_on_refresh(
+    tmp_path: Path,
+) -> None:
+    """Refreshes should only rewrite the current and future forecast slots."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    now_utc = datetime(2026, 9, 7, 20, 0, tzinfo=UTC)
+    slot_starts_utc = coordinator._forecast_slot_starts_utc(now_utc)
+    current_slot_start_utc = coordinator._floor_to_slot_start_utc(now_utc)
+    historical_count = sum(
+        1 for slot_start_utc in slot_starts_utc if slot_start_utc < current_slot_start_utc
+    )
+
+    coordinator._forecast_slots = [
+        {
+            "from": dt_util.as_local(slot_start_utc).strftime("%Y-%m-%dT%H:%M"),
+            "load": float(index),
+        }
+        for index, slot_start_utc in enumerate(slot_starts_utc)
+    ]
+    fresh_slots = [
+        {
+            "from": dt_util.as_local(slot_start_utc).strftime("%Y-%m-%dT%H:%M"),
+            "load": float(1000 + index),
+        }
+        for index, slot_start_utc in enumerate(slot_starts_utc)
+    ]
+
+    merged_slots = coordinator._preserve_historical_forecast_slots(
+        fresh_slots,
+        slot_starts_utc,
+        now_utc,
+    )
+
+    assert len(merged_slots) == FORECAST_SLOT_COUNT
+    assert [slot["load"] for slot in merged_slots[:historical_count]] == [
+        float(index) for index in range(historical_count)
+    ]
+    assert merged_slots[historical_count]["load"] == pytest.approx(
+        float(1000 + historical_count)
+    )
+    assert merged_slots[-1]["load"] == pytest.approx(float(1000 + FORECAST_SLOT_COUNT - 1))
+
+    snapshot = coordinator.forecast_slots
+    snapshot[0]["load"] = -1.0
+    assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio

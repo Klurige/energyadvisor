@@ -7,6 +7,11 @@ from retained slot history. While the model is still warming up, it falls back
 to a fixed 0.60 kW cold-start profile so HA always gets a full 192-slot
 contract.
 
+When appliance power sensors are configured, the forecast learns a household
+base load by subtracting the measured water-heater, central-heating,
+pool-pump, and dehumidifier power before fitting the seasonal model. Active
+state sensors remain optional context when power data is missing or delayed.
+
 The coordinator still keeps lifecycle housekeeping and persists a minimal state
 through Home Assistant storage, while raw samples, interval-energy rows,
 closed slot rows, and forecast checkpoints are written to
@@ -25,12 +30,27 @@ update when the forecast changes or refreshes.
 | Option | Key | Example |
 |---|---|---|
 | Household energy meter | `power_meter_consumption` | `sensor.household_energy_total` |
-| Water heater active sensor | `water_heater_active_entity` | `binary_sensor.water_heater_active` |
-| Central heating active sensor | `central_heating_active_entity` | `binary_sensor.central_heating_active` |
 
 Configure these in **Settings -> Devices & Services -> Energy Advisor -> Configure**.
 
-The sensor is only created when all three inputs are present.
+### Optional configuration
+
+| Option | Key | Example |
+|---|---|---|
+| Water heater active sensor | `water_heater_active_entity` | `binary_sensor.water_heater_active` |
+| Central heating active sensor | `central_heating_active_entity` | `binary_sensor.central_heating_active` |
+| Central heating power sensor | `central_heating_power_entity` | `sensor.central_heating_power` |
+| Central heating fallback power | `central_heating_power_w` | `2200` |
+| Water heater power sensor | `water_heater_power_entity` | `sensor.water_heater_power` |
+| Water heater fallback power | `water_heater_power_w` | `3500` |
+| Bathroom humidity sensor | `bathroom_humidity_entity` | `sensor.bathroom_humidity` |
+| Pool pump power sensor | `pool_pump_power_entity` | `sensor.pool_pump_power` |
+| Pool pump fallback power | `pool_pump_power_w` | `500` |
+| Dehumidifier power sensor | `dehumidifier_power_entity` | `sensor.dehumidifier_power` |
+| Dehumidifier fallback power | `dehumidifier_power_w` | `1500` |
+
+The sensor is created when the household meter is present; the other inputs
+are optional and improve the quality of the learned base-load estimate.
 
 ---
 

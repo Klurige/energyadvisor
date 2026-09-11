@@ -72,6 +72,7 @@ from .config_flow_helpers import (
     FLEXIBLE_LOADS_NUMERIC_KEYS,
     GRID_METERING_ENTITY_KEYS,
     HOUSEHOLD_BINARY_ENTITY_KEYS,
+    HOUSEHOLD_NUMERIC_KEYS,
     HOUSEHOLD_SENSOR_ENTITY_KEYS,
     HOT_WATER_ENTITY_KEYS,
     HOT_WATER_NUMERIC_KEYS,
@@ -599,11 +600,17 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
             if not errors:
                 for key, entity_id in household_entities.items():
                     self.data[key] = entity_id or None
+                for key in HOUSEHOLD_NUMERIC_KEYS:
+                    self.data[key] = user_input.get(key)
                 return await self.async_step_hot_water()
 
         form_values = {
             key: _form_value(self.data, key)
-            for key in (*HOUSEHOLD_SENSOR_ENTITY_KEYS, *HOUSEHOLD_BINARY_ENTITY_KEYS)
+            for key in (
+                *HOUSEHOLD_SENSOR_ENTITY_KEYS,
+                *HOUSEHOLD_BINARY_ENTITY_KEYS,
+                *HOUSEHOLD_NUMERIC_KEYS,
+            )
         }
         return self.async_show_form(
             step_id="household",
@@ -1088,11 +1095,17 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
             )
             if not errors:
                 self.current_options.update(user_input)
+                for key in HOUSEHOLD_NUMERIC_KEYS:
+                    self.current_options[key] = user_input.get(key)
                 return await self.async_step_hot_water()
 
         form_values = {
             key: _form_value(self.current_options, key)
-            for key in (*HOUSEHOLD_SENSOR_ENTITY_KEYS, *HOUSEHOLD_BINARY_ENTITY_KEYS)
+            for key in (
+                *HOUSEHOLD_SENSOR_ENTITY_KEYS,
+                *HOUSEHOLD_BINARY_ENTITY_KEYS,
+                *HOUSEHOLD_NUMERIC_KEYS,
+            )
         }
         return self.async_show_form(
             step_id="household",

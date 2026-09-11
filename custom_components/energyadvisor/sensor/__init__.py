@@ -18,12 +18,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.loader import async_get_integration
 
 from ..const import (
-    CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_FORECAST_ENTITY,
     CONF_NORDPOOL_PRICES_SENSOR,
-    CONF_POWER_METER_CONSUMPTION,
     CONF_POWER_ENTITY,
-    CONF_WATER_HEATER_ACTIVE_ENTITY,
+    CONF_POWER_METER_CONSUMPTION,
     DOMAIN,
 )
 from ..models import EnergyAdvisorRuntimeData
@@ -107,9 +105,7 @@ async def async_setup_entry(
     household_coordinator: HouseholdForecastCoordinator | None = None
     household_sensor: HouseholdForecastSensor | None = None
     meter_entity = entry.options.get(CONF_POWER_METER_CONSUMPTION)
-    water_heater_entity = entry.options.get(CONF_WATER_HEATER_ACTIVE_ENTITY)
-    central_heating_entity = entry.options.get(CONF_CENTRAL_HEATING_ACTIVE_ENTITY)
-    if meter_entity and water_heater_entity and central_heating_entity:
+    if meter_entity:
         household_coordinator = HouseholdForecastCoordinator(hass, entry)
         await household_coordinator.async_setup()
         household_sensor = HouseholdForecastSensor(
