@@ -112,6 +112,10 @@ slot history has been retained. Each forecast entry uses the local wall-clock
 midnight and refreshes on quarter-hour boundaries without moving already-
 published historical slots. The `last_forecast_generation` attribute advances
 on each refresh so HA shows the update when the forecast changes or refreshes.
+After warm-up, a bounded residual correction can nudge the next 8 slots by up
+to +/-1.5 kW when two consecutive closed slots show a sustained error, which
+helps the forecast react faster to sudden load shifts without rewriting
+historical slots.
 A companion SQLite history file at
 `.storage/energyadvisor_household_forecast_<entry_id>.db` stores the raw meter
 samples, interval-energy rows, slot rows, forecast checkpoints, and quiet-night

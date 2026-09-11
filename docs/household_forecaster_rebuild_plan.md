@@ -379,7 +379,7 @@ The next Copilot session should start by reading the latest filled summary.
 
 ### Step 6 summary - Parallax matcher
 
-- Status: `TBD`
+- Status: `Skipped - not needed for this household forecaster`
 - Files changed: `TBD`
 - What was implemented: `TBD`
 - Match-rate/alignment metrics: `TBD`
@@ -395,11 +395,11 @@ The next Copilot session should start by reading the latest filled summary.
 
 ### Step 8 summary - Residual correction
 
-- Status: `TBD`
-- Files changed: `TBD`
-- What was implemented: `TBD`
-- Error-improvement and clamp behavior: `TBD`
-- Handover to Step 9: `TBD`
+- Status: `done`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_coordinator.py`, `README.md`, `docs/householdforecast.md`
+- What was implemented: Added an online residual layer on top of the learned household baseline. The coordinator now looks at the most recent closed slots from the current day, compares them against the previously published forecast, and nudges the next few slots when the last two errors stay above the activation threshold.
+- Error-improvement and clamp behavior: The correction is EMA-smoothed with `RESIDUAL_ALPHA = 0.35`, decays by `0.82` across the next 8 slots, and is clamped to +/-1.5 kW so sudden step changes adapt faster without runaway adjustments.
+- Handover to Step 9: add guardrails, quality flags, and diagnostics for stale data and degraded sensor inputs.
 
 ### Step 9 summary - Guardrails and diagnostics
 

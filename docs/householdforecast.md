@@ -19,7 +19,10 @@ closed slot rows, and forecast checkpoints are written to
 The forecast shell is anchored to local midnight and refreshes on quarter-hour
 boundaries without moving already-published historical slots. The
 `last_forecast_generation` attribute advances on each refresh so HA shows the
-update when the forecast changes or refreshes.
+update when the forecast changes or refreshes. After warm-up, a bounded
+residual correction can nudge the next 8 slots by up to +/-1.5 kW when two
+consecutive closed slots show a sustained error, which helps the forecast
+adapt faster to sudden household-load shifts.
 
 ---
 

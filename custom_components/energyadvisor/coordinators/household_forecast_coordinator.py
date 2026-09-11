@@ -62,6 +62,13 @@ FORECAST_TRAINING_WINDOW_DAYS = 56
 FORECAST_HISTORY_WINDOW_DAYS = 180
 FORECAST_TREND_WINDOW_SLOTS = 8
 FORECAST_RECENCY_HALF_LIFE_DAYS = 21.0
+RESIDUAL_ALPHA = 0.35
+RESIDUAL_ACTIVATION_THRESHOLD_KW = 0.25
+RESIDUAL_MAX_CORRECTION_KW = 1.5
+RESIDUAL_APPLY_HORIZON_SLOTS = 8
+RESIDUAL_DECAY_FACTOR = 0.82
+RESIDUAL_MIN_CONSECUTIVE_SLOTS = 2
+RESIDUAL_MAX_STALE_MINUTES = 30
 STATIC_LOAD_FORECAST_W = 600.0
 STATIC_LOAD_FORECAST_KW = STATIC_LOAD_FORECAST_W / 1000.0
 STATIC_REASON = (
@@ -1603,10 +1610,199 @@ class HouseholdForecastCoordinator:
             reason=reason,
         )
 
+    def _load_recent_closed_slot_rows_sync(
+        self, now_utc: datetime
+    ) -> list[_HistoricalSlotRow]:
+        """Load the most recent closed slots for the current local day."""
+        db = self._ensure_db()
+        local_now = dt_util.as_local(self._normalize_utc_timestamp(now_utc))
+        local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start_utc = dt_util.as_utc(local_start)
+        current_slot_start_utc = self._floor_to_slot_start_utc(now_utc)
+        rows = db.execute(
+            "SELECT slot_start_utc, load_kw, sample_count, quality_score, features_json "
+            "FROM slot_rows WHERE slot_start_utc >= ? AND slot_start_utc < ? "
+            "ORDER BY slot_start_utc ASC",
+            (
+                self._format_utc_timestamp(day_start_utc),
+                self._format_utc_timestamp(current_slot_start_utc),
+            ),
+        ).fetchall()
+
+        recent_rows: list[_HistoricalSlotRow] = []
+        for row in rows:
+            slot_start_utc = self._parse_utc_timestamp(str(row[0]))
+            features: Mapping[str, Any] = {}
+            features_json = row[4]
+            if isinstance(features_json, str) and features_json:
+                try:
+                    parsed_features = json.loads(features_json)
+                except json.JSONDecodeError:
+                    parsed_features = {}
+                if isinstance(parsed_features, Mapping):
+                    features = parsed_features
+
+            slot_index_value = features.get("slot_index")
+            try:
+                slot_index = int(slot_index_value)
+            except (TypeError, ValueError):
+                slot_index = self._slot_index(slot_start_utc)
+
+            day_type_value = features.get("day_type")
+            day_type = (
+                str(day_type_value)
+                if isinstance(day_type_value, str) and day_type_value
+                else self._slot_day_type(slot_start_utc)
+            )
+            is_holiday = bool(features.get("is_holiday", False))
+            recent_rows.append(
+                _HistoricalSlotRow(
+                    slot_start_utc=slot_start_utc,
+                    load_kw=float(row[1]),
+                    quality_score=float(row[3] or 0.0),
+                    sample_count=int(row[2] or 0),
+                    slot_index=slot_index,
+                    day_type=day_type,
+                    is_holiday=is_holiday,
+                )
+            )
+        return recent_rows[-RESIDUAL_APPLY_HORIZON_SLOTS:]
+
+    def _compute_residual_correction_kw_sync(
+        self,
+        now_utc: datetime,
+        *,
+        previous_forecast_slots: list[dict[str, object]] | None = None,
+        learning_nights: int = 0,
+    ) -> float:
+        """Return the additive correction for the next few forecast slots."""
+        if learning_nights < FORECAST_MIN_HISTORY_DAYS:
+            return 0.0
+
+        recent_rows = self._load_recent_closed_slot_rows_sync(now_utc)
+        if len(recent_rows) < RESIDUAL_MIN_CONSECUTIVE_SLOTS:
+            return 0.0
+
+        current_slot_start_utc = self._floor_to_slot_start_utc(now_utc)
+        latest_closed_end_utc = recent_rows[-1].slot_start_utc + timedelta(
+            minutes=SLOT_MINUTES
+        )
+        if (
+            current_slot_start_utc - latest_closed_end_utc
+        ).total_seconds() >= RESIDUAL_MAX_STALE_MINUTES * 60:
+            return 0.0
+
+        if previous_forecast_slots is None:
+            previous_forecast_slots = self._forecast_slots
+        if not previous_forecast_slots:
+            return 0.0
+
+        previous_forecast_by_from: dict[str, float] = {}
+        for slot in previous_forecast_slots:
+            if not isinstance(slot, Mapping):
+                continue
+            slot_from = slot.get("from")
+            if not isinstance(slot_from, str) or not slot_from:
+                continue
+            try:
+                previous_forecast_by_from[slot_from] = float(slot.get("load", 0.0))
+            except (TypeError, ValueError):
+                continue
+        if not previous_forecast_by_from:
+            return 0.0
+
+        residual_tail: list[float] = []
+        previous_row_start: datetime | None = None
+        for row in reversed(recent_rows):
+            if row.sample_count <= 0 or row.quality_score < 0.5:
+                break
+            slot_from_local = dt_util.as_local(row.slot_start_utc).strftime(
+                "%Y-%m-%dT%H:%M"
+            )
+            previous_load = previous_forecast_by_from.get(slot_from_local)
+            if previous_load is None:
+                break
+            if (
+                previous_row_start is not None
+                and previous_row_start - row.slot_start_utc
+                != timedelta(minutes=SLOT_MINUTES)
+            ):
+                break
+
+            residual_kw = row.load_kw - previous_load
+            if abs(residual_kw) < RESIDUAL_ACTIVATION_THRESHOLD_KW:
+                break
+
+            residual_tail.append(residual_kw)
+            previous_row_start = row.slot_start_utc
+            if len(residual_tail) >= RESIDUAL_APPLY_HORIZON_SLOTS:
+                break
+
+        if len(residual_tail) < RESIDUAL_MIN_CONSECUTIVE_SLOTS:
+            return 0.0
+
+        residual_tail.reverse()
+        correction_kw = residual_tail[0]
+        for residual_kw in residual_tail[1:]:
+            correction_kw = (
+                RESIDUAL_ALPHA * residual_kw
+                + (1.0 - RESIDUAL_ALPHA) * correction_kw
+            )
+
+        return max(
+            -RESIDUAL_MAX_CORRECTION_KW,
+            min(RESIDUAL_MAX_CORRECTION_KW, correction_kw),
+        )
+
+    def _apply_residual_correction_to_forecast_slots(
+        self,
+        forecast_slots: list[dict[str, object]],
+        slot_starts_utc: list[datetime],
+        now_utc: datetime,
+        correction_kw: float,
+    ) -> list[dict[str, object]]:
+        """Apply a short-lived correction to the next few open slots."""
+        if not forecast_slots or not slot_starts_utc or correction_kw == 0.0:
+            return [dict(slot) for slot in forecast_slots]
+
+        current_slot_start_utc = self._floor_to_slot_start_utc(now_utc)
+        corrected_slots: list[dict[str, object]] = []
+        for slot, slot_start_utc in zip(forecast_slots, slot_starts_utc):
+            try:
+                base_load_kw = float(slot["load"])
+            except (TypeError, ValueError, KeyError):
+                corrected_slots.append(dict(slot))
+                continue
+
+            if slot_start_utc < current_slot_start_utc:
+                corrected_slots.append(dict(slot))
+                continue
+
+            slots_ahead = int(
+                (slot_start_utc - current_slot_start_utc).total_seconds()
+                // (SLOT_MINUTES * 60)
+            )
+            if slots_ahead >= RESIDUAL_APPLY_HORIZON_SLOTS:
+                corrected_load_kw = base_load_kw
+            else:
+                corrected_load_kw = max(
+                    0.0,
+                    base_load_kw
+                    + correction_kw * (RESIDUAL_DECAY_FACTOR**slots_ahead),
+                )
+            corrected_slots.append(
+                {
+                    "from": slot.get("from"),
+                    "load": round(corrected_load_kw, 3),
+                }
+            )
+        return corrected_slots
+
     def _build_forecast_slots_from_history_sync(
         self, now_utc: datetime
     ) -> tuple[list[dict[str, object]], _ForecastSummary]:
         """Build the current 192-slot forecast from retained slot history."""
+        previous_forecast_slots = [dict(slot) for slot in self._forecast_slots]
         history_rows = self._load_historical_slot_rows_sync(now_utc)
         summary = self._build_forecast_summary(history_rows)
         if len(history_rows) < FORECAST_COLD_START_MIN_FINALIZED_SLOTS:
@@ -1731,6 +1927,19 @@ class HouseholdForecastCoordinator:
                     "from": slot_start_local.strftime("%Y-%m-%dT%H:%M"),
                     "load": round(base_load_kw, 3),
                 }
+            )
+
+        residual_correction_kw = self._compute_residual_correction_kw_sync(
+            now_utc,
+            previous_forecast_slots=previous_forecast_slots,
+            learning_nights=summary.learning_nights,
+        )
+        if residual_correction_kw != 0.0:
+            forecast_slots = self._apply_residual_correction_to_forecast_slots(
+                forecast_slots,
+                forecast_slot_starts_utc,
+                now_utc,
+                residual_correction_kw,
             )
 
         return (

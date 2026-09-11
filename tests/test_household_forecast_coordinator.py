@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -832,6 +833,117 @@ async def test_coordinator_builds_learned_forecast_from_slot_history(
     assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.72)
     assert coordinator.forecast_slots[1]["load"] == pytest.approx(1.28)
     assert coordinator.forecast_slots[0]["load"] != coordinator.forecast_slots[1]["load"]
+
+
+def test_coordinator_applies_residual_correction_to_step_change(
+    tmp_path: Path,
+) -> None:
+    """Recent sustained errors should bend the next few forecast slots upward."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    store = MagicMock()
+    store.async_load = AsyncMock(return_value=None)
+    store.async_save = AsyncMock()
+
+    now_utc = datetime(2026, 9, 8, 18, 0, tzinfo=UTC)
+    local_now = dt_util.as_local(now_utc)
+    current_slot_index = (local_now.hour * 60 + local_now.minute) // 15
+    local_day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    base_day = local_day_start - timedelta(days=7)
+    current_day = local_day_start
+    step_start_slot = max(0, current_slot_index - 4)
+
+    async def _exercise() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        with (
+            patch(
+                "custom_components.energyadvisor.coordinators.household_forecast_coordinator.Store",
+                return_value=store,
+            ),
+            patch(
+                "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_state_change_event",
+                return_value=lambda: None,
+            ),
+            patch(
+                "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_change",
+                return_value=lambda: None,
+            ),
+            patch(
+                "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_interval",
+                return_value=lambda: None,
+            ),
+            patch.object(coordinator, "_slot_day_type", return_value="workday"),
+        ):
+            coordinator._store = store
+            await coordinator.async_setup()
+
+        db = coordinator._ensure_db()
+
+        def _insert_slot(day_start: datetime, slot_index: int, load_kw: float) -> None:
+            slot_start = day_start + timedelta(minutes=15 * slot_index)
+            db.execute(
+                "INSERT OR REPLACE INTO slot_rows "
+                "(slot_start_utc, slot_energy_kwh, load_kw, sample_count, "
+                "quality_score, features_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    slot_start.isoformat(timespec="seconds"),
+                    load_kw * 0.25,
+                    load_kw,
+                    1,
+                    1.0,
+                    json.dumps(
+                        {
+                            "slot_index": slot_index,
+                            "day_type": "workday",
+                            "is_holiday": False,
+                            "interval_count": 1,
+                            "sparse_interval_count": 0,
+                            "required_missing": False,
+                            "outdoor_temp_c": None,
+                            "event_flags": {
+                                "water_heater_active": 0,
+                                "central_heating_active": 0,
+                            },
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                ),
+            )
+
+        for day_offset in range(8):
+            day_start = base_day + timedelta(days=day_offset)
+            for slot_index in range(current_slot_index):
+                _insert_slot(day_start, slot_index, 0.6)
+        db.commit()
+
+        assert await coordinator._async_finalize_history(now_utc)
+
+        for slot_index in range(step_start_slot, current_slot_index):
+            _insert_slot(current_day, slot_index, 2.6)
+        db.commit()
+
+        with patch.object(
+            coordinator, "_compute_residual_correction_kw_sync", return_value=0.0
+        ):
+            baseline_slots, _summary = coordinator._build_forecast_slots_from_history_sync(
+                now_utc
+            )
+
+        assert await coordinator._async_finalize_history(now_utc)
+        return baseline_slots, coordinator.forecast_slots
+
+    baseline_slots, corrected_slots = asyncio.run(_exercise())
+    baseline_future = [float(slot["load"]) for slot in baseline_slots[current_slot_index:current_slot_index + 4]]
+    corrected_future = [float(slot["load"]) for slot in corrected_slots[current_slot_index:current_slot_index + 4]]
+    actual_future_kw = 2.6
+    baseline_mae = sum(abs(load - actual_future_kw) for load in baseline_future) / len(
+        baseline_future
+    )
+    corrected_mae = sum(
+        abs(load - actual_future_kw) for load in corrected_future
+    ) / len(corrected_future)
+
+    assert corrected_future[0] - baseline_future[0] <= 1.51
+    assert corrected_mae <= baseline_mae * 0.8
 
 
 def test_coordinator_keeps_historical_forecast_slots_stable_on_refresh(
