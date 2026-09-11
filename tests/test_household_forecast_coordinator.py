@@ -799,6 +799,19 @@ async def test_coordinator_builds_learned_forecast_from_slot_history(
             )
     db.commit()
 
+    meter_target = coordinator._capture_targets["sensor.household_meter"]
+    fresh_meter_sample = datetime(2026, 9, 9, 11, 59, 30, tzinfo=UTC)
+    await coordinator._async_capture_target(
+        meter_target,
+        SimpleNamespace(
+            entity_id=meter_target.entity_id,
+            state="12.500",
+            attributes={"unit_of_measurement": "kWh"},
+            last_updated=fresh_meter_sample,
+        ),
+        source="event",
+    )
+
     assert await coordinator._async_finalize_history(
         datetime(2026, 9, 9, 12, 0, tzinfo=UTC)
     )
@@ -829,10 +842,209 @@ async def test_coordinator_builds_learned_forecast_from_slot_history(
         base_day + timedelta(days=7, minutes=45)
     ).date().isoformat()
     assert coordinator.last_sample_kw == pytest.approx(0.94)
+    assert coordinator.quality_status == "ok"
+    assert coordinator.quality_warnings == []
+    assert coordinator.last_valid_required_sample == dt_util.as_local(
+        fresh_meter_sample
+    ).strftime("%Y-%m-%dT%H:%M")
     assert "seasonal baseline" in coordinator.reason
     assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.72)
     assert coordinator.forecast_slots[1]["load"] == pytest.approx(1.28)
     assert coordinator.forecast_slots[0]["load"] != coordinator.forecast_slots[1]["load"]
+
+
+@pytest.mark.asyncio
+async def test_coordinator_marks_required_meter_outage_as_stale(
+    tmp_path: Path,
+) -> None:
+    """A short required-meter outage should surface stale diagnostics."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    store = MagicMock()
+    store.async_load = AsyncMock(return_value=None)
+    store.async_save = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.Store",
+            return_value=store,
+        ),
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_state_change_event",
+            return_value=lambda: None,
+        ),
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_change",
+            return_value=lambda: None,
+        ),
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_interval",
+            return_value=lambda: None,
+        ),
+        patch.object(coordinator, "_slot_day_type", return_value="workday"),
+    ):
+        coordinator._store = store
+        await coordinator.async_setup()
+
+    db = coordinator._ensure_db()
+    base_day = datetime(2026, 9, 1, 0, 0, tzinfo=UTC)
+    for day_offset in range(8):
+        for slot_index, load_kw in ((0, 0.72), (1, 1.28), (2, 0.88), (3, 0.94)):
+            slot_start = base_day + timedelta(days=day_offset, minutes=15 * slot_index)
+            db.execute(
+                "INSERT OR REPLACE INTO slot_rows "
+                "(slot_start_utc, slot_energy_kwh, load_kw, sample_count, "
+                "quality_score, features_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    slot_start.isoformat(timespec="seconds"),
+                    load_kw * 0.25,
+                    load_kw,
+                    1,
+                    1.0,
+                    json.dumps(
+                        {
+                            "slot_index": slot_index,
+                            "day_type": "workday",
+                            "is_holiday": False,
+                            "interval_count": 1,
+                            "sparse_interval_count": 0,
+                            "required_missing": False,
+                            "outdoor_temp_c": None,
+                            "event_flags": {
+                                "water_heater_active": 0,
+                                "central_heating_active": 0,
+                            },
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                ),
+            )
+    db.commit()
+
+    meter_target = coordinator._capture_targets["sensor.household_meter"]
+    stale_meter_sample = datetime(2026, 9, 9, 11, 49, 30, tzinfo=UTC)
+    await coordinator._async_capture_target(
+        meter_target,
+        SimpleNamespace(
+            entity_id=meter_target.entity_id,
+            state="12.500",
+            attributes={"unit_of_measurement": "kWh"},
+            last_updated=stale_meter_sample,
+        ),
+        source="event",
+    )
+
+    assert await coordinator._async_finalize_history(
+        datetime(2026, 9, 9, 12, 0, tzinfo=UTC)
+    )
+
+    assert coordinator.quality_status == "stale"
+    assert "required_meter_stale" in coordinator.quality_warnings
+    assert "stale" in coordinator.reason
+    assert coordinator.last_valid_required_sample == dt_util.as_local(
+        stale_meter_sample
+    ).strftime("%Y-%m-%dT%H:%M")
+
+
+@pytest.mark.asyncio
+async def test_coordinator_records_invalid_sample_warning(tmp_path: Path) -> None:
+    """Dropped samples should surface as a retained quality warning."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    store = MagicMock()
+    store.async_load = AsyncMock(return_value=None)
+    store.async_save = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.Store",
+            return_value=store,
+        ),
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_state_change_event",
+            return_value=lambda: None,
+        ),
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_change",
+            return_value=lambda: None,
+        ),
+        patch(
+            "custom_components.energyadvisor.coordinators.household_forecast_coordinator.async_track_time_interval",
+            return_value=lambda: None,
+        ),
+        patch.object(coordinator, "_slot_day_type", return_value="workday"),
+    ):
+        coordinator._store = store
+        await coordinator.async_setup()
+
+    db = coordinator._ensure_db()
+    base_day = datetime(2026, 9, 1, 0, 0, tzinfo=UTC)
+    for day_offset in range(8):
+        for slot_index, load_kw in ((0, 0.72), (1, 1.28), (2, 0.88), (3, 0.94)):
+            slot_start = base_day + timedelta(days=day_offset, minutes=15 * slot_index)
+            db.execute(
+                "INSERT OR REPLACE INTO slot_rows "
+                "(slot_start_utc, slot_energy_kwh, load_kw, sample_count, "
+                "quality_score, features_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    slot_start.isoformat(timespec="seconds"),
+                    load_kw * 0.25,
+                    load_kw,
+                    1,
+                    1.0,
+                    json.dumps(
+                        {
+                            "slot_index": slot_index,
+                            "day_type": "workday",
+                            "is_holiday": False,
+                            "interval_count": 1,
+                            "sparse_interval_count": 0,
+                            "required_missing": False,
+                            "outdoor_temp_c": None,
+                            "event_flags": {
+                                "water_heater_active": 0,
+                                "central_heating_active": 0,
+                            },
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                ),
+            )
+    db.commit()
+
+    meter_target = coordinator._capture_targets["sensor.household_meter"]
+    fresh_meter_sample = datetime(2026, 9, 9, 11, 59, 30, tzinfo=UTC)
+    await coordinator._async_capture_target(
+        meter_target,
+        SimpleNamespace(
+            entity_id=meter_target.entity_id,
+            state="12.500",
+            attributes={"unit_of_measurement": "kWh"},
+            last_updated=fresh_meter_sample,
+        ),
+        source="event",
+    )
+    await coordinator._async_capture_target(
+        meter_target,
+        SimpleNamespace(
+            entity_id=meter_target.entity_id,
+            state="not-a-number",
+            attributes={"unit_of_measurement": "kWh"},
+            last_updated=fresh_meter_sample + timedelta(seconds=15),
+        ),
+        source="event",
+    )
+
+    assert await coordinator._async_finalize_history(
+        datetime(2026, 9, 9, 12, 0, tzinfo=UTC)
+    )
+
+    assert coordinator.quality_status == "degraded"
+    assert "invalid_sample_dropped" in coordinator.quality_warnings
+    assert "invalid samples were dropped" in coordinator.reason
+    assert coordinator.last_valid_required_sample == dt_util.as_local(
+        fresh_meter_sample
+    ).strftime("%Y-%m-%dT%H:%M")
 
 
 def test_coordinator_applies_residual_correction_to_step_change(

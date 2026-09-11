@@ -84,6 +84,13 @@ class HouseholdForecastSensor(SensorEntity):
             "last_forecast_generation": getattr(
                 self._coordinator, "last_forecast_generation", None
             ),
+            "quality_status": getattr(self._coordinator, "quality_status", "fallback"),
+            "quality_warnings": list(
+                getattr(self._coordinator, "quality_warnings", [])
+            ),
+            "last_valid_required_sample": getattr(
+                self._coordinator, "last_valid_required_sample", None
+            ),
             "household_load_forecast_w": (
                 round(household_load_forecast_w, 1)
                 if household_load_forecast_w is not None

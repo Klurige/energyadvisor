@@ -38,12 +38,17 @@ def _make_sensor(
     last_sample_date: str | None = None,
     last_sample_kw: float | None = None,
     last_forecast_generation: str | None = "2026-09-01T00:00",
+    quality_status: str = "fallback",
+    quality_warnings: list[str] | None = None,
+    last_valid_required_sample: str | None = None,
     forecast_slots: list[dict[str, object]] | None = None,
     reason: str = STATIC_REASON,
 ) -> HouseholdForecastSensor:
     """Create a household forecast sensor backed by a lightweight stub."""
     if forecast_slots is None:
         forecast_slots = []
+    if quality_warnings is None:
+        quality_warnings = []
     coordinator = SimpleNamespace(
         load_forecast_kw=load_forecast_kw,
         base_load_kw=load_forecast_kw,
@@ -54,6 +59,9 @@ def _make_sensor(
         last_sample_date=last_sample_date,
         last_sample_kw=last_sample_kw,
         last_forecast_generation=last_forecast_generation,
+        quality_status=quality_status,
+        quality_warnings=quality_warnings,
+        last_valid_required_sample=last_valid_required_sample,
         forecast_slots=forecast_slots,
         reason=reason,
         register_update_callback=MagicMock(),
@@ -110,6 +118,9 @@ def test_sensor_uses_preferred_entity_id_and_exposes_static_values() -> None:
     assert attrs["last_sample_date"] is None
     assert attrs["last_sample_kw"] is None
     assert attrs["last_forecast_generation"] == "2026-09-01T00:00"
+    assert attrs["quality_status"] == "fallback"
+    assert attrs["quality_warnings"] == []
+    assert attrs["last_valid_required_sample"] is None
     assert attrs["reason"] == STATIC_REASON
 
 
@@ -128,6 +139,9 @@ def test_sensor_rounds_values_from_coordinator() -> None:
         last_sample_date="2024-06-04",
         last_sample_kw=0.9123,
         forecast_slots=forecast_slots,
+        quality_status="ok",
+        quality_warnings=["warming_up"],
+        last_valid_required_sample="2026-08-31T23:45",
         reason="Static placeholder value.",
     )
 
@@ -142,6 +156,9 @@ def test_sensor_rounds_values_from_coordinator() -> None:
     assert attrs["last_sample_date"] == "2024-06-04"
     assert attrs["last_sample_kw"] == 0.912
     assert attrs["last_forecast_generation"] == "2026-09-01T00:00"
+    assert attrs["quality_status"] == "ok"
+    assert attrs["quality_warnings"] == ["warming_up"]
+    assert attrs["last_valid_required_sample"] == "2026-08-31T23:45"
     assert attrs["reason"] == "Static placeholder value."
 
 

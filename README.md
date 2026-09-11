@@ -116,6 +116,9 @@ After warm-up, a bounded residual correction can nudge the next 8 slots by up
 to +/-1.5 kW when two consecutive closed slots show a sustained error, which
 helps the forecast react faster to sudden load shifts without rewriting
 historical slots.
+The sensor also exposes `quality_status`, `quality_warnings`, and
+`last_valid_required_sample` so stale or degraded required-meter input is
+visible in HA.
 A companion SQLite history file at
 `.storage/energyadvisor_household_forecast_<entry_id>.db` stores the raw meter
 samples, interval-energy rows, slot rows, forecast checkpoints, and quiet-night

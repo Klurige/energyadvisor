@@ -403,11 +403,11 @@ The next Copilot session should start by reading the latest filled summary.
 
 ### Step 9 summary - Guardrails and diagnostics
 
-- Status: `TBD`
-- Files changed: `TBD`
-- What was implemented: `TBD`
-- Fallback/reliability outcomes: `TBD`
-- Final handover/remaining work: `TBD`
+- Status: `done`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `custom_components/energyadvisor/sensor/householdforecastsensor.py`, `tests/test_household_forecast_coordinator.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `docs/householdforecast.md`
+- What was implemented: Added sensor-facing diagnostics for `quality_status`, `quality_warnings`, and `last_valid_required_sample`, plus coordinator guardrails for stale required-meter samples and retained warnings for dropped invalid samples. The forecast still publishes a full 192-slot contract, but the reason string now explains stale/degraded/fallback states when the required meter is late or unavailable.
+- Fallback/reliability outcomes: Healthy runs report `quality_status=ok` with an empty warning list; short required-meter outages surface as `stale`; longer outages and sparse/invalid input surface as `degraded`; cold start stays on the fixed 0.60 kW fallback profile.
+- Final handover/remaining work: Step 9 is complete. The acceptance checks now have a diagnostic surface to verify against during restart and fault-injection tests.
 
 ## 10) Acceptance tests (checkable)
 

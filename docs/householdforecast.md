@@ -23,6 +23,8 @@ update when the forecast changes or refreshes. After warm-up, a bounded
 residual correction can nudge the next 8 slots by up to +/-1.5 kW when two
 consecutive closed slots show a sustained error, which helps the forecast
 adapt faster to sudden household-load shifts.
+The sensor also surfaces diagnostic attributes for stale or degraded inputs:
+`quality_status`, `quality_warnings`, and `last_valid_required_sample`.
 
 ---
 
@@ -83,6 +85,9 @@ Unit: `kW` | Device class: `power`
 | `last_sample_date` | str \| null | Most recent learned sample date |
 | `last_sample_kw` | float \| null | Most recent learned sample in kW |
 | `last_forecast_generation` | str | Local `YYYY-MM-DDTHH:MM` timestamp of the latest republish |
+| `quality_status` | str | Diagnostic state: `ok`, `degraded`, `stale`, or `fallback` |
+| `quality_warnings` | list[str] | Machine-readable warning codes; empty when the feed is healthy |
+| `last_valid_required_sample` | str \| null | Local `YYYY-MM-DDTHH:MM` timestamp of the latest valid required meter sample |
 | `reason` | str | Human-readable status message describing cold start, warm-up, or learned baseline mode |
 
 The `reason` attribute currently reports one of:
@@ -90,3 +95,5 @@ The `reason` attribute currently reports one of:
 - `Household forecast is in cold-start mode; using a fixed 600 W profile.`
 - `Household forecast is warming up; using a recency-weighted baseline from N learned days of slot history.`
 - `Household forecast is using a seasonal baseline learned from N days of slot history.`
+- When the required meter is stale or missing, `reason` also explains the
+  stale/degraded state while keeping the 192-slot forecast available.

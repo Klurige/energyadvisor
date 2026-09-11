@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import logging
+import math
 import os
 import re
 import sqlite3
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -69,6 +69,7 @@ RESIDUAL_APPLY_HORIZON_SLOTS = 8
 RESIDUAL_DECAY_FACTOR = 0.82
 RESIDUAL_MIN_CONSECUTIVE_SLOTS = 2
 RESIDUAL_MAX_STALE_MINUTES = 30
+QUALITY_WARNING_RETENTION = timedelta(days=1)
 STATIC_LOAD_FORECAST_W = 600.0
 STATIC_LOAD_FORECAST_KW = STATIC_LOAD_FORECAST_W / 1000.0
 STATIC_REASON = (
@@ -88,6 +89,18 @@ _ACTIVE_EVENT_STATES = {"on", "true", "active", "heating", "home"}
 _INACTIVE_EVENT_STATES = {"off", "false", "inactive", "idle", "standby"}
 _POWER_UNITS = {"w", "kw", "mw"}
 _ENERGY_UNITS = {"wh", "kwh", "mwh"}
+QUALITY_STATUS_OK = "ok"
+QUALITY_STATUS_DEGRADED = "degraded"
+QUALITY_STATUS_STALE = "stale"
+QUALITY_STATUS_FALLBACK = "fallback"
+QUALITY_WARNING_INSUFFICIENT_HISTORY = "insufficient_history"
+QUALITY_WARNING_REQUIRED_METER_MISSING = "required_meter_missing"
+QUALITY_WARNING_REQUIRED_METER_STALE = "required_meter_stale"
+QUALITY_WARNING_REQUIRED_METER_OUTAGE = "required_meter_outage"
+QUALITY_WARNING_SPARSE_SAMPLING = "sparse_sampling"
+QUALITY_WARNING_INVALID_SAMPLE_DROPPED = "invalid_sample_dropped"
+QUALITY_WARNING_WARMING_UP = "warming_up"
+QUALITY_WARNING_META_KEY = "quality_warning_state"
 
 
 @dataclass(slots=True)
@@ -207,6 +220,9 @@ class _ForecastSummary:
     last_sample_date: str | None = None
     last_sample_kw: float | None = None
     reason: str = STATIC_REASON
+    quality_status: str = QUALITY_STATUS_FALLBACK
+    quality_warnings: list[str] = field(default_factory=list)
+    last_valid_required_sample: str | None = None
 
 
 class HouseholdForecastCoordinator:
@@ -239,6 +255,7 @@ class HouseholdForecastCoordinator:
         self._capture_targets: dict[str, _CaptureTarget] = {}
         self._latest_numeric_samples: dict[str, _LatestNumericSample] = {}
         self._latest_event_samples: dict[str, _LatestEventSample] = {}
+        self._quality_warning_state: dict[str, datetime] = {}
         self._last_polled_utc_by_key: dict[str, datetime] = {}
         self._last_raw_prune_utc: datetime | None = None
         self._last_finalized_slot_utc: datetime | None = None
@@ -356,11 +373,26 @@ class HouseholdForecastCoordinator:
         return self._forecast_summary.last_sample_kw
 
     @property
+    def last_valid_required_sample(self) -> str | None:
+        """Return the most recent valid required meter sample timestamp."""
+        return self._forecast_summary.last_valid_required_sample
+
+    @property
     def reason(self) -> str:
         """Return a human-readable status message."""
         if self._status_message != STATIC_REASON:
             return self._status_message
         return self._forecast_summary.reason or self._status_message
+
+    @property
+    def quality_status(self) -> str:
+        """Return the current diagnostic quality status."""
+        return self._forecast_summary.quality_status
+
+    @property
+    def quality_warnings(self) -> list[str]:
+        """Return machine-readable diagnostic warnings."""
+        return list(self._forecast_summary.quality_warnings)
 
     @property
     def last_forecast_generation(self) -> str:
@@ -378,6 +410,11 @@ class HouseholdForecastCoordinator:
             )
             self._set_status(
                 "Household forecast is waiting for the required household meter."
+            )
+            self._forecast_summary = _ForecastSummary(
+                reason=self._status_message,
+                quality_status=QUALITY_STATUS_FALLBACK,
+                quality_warnings=[QUALITY_WARNING_REQUIRED_METER_MISSING],
             )
             return
 
@@ -490,6 +527,89 @@ class HouseholdForecastCoordinator:
             return
         self._status_message = message
         self._notify_update()
+
+    def _prune_quality_warning_state(self, now_utc: datetime) -> None:
+        """Keep only recent warning codes in memory."""
+        cutoff_utc = self._normalize_utc_timestamp(now_utc) - QUALITY_WARNING_RETENTION
+        self._quality_warning_state = {
+            code: ts
+            for code, ts in self._quality_warning_state.items()
+            if ts >= cutoff_utc
+        }
+
+    def _load_quality_warning_state_sync(self) -> None:
+        """Load the persisted quality-warning state from SQLite."""
+        db = self._ensure_db()
+        row = db.execute(
+            "SELECT value FROM meta WHERE key = ?",
+            (QUALITY_WARNING_META_KEY,),
+        ).fetchone()
+        self._quality_warning_state.clear()
+        if not row or not row[0]:
+            return
+
+        try:
+            payload = json.loads(str(row[0]))
+        except json.JSONDecodeError:
+            _LOGGER.warning("Household forecast stored quality warnings were invalid")
+            return
+        if not isinstance(payload, Mapping):
+            return
+
+        now_utc = self._normalize_utc_timestamp(dt_util.now())
+        cutoff_utc = now_utc - QUALITY_WARNING_RETENTION
+        for code, timestamp_text in payload.items():
+            try:
+                timestamp = self._parse_utc_timestamp(str(timestamp_text))
+            except (TypeError, ValueError):
+                continue
+            if timestamp >= cutoff_utc:
+                self._quality_warning_state[str(code)] = timestamp
+
+    def _store_quality_warning_state_sync(self) -> None:
+        """Persist the in-memory quality-warning state to SQLite."""
+        db = self._ensure_db()
+        db.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (
+                QUALITY_WARNING_META_KEY,
+                json.dumps(
+                    {
+                        code: self._format_utc_timestamp(ts)
+                        for code, ts in self._quality_warning_state.items()
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ),
+        )
+        db.commit()
+
+    def _record_quality_warning_sync(
+        self, warning_code: str, timestamp_utc: datetime | None = None
+    ) -> None:
+        """Remember a recent quality warning for diagnostics."""
+        warning_timestamp = self._normalize_utc_timestamp(timestamp_utc)
+        self._quality_warning_state[warning_code] = warning_timestamp
+        self._prune_quality_warning_state(warning_timestamp)
+        self._store_quality_warning_state_sync()
+
+    async def _async_record_quality_warning(
+        self, warning_code: str, timestamp_utc: datetime | None = None
+    ) -> None:
+        """Record a quality warning from an async capture path."""
+        warning_timestamp = self._normalize_utc_timestamp(timestamp_utc)
+        async with self._db_write_lock:
+            await self.hass.async_add_executor_job(
+                self._record_quality_warning_sync,
+                warning_code,
+                warning_timestamp,
+            )
+
+    def _active_quality_warning_codes(self, now_utc: datetime) -> set[str]:
+        """Return warning codes that are still recent enough to show."""
+        self._prune_quality_warning_state(now_utc)
+        return set(self._quality_warning_state)
 
     def _serialize_state(self) -> dict[str, Any]:
         """Serialize static housekeeping state."""
@@ -862,6 +982,7 @@ class HouseholdForecastCoordinator:
         db = self._ensure_db()
         self._latest_numeric_samples.clear()
         self._latest_event_samples.clear()
+        self._quality_warning_state.clear()
         self._last_polled_utc_by_key.clear()
         self._forecast_slots = []
         self._forecast_summary = _ForecastSummary()
@@ -920,6 +1041,8 @@ class HouseholdForecastCoordinator:
         if prune_row and prune_row[0]:
             self._last_raw_prune_utc = self._parse_utc_timestamp(str(prune_row[0]))
 
+        self._load_quality_warning_state_sync()
+
         latest_forecast_row = db.execute(
             "SELECT generated_at_utc FROM forecast_runs "
             "ORDER BY generated_at_utc DESC LIMIT 1"
@@ -950,7 +1073,10 @@ class HouseholdForecastCoordinator:
 
         history_rows = self._load_historical_slot_rows_sync()
         if history_rows:
-            self._forecast_summary = self._build_forecast_summary(history_rows)
+            self._forecast_summary = self._build_forecast_summary(
+                history_rows,
+                dt_util.now(),
+            )
 
     async def _async_initialize_capture_db(self) -> None:
         """Open the SQLite history file and prime in-memory caches."""
@@ -980,6 +1106,10 @@ class HouseholdForecastCoordinator:
         """Persist a numeric sample when it is new or due for a heartbeat."""
         value = self._coerce_numeric_state(getattr(state, "state", None))
         if value is None:
+            await self._async_record_quality_warning(
+                QUALITY_WARNING_INVALID_SAMPLE_DROPPED,
+                captured_at or self._state_timestamp_utc(state),
+            )
             return
         unit = self._extract_unit(state)
         ts_utc = self._normalize_utc_timestamp(
@@ -1022,9 +1152,17 @@ class HouseholdForecastCoordinator:
         """Persist a binary/event sample when it is new or due for a heartbeat."""
         state_text = str(getattr(state, "state", "")).strip()
         if not state_text or state_text in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
+            await self._async_record_quality_warning(
+                QUALITY_WARNING_INVALID_SAMPLE_DROPPED,
+                captured_at or self._state_timestamp_utc(state),
+            )
             return
         state_num = self._coerce_event_state_num(state_text)
         if state_num is None:
+            await self._async_record_quality_warning(
+                QUALITY_WARNING_INVALID_SAMPLE_DROPPED,
+                captured_at or self._state_timestamp_utc(state),
+            )
             return
         ts_utc = self._normalize_utc_timestamp(
             captured_at or self._state_timestamp_utc(state)
@@ -1221,8 +1359,14 @@ class HouseholdForecastCoordinator:
         previous_family = self._unit_family(previous.unit)
         current_family = self._unit_family(current.unit)
         if previous_family is None or current_family is None:
+            self._record_quality_warning_sync(
+                QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
+            )
             return None
         if previous_family != current_family:
+            self._record_quality_warning_sync(
+                QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
+            )
             return None
 
         quality = "ok"
@@ -1235,6 +1379,9 @@ class HouseholdForecastCoordinator:
             previous_kw = self._value_to_kw(previous.value, previous.unit)
             current_kw = self._value_to_kw(current.value, current.unit)
             if previous_kw is None or current_kw is None:
+                self._record_quality_warning_sync(
+                    QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
+                )
                 return None
             delta_kwh = ((previous_kw + current_kw) / 2.0) * (
                 interval_sec / 3600.0
@@ -1243,16 +1390,28 @@ class HouseholdForecastCoordinator:
             previous_kwh = self._value_to_kwh(previous.value, previous.unit)
             current_kwh = self._value_to_kwh(current.value, current.unit)
             if previous_kwh is None or current_kwh is None:
+                self._record_quality_warning_sync(
+                    QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
+                )
                 return None
             delta_kwh = current_kwh - previous_kwh
             if delta_kwh < 0:
+                self._record_quality_warning_sync(
+                    QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
+                )
                 return None
 
         interval_hours = interval_sec / 3600.0
         interval_kw = delta_kwh / interval_hours if interval_hours > 0 else 0.0
         if not math.isfinite(delta_kwh) or not math.isfinite(interval_kw):
+            self._record_quality_warning_sync(
+                QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
+            )
             return None
         if delta_kwh < 0:
+            self._record_quality_warning_sync(
+                QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
+            )
             return None
 
         return _IntervalEnergyRow(
@@ -1579,11 +1738,25 @@ class HouseholdForecastCoordinator:
         return history_rows
 
     def _build_forecast_summary(
-        self, history_rows: list[_HistoricalSlotRow]
+        self,
+        history_rows: list[_HistoricalSlotRow],
+        now_utc: datetime | None = None,
     ) -> _ForecastSummary:
         """Summarize the retained history for the sensor attributes."""
+        normalized_now_utc = self._normalize_utc_timestamp(now_utc)
+        required_sample = self._latest_numeric_samples.get(CONF_POWER_METER_CONSUMPTION)
+        last_valid_required_sample = (
+            dt_util.as_local(required_sample.ts_utc).strftime("%Y-%m-%dT%H:%M")
+            if required_sample is not None
+            else None
+        )
+
         if len(history_rows) < FORECAST_COLD_START_MIN_FINALIZED_SLOTS:
-            return _ForecastSummary()
+            return _ForecastSummary(
+                quality_status=QUALITY_STATUS_FALLBACK,
+                quality_warnings=[QUALITY_WARNING_INSUFFICIENT_HISTORY],
+                last_valid_required_sample=last_valid_required_sample,
+            )
 
         local_dates = [
             dt_util.as_local(row.slot_start_utc).date() for row in history_rows
@@ -1592,22 +1765,111 @@ class HouseholdForecastCoordinator:
         last_sample = history_rows[-1]
         learning_nights = len(unique_dates)
         if learning_nights < FORECAST_MIN_HISTORY_DAYS:
-            reason = (
+            base_reason = (
                 "Household forecast is warming up; using a recency-weighted "
                 f"baseline from {learning_nights} learned days of slot history."
             )
+            quality_status = QUALITY_STATUS_DEGRADED
+            quality_warnings: set[str] = {QUALITY_WARNING_WARMING_UP}
         else:
-            reason = (
+            base_reason = (
                 "Household forecast is using a seasonal baseline learned from "
                 f"{learning_nights} days of slot history."
             )
+            quality_status = QUALITY_STATUS_OK
+            quality_warnings = set()
+
+        recent_rows = self._load_recent_closed_slot_rows_sync(normalized_now_utc)
+        if any(
+            row.sample_count <= 0 or row.quality_score < 1.0 for row in recent_rows
+        ):
+            quality_warnings.add(QUALITY_WARNING_SPARSE_SAMPLING)
+            if quality_status == QUALITY_STATUS_OK:
+                quality_status = QUALITY_STATUS_DEGRADED
+
+        active_quality_warnings = self._active_quality_warning_codes(
+            normalized_now_utc
+        )
+        if active_quality_warnings:
+            quality_warnings.update(active_quality_warnings)
+            if (
+                QUALITY_WARNING_INVALID_SAMPLE_DROPPED in active_quality_warnings
+                and quality_status == QUALITY_STATUS_OK
+            ):
+                quality_status = QUALITY_STATUS_DEGRADED
+
+        required_sample_age_sec: float | None = None
+        if required_sample is None:
+            if history_rows:
+                quality_warnings.add(QUALITY_WARNING_REQUIRED_METER_MISSING)
+                if quality_status == QUALITY_STATUS_OK:
+                    quality_status = QUALITY_STATUS_DEGRADED
+            else:
+                quality_warnings.add(QUALITY_WARNING_INSUFFICIENT_HISTORY)
+        else:
+            required_sample_age_sec = max(
+                0.0,
+                (normalized_now_utc - required_sample.ts_utc).total_seconds(),
+            )
+            if required_sample_age_sec >= HARD_GAP_SEC:
+                quality_warnings.add(QUALITY_WARNING_REQUIRED_METER_OUTAGE)
+                if quality_status != QUALITY_STATUS_FALLBACK:
+                    quality_status = QUALITY_STATUS_DEGRADED
+            elif required_sample_age_sec > RAW_HEARTBEAT_SECONDS:
+                quality_warnings.add(QUALITY_WARNING_REQUIRED_METER_STALE)
+                if quality_status != QUALITY_STATUS_FALLBACK:
+                    quality_status = QUALITY_STATUS_STALE
+
+        if quality_status == QUALITY_STATUS_OK and quality_warnings:
+            quality_status = QUALITY_STATUS_DEGRADED
+
+        reason = base_reason
+        if quality_status == QUALITY_STATUS_STALE:
+            stale_reference = (
+                last_valid_required_sample if last_valid_required_sample is not None else "the required household meter"
+            )
+            reason = (
+                f"Household forecast is stale; required household meter last "
+                f"updated at {stale_reference}. {base_reason}"
+            )
+        elif quality_status == QUALITY_STATUS_DEGRADED:
+            if QUALITY_WARNING_REQUIRED_METER_OUTAGE in quality_warnings:
+                lead = (
+                    f"the required household meter last updated at "
+                    f"{last_valid_required_sample}"
+                    if last_valid_required_sample is not None
+                    else "the required household meter is unavailable"
+                )
+            elif QUALITY_WARNING_REQUIRED_METER_MISSING in quality_warnings:
+                lead = "the required household meter is unavailable"
+            elif QUALITY_WARNING_SPARSE_SAMPLING in quality_warnings:
+                lead = "recent meter intervals were sparse"
+            elif QUALITY_WARNING_INVALID_SAMPLE_DROPPED in quality_warnings:
+                lead = "one or more invalid samples were dropped"
+            else:
+                lead = None
+
+            if lead is not None:
+                reason = f"Household forecast is degraded because {lead}. {base_reason}"
+        elif quality_status == QUALITY_STATUS_FALLBACK:
+            if QUALITY_WARNING_REQUIRED_METER_MISSING in quality_warnings and history_rows:
+                reason = (
+                    f"{STATIC_REASON} The required household meter is unavailable."
+                )
+            else:
+                reason = STATIC_REASON
 
         return _ForecastSummary(
             learning_nights=learning_nights,
             data_since=unique_dates[0].isoformat(),
-            last_sample_date=dt_util.as_local(last_sample.slot_start_utc).date().isoformat(),
+            last_sample_date=dt_util.as_local(
+                last_sample.slot_start_utc
+            ).date().isoformat(),
             last_sample_kw=last_sample.load_kw,
             reason=reason,
+            quality_status=quality_status,
+            quality_warnings=sorted(quality_warnings),
+            last_valid_required_sample=last_valid_required_sample,
         )
 
     def _load_recent_closed_slot_rows_sync(
@@ -1804,7 +2066,7 @@ class HouseholdForecastCoordinator:
         """Build the current 192-slot forecast from retained slot history."""
         previous_forecast_slots = [dict(slot) for slot in self._forecast_slots]
         history_rows = self._load_historical_slot_rows_sync(now_utc)
-        summary = self._build_forecast_summary(history_rows)
+        summary = self._build_forecast_summary(history_rows, now_utc)
         if len(history_rows) < FORECAST_COLD_START_MIN_FINALIZED_SLOTS:
             forecast_slots = self._build_constant_forecast_slots(
                 STATIC_LOAD_FORECAST_KW,
