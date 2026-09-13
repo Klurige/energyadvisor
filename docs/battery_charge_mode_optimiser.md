@@ -66,15 +66,15 @@ The valid modes are exactly:
 
 Definitions:
 - `standby`: the battery is idle; no charge or discharge flow is active.
-- `maxuse`: the battery is intentionally idle for this slot; no explicit charge or discharge flow is scheduled. This is the default fallback mode and the preferred mode when the optimizer cannot confidently distinguish a profitable action.
-- `charge`: the optimizer intends to charge the battery during the slot. The schedule entry must include `target_soc` equal to the end-of-slot SoC target.
+- `maxuse`: Prioritises solar for household use. If solar is not enough, battery will be used for household. If still not enough, energy will be imported from the grid. This is the default fallback mode and the preferred mode when the optimizer cannot confidently distinguish a profitable action.
+- `charge`: the optimizer intends to charge the battery during the slot, Primarily from solar surplus, but will top up with grid import to the set charging power. The schedule entry must include `target_soc` equal to the end-of-slot SoC target.
 - `discharge`: the battery discharges to serve household load. Battery discharge must never charge from PV. It may reduce grid import and may support self-consumption.
 - `sell`: the battery discharges for export at a favourable price. The schedule entry must include `target_soc` equal to the end-of-slot SoC target.
 
 Important rules:
 - Battery modes are mutually exclusive within a slot: `m_charge_t + m_discharge_t + m_sell_t + m_maxuse_t + m_standby_t = 1`.
-- `maxuse` is an idle mode: `b_ch_grid_t = 0`, `b_ch_pv_t = 0`, `b_dis_load_t = 0`, and `b_dis_export_t = 0` whenever `m_maxuse_t = 1`.
-- `standby` is also an idle mode: `b_ch_grid_t = 0`, `b_ch_pv_t = 0`, `b_dis_load_t = 0`, and `b_dis_export_t = 0` whenever `m_standby_t = 1`.
+- `maxuse` maximizes self-consumption: `b_ch_pv_t` may be non-zero (PV surplus tops up the battery) whenever `m_maxuse_t = 1`, but `b_ch_grid_t = 0`, `b_dis_load_t = 0`, and `b_dis_export_t = 0` always hold under `maxuse` — grid-funded charging and deliberate discharging are reserved for `charge`/`discharge`/`sell`.
+- `standby` is a fully idle mode: `b_ch_grid_t = 0`, `b_ch_pv_t = 0`, `b_dis_load_t = 0`, and `b_dis_export_t = 0` whenever `m_standby_t = 1`.
 - `target_soc` is required for `charge` and `sell` and must be end-of-slot SoC in percent.
 - The schedule object must always include a `target_soc` key; for `standby`, `maxuse`, and `discharge`, the value is `null`.
 - `maxuse` is preferred when the objective difference is numerically indiscernible or effectively zero.
@@ -495,7 +495,7 @@ The implementation is complete only when all of the following are true:
 - the canonical SoC equation and grid balance described above are implemented precisely
 - `charge` and `sell` include `target_soc` as end-of-slot SoC percentage
 - `maxuse` is the fallback mode and the preferred tie-break default
-- `optimized` is `false` when the optimizer falls back and `true` when the solver succeeds
+- `optimized` is `false` when the1 optimizer falls back and `true` when the solver succeeds
 - the battery never charges from PV while in discharge mode
 - the schedule is derived from the same flow equations used for objective and state constraints
 - invalid data and solver failures degrade to `maxuse` with an explicit reason string
@@ -505,3 +505,7 @@ The implementation is complete only when all of the following are true:
 ## 11. Implementation note
 
 This plan intentionally does not rely on `docs/old`; those files are deprecated and must not be used as implementation guidance.
+
+## 12 . Development environment
+* Development Home Assistant instance: 192.168.68.20
+* Long-lived token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI4M2M2ODhjMzc0OWY0MDJiYjUyNzcxNWZkZGNiNzQxNSIsImlhdCI6MTc4OTI4NDk1MCwiZXhwIjoyMTA0NjQ0OTUwfQ.YYL8uFVp4H2CcWm8x_CJNaPC-FQbJVJpjVWs8w3lukQ

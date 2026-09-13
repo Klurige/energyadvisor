@@ -15,10 +15,12 @@ from homeassistant.util import dt as dt_util
 
 from ..battery_optimizer import (
     BatteryOptimizationInputs,
+    household_forecast_slots_to_load_forecasts,
     optimize_battery_schedule,
 )
 from ..const import (
     CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MAX_SOC_PCT,
@@ -34,6 +36,9 @@ from .chargemodehelpers import default_modes, find_current_mode
 
 if TYPE_CHECKING:
     from .price import PriceSensor
+    from ..coordinators.household_forecast_coordinator import (
+        HouseholdForecastCoordinator,
+    )
     from ..coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -88,6 +93,12 @@ class BatteryChargeModeSensor(SensorEntity):
         self._battery_max_soc_pct = (
             float(battery_max_soc_pct) if battery_max_soc_pct is not None else 95.0
         )
+        battery_degradation_cost = entry.options.get(CONF_BATTERY_DEGRADATION_COST)
+        self._battery_degradation_cost = (
+            float(battery_degradation_cost)
+            if battery_degradation_cost is not None
+            else 0.0
+        )
         self._current_soc_pct: float | None = None
         self._current_target_soc_pct: float | None = None
         self._reason = "Waiting for electricity price data."
@@ -95,6 +106,7 @@ class BatteryChargeModeSensor(SensorEntity):
         self._remove_source_listener = None
         self._remove_soc_listener = None
         self._solar_coordinator: SolarForecastCoordinator | None = None
+        self._household_coordinator: HouseholdForecastCoordinator | None = None
         self._modes = default_modes()
         self._current_mode = find_current_mode(self._modes).get("mode", "unknown")
 
@@ -132,6 +144,23 @@ class BatteryChargeModeSensor(SensorEntity):
                 solar_coordinator.unregister_update_callback(self._handle_source_update)
 
             self.async_on_remove(_remove_solar_listener)
+
+        self._household_coordinator = getattr(
+            runtime_data, "household_coordinator", None
+        )
+        if self._household_coordinator is not None:
+            household_coordinator = self._household_coordinator
+            _LOGGER.debug(
+                "Battery charge mode sensor registering listener for household forecast"
+            )
+            household_coordinator.register_update_callback(self._handle_source_update)
+
+            def _remove_household_listener() -> None:
+                household_coordinator.unregister_update_callback(
+                    self._handle_source_update
+                )
+
+            self.async_on_remove(_remove_household_listener)
 
         if self._optimization_enabled and self._battery_soc_entity_id:
             _LOGGER.debug(
@@ -235,6 +264,8 @@ class BatteryChargeModeSensor(SensorEntity):
             horizon_hours=self._optimization_horizon_hours,
             optimization_enabled=self._optimization_enabled,
             solar_forecasts=solar_forecasts,
+            load_forecasts=self._read_load_forecasts(),
+            degradation_cost=self._battery_degradation_cost,
         )
 
     def _read_solar_forecasts(self) -> list[dict[str, object]]:
@@ -243,6 +274,20 @@ class BatteryChargeModeSensor(SensorEntity):
             return []
         forecasts = getattr(self._solar_coordinator, "forecast", []) or []
         return [dict(entry) for entry in forecasts if isinstance(entry, dict)]
+
+    def _read_load_forecasts(self) -> list[dict[str, object]]:
+        """Read household load forecast slots from the registered coordinator.
+
+        Adapts ``HouseholdForecastCoordinator.forecast_slots`` (authoritative
+        48-hour load forecast) into the optimizer's
+        ``{"start", "end", "load_kwh"}`` shape.
+        """
+        if self._household_coordinator is None:
+            return []
+        forecast_slots = getattr(self._household_coordinator, "forecast_slots", []) or []
+        return household_forecast_slots_to_load_forecasts(
+            forecast_slots, dt_util.now()
+        )
 
     def calculate_battery_mode(self) -> None:
         """Calculate the battery schedule and current mode."""

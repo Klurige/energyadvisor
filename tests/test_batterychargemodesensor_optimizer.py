@@ -89,9 +89,37 @@ def _build_sensor(
 
 
 def test_calculate_battery_mode_uses_optimizer_and_exposes_schedule() -> None:
-    """The sensor should expose the optimized schedule when enabled."""
+    """The sensor should expose the optimized schedule when enabled.
+
+    A third, cheap trailing rate slot is included so the profitable sell
+    slot is not the literal horizon-terminal slot: per the terminal SoC
+    value policy, selling in the exact last slot is objective-neutral by
+    design, which would otherwise make the lexicographic tie-break prefer
+    maxuse over a real, non-terminal sell.
+    """
     now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
-    sensor = _build_sensor(now)
+    rates = [
+        {
+            "start": now,
+            "end": now + datetime.timedelta(hours=1),
+            "cost": 0.10,
+            "credit": 0.05,
+        },
+        {
+            "start": now + datetime.timedelta(hours=1),
+            "end": now + datetime.timedelta(hours=2),
+            "cost": 0.80,
+            "credit": 0.90,
+        },
+        {
+            "start": now + datetime.timedelta(hours=2),
+            "end": now + datetime.timedelta(hours=3),
+            "cost": 0.10,
+            "credit": 0.05,
+        },
+    ]
+    sensor = _build_sensor(now, rates=rates)
+    sensor._optimization_horizon_hours = 3.0
 
     with (
         patch(
@@ -111,12 +139,10 @@ def test_calculate_battery_mode_uses_optimizer_and_exposes_schedule() -> None:
     assert attrs["optimization_enabled"] is True
     assert attrs["current_soc_pct"] == 50.0
     assert attrs["current_target_soc"] == 80.0
-    assert attrs["reason"].startswith("Optimized 2h price schedule with HiGHS")
+    assert attrs["reason"].startswith("Optimized 3h price schedule with HiGHS")
     assert attrs["solver"] == "HIGHS"
-    assert [entry["mode"] for entry in attrs["modes"]] == [
-        "charge",
-        "sell",
-    ]
+    assert attrs["modes"][0]["mode"] == "charge"
+    assert attrs["modes"][1]["mode"] == "sell"
     assert attrs["modes"][0]["target_soc"] == 80.0
     assert attrs["modes"][1]["target_soc"] == 20.0
     assert "charge_entries" not in attrs

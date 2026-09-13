@@ -220,13 +220,15 @@ See [docs/solarforecast.md](docs/old/solarforecast.md) for the full solar foreca
   - `solver`: Solver used for the most recent optimization run, or `null` when falling back.
 
 When optimization is enabled and the SoC sensor is available, the helper uses
-the HiGHS solver through the `highspy` Python bindings to solve a linear
-program over the configured horizon. If a solar forecast is configured, the
-helper reserves battery headroom for the forecast solar production before
-falling back to the legacy price schedule when the optimizer or solver stack
-is unavailable.
+the HiGHS solver through the `highspy` Python bindings to solve a mixed-integer
+program over the configured horizon, with mutually exclusive battery modes
+per slot and explicit PV/grid/load energy-balance constraints. If a solar
+forecast is configured, the helper reserves battery headroom for the forecast
+solar production. The optimizer falls back to a `maxuse` schedule with an
+explicit reason string whenever inputs are invalid or the solver fails.
 
-See [docs/batterychargemode.md](docs/old/batterychargemode.md) for the battery scheduling rules and configuration details.
+See [docs/battery_charge_mode_optimiser.md](docs/battery_charge_mode_optimiser.md)
+for the full MILP specification and configuration details.
 
 ### `energyadvisor.get_levels`
 - **Description:** The price levels for today and tomorrow as a string with one char per time period. Main purpose is to provide data for the Level Indicator Clock (https://github.com/Klurige/LevelIndicatorClock)
