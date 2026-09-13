@@ -48,8 +48,6 @@ from ..const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-WINDOW_START_HOUR = 1
-WINDOW_END_HOUR = 4
 STORE_VERSION = 1
 STORE_MODE = "static"
 DB_SCHEMA_VERSION = 1
@@ -353,6 +351,29 @@ class HouseholdForecastCoordinator:
         return self._build_constant_forecast_slots(self._load_forecast_kw)
 
     @property
+    def current_load_kw(self) -> float:
+        """Return the load for the slot covering the current local time.
+
+        The ``forecasts`` array is anchored to local midnight (slot 0), so the
+        current in-progress slot is not always index 0. This looks up the
+        slot that actually covers "now" rather than assuming index 0.
+        """
+        slots = self.forecast_slots
+        index = self._current_slot_index_local()
+        if slots and 0 <= index < len(slots):
+            try:
+                return round(float(slots[index]["load"]), 3)
+            except (KeyError, TypeError, ValueError):
+                pass
+        return round(self._load_forecast_kw, 3)
+
+    def _current_slot_index_local(self, now: datetime | None = None) -> int:
+        """Return the index of the slot covering the current local time."""
+        local_now = dt_util.as_local(now) if now is not None else dt_util.now()
+        minutes_since_midnight = local_now.hour * 60 + local_now.minute
+        return minutes_since_midnight // SLOT_MINUTES
+
+    @property
     def learning_nights(self) -> int:
         """Return the number of retained learning days."""
         return self._forecast_summary.learning_nights
@@ -421,40 +442,6 @@ class HouseholdForecastCoordinator:
         self._capture_targets = self._build_capture_targets()
         await self._async_initialize_capture_db()
 
-        quiet_sensor_entities = [
-            entity_id
-            for entity_id in (
-                self._water_heater_entity,
-                self._central_heating_entity,
-            )
-            if entity_id
-        ]
-        if quiet_sensor_entities:
-            self._listeners.append(
-                async_track_state_change_event(
-                    self.hass,
-                    quiet_sensor_entities,
-                    self._handle_quiet_sensor_change,
-                )
-            )
-        self._listeners.append(
-            async_track_time_change(
-                self.hass,
-                self._handle_window_start,
-                hour=WINDOW_START_HOUR,
-                minute=0,
-                second=0,
-            )
-        )
-        self._listeners.append(
-            async_track_time_change(
-                self.hass,
-                self._handle_window_finish,
-                hour=WINDOW_END_HOUR,
-                minute=0,
-                second=0,
-            )
-        )
         self._listeners.append(
             async_track_time_change(
                 self.hass,
@@ -657,29 +644,6 @@ class HouseholdForecastCoordinator:
         """Persist static housekeeping state."""
         await self._store.async_save(self._serialize_state())
 
-    def _schedule_state_save(self) -> None:
-        """Schedule persistence after a state change."""
-        if self.hass is None:
-            return
-        save_coro = self._async_save_state()
-        save_task = self.hass.async_create_task(save_coro)
-        if save_task is None:
-            # Test doubles may not actually schedule the coroutine.
-            # Close it so Python does not warn about an un-awaited coroutine.
-            save_coro.close()
-            return
-
-    @callback
-    def _handle_window_start(self, _now=None) -> None:
-        """Retained for structure while learning is disabled."""
-        self._set_status(STATIC_REASON)
-        self._schedule_state_save()
-
-    @callback
-    def _handle_quiet_sensor_change(self, _event) -> None:
-        """Retained for structure while learning is disabled."""
-        self._set_status(STATIC_REASON)
-
     @callback
     def _handle_forecast_refresh(self, _now=None) -> None:
         """Refresh the forecast shell on the validation heartbeat."""
@@ -691,12 +655,6 @@ class HouseholdForecastCoordinator:
         )
         self._notify_update()
         self._schedule_async_task(self._async_refresh_forecast(refresh_now))
-
-    @callback
-    def _handle_window_finish(self, _now=None) -> None:
-        """Retained for structure while learning is disabled."""
-        self._set_status(STATIC_REASON)
-        self._schedule_state_save()
 
     # -- SQLite persistence ----------------------------------------------
 

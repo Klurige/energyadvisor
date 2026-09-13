@@ -64,15 +64,13 @@ class HouseholdForecastSensor(SensorEntity):
 
     @property
     def native_value(self) -> float:
-        """Return the current load forecast in kW."""
-        forecast_slots = self._coordinator.forecast_slots
-        if forecast_slots:
-            first_slot = forecast_slots[0]
-            try:
-                return round(float(first_slot["load"]), 3)
-            except (KeyError, TypeError, ValueError):
-                pass
-        return round(self._coordinator.load_forecast_kw, 3)
+        """Return the current in-progress slot's load forecast in kW.
+
+        The ``forecasts`` attribute is anchored to local midnight (slot 0),
+        so the current slot is not always the first array entry; the
+        coordinator looks up the slot that actually covers "now".
+        """
+        return self._coordinator.current_load_kw
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:

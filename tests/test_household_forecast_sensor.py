@@ -52,6 +52,7 @@ def _make_sensor(
     coordinator = SimpleNamespace(
         load_forecast_kw=load_forecast_kw,
         base_load_kw=load_forecast_kw,
+        current_load_kw=round(load_forecast_kw, 3),
         household_load_forecast_w=load_forecast_kw * 1000.0,
         household_base_load_w=load_forecast_kw * 1000.0,
         learning_nights=learning_nights,
@@ -204,22 +205,6 @@ def test_coordinator_exposes_static_placeholder_values() -> None:
     assert coordinator.reason == STATIC_REASON
 
 
-def test_coordinator_callbacks_keep_static_behavior() -> None:
-    """The retained callback structure should not alter static output."""
-    coordinator = _make_coordinator()
-
-    coordinator._handle_window_start()
-    coordinator._handle_quiet_sensor_change(
-        SimpleNamespace(data={"new_state": SimpleNamespace(state="on")})
-    )
-    coordinator._handle_forecast_refresh()
-    coordinator._handle_window_finish()
-
-    assert coordinator.load_forecast_kw == STATIC_LOAD_FORECAST_KW
-    assert coordinator.learning_nights == 0
-    assert coordinator.reason == STATIC_REASON
-
-
 def test_coordinator_refresh_updates_generation_timestamp() -> None:
     """The refresh heartbeat should update the visible generation marker."""
     with patch(
@@ -282,9 +267,9 @@ async def test_coordinator_setup_normalizes_legacy_storage() -> None:
 
     assert coordinator.load_forecast_kw == STATIC_LOAD_FORECAST_KW
     assert coordinator.reason == STATIC_REASON
-    assert len(coordinator._listeners) == 4
-    assert mock_state_change.call_count == 2
-    assert mock_time_change.call_count == 3
+    assert len(coordinator._listeners) == 1
+    assert mock_state_change.call_count == 1
+    assert mock_time_change.call_count == 1
     assert mock_time_interval.call_count == 1
     assert any(
         call.kwargs.get("minute") == [0, 15, 30, 45]

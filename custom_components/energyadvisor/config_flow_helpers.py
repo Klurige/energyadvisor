@@ -79,14 +79,20 @@ BATTERY_STEP_ENTITY_KEYS: tuple[str, ...] = (
 BATTERY_STEP_BOOL_KEYS: tuple[str, ...] = (
     CONF_BATTERY_OPTIMIZATION_ENABLED,
 )
-BATTERY_STEP_NUMERIC_KEYS: tuple[str, ...] = (
+BATTERY_HARDWARE_NUMERIC_KEYS: tuple[str, ...] = (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
+)
+BATTERY_OPTIMIZATION_NUMERIC_KEYS: tuple[str, ...] = (
     CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_MIN_SOC_PCT,
     CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_DEGRADATION_COST,
+)
+BATTERY_STEP_NUMERIC_KEYS: tuple[str, ...] = (
+    *BATTERY_HARDWARE_NUMERIC_KEYS,
+    *BATTERY_OPTIMIZATION_NUMERIC_KEYS,
 )
 GRID_METERING_ENTITY_KEYS: tuple[str, ...] = (
     CONF_GRID_IMPORT_ENTITY,
@@ -103,6 +109,14 @@ HOUSEHOLD_BINARY_ENTITY_KEYS: tuple[str, ...] = (
 )
 HOUSEHOLD_NUMERIC_KEYS: tuple[str, ...] = (
     CONF_CENTRAL_HEATING_POWER_W,
+)
+HOUSEHOLD_LOAD_ENTITY_KEYS: tuple[str, ...] = (
+    CONF_POWER_METER_CONSUMPTION,
+    CONF_OUTDOOR_TEMPERATURE_ENTITY,
+)
+HOUSEHOLD_ACTIVITY_ENTITY_KEYS: tuple[str, ...] = (
+    *HOUSEHOLD_BINARY_ENTITY_KEYS,
+    CONF_CENTRAL_HEATING_POWER_ENTITY,
 )
 HOT_WATER_ENTITY_KEYS: tuple[str, ...] = (
     CONF_WATER_HEATER_POWER_ENTITY,
@@ -197,17 +211,10 @@ def _build_solar_forecast_schema(values: dict[str, Any]) -> dict[Any, Any]:
     }
 
 
-def _build_battery_schema(
-    values: dict[str, Any], unit_of_measurement: str
-) -> dict[Any, Any]:
+def _build_battery_hardware_schema(values: dict[str, Any]) -> dict[Any, Any]:
     """Build the config schema for battery hardware inputs."""
     battery_max_charge_power = values.get(CONF_BATTERY_MAX_CHARGE_POWER_W)
     battery_max_discharge_power = values.get(CONF_BATTERY_MAX_DISCHARGE_POWER_W)
-    battery_optimization_horizon_hours = values.get(
-        CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS
-    )
-    battery_min_soc_pct = values.get(CONF_BATTERY_MIN_SOC_PCT)
-    battery_max_soc_pct = values.get(CONF_BATTERY_MAX_SOC_PCT)
     return {
         vol.Optional(
             CONF_BATTERY_CAPACITY_KWH,
@@ -228,6 +235,31 @@ def _build_battery_schema(
             ),
             description={"suffix": "W"},
         ): vol.All(vol.Coerce(float), vol.Range(min=1)),
+        vol.Optional(
+            CONF_BATTERY_SOC_ENTITY,
+            default=_schema_default(values.get(CONF_BATTERY_SOC_ENTITY)),
+            description={"suggested_value": values.get(CONF_BATTERY_SOC_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_BATTERY_CHARGE_POWER_ENTITY,
+            default=_schema_default(values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)),
+            description={
+                "suggested_value": values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)
+            },
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+    }
+
+
+def _build_battery_optimization_schema(
+    values: dict[str, Any], unit_of_measurement: str
+) -> dict[Any, Any]:
+    """Build the config schema for battery optimization inputs."""
+    battery_optimization_horizon_hours = values.get(
+        CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS
+    )
+    battery_min_soc_pct = values.get(CONF_BATTERY_MIN_SOC_PCT)
+    battery_max_soc_pct = values.get(CONF_BATTERY_MAX_SOC_PCT)
+    return {
         vol.Optional(
             CONF_BATTERY_OPTIMIZATION_ENABLED,
             default=bool(values.get(CONF_BATTERY_OPTIMIZATION_ENABLED, False)),
@@ -260,18 +292,6 @@ def _build_battery_schema(
             default=_schema_default(values.get(CONF_BATTERY_DEGRADATION_COST)),
             description={"suffix": unit_of_measurement},
         ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-        vol.Optional(
-            CONF_BATTERY_SOC_ENTITY,
-            default=_schema_default(values.get(CONF_BATTERY_SOC_ENTITY)),
-            description={"suggested_value": values.get(CONF_BATTERY_SOC_ENTITY)},
-        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
-        vol.Optional(
-            CONF_BATTERY_CHARGE_POWER_ENTITY,
-            default=_schema_default(values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)),
-            description={
-                "suggested_value": values.get(CONF_BATTERY_CHARGE_POWER_ENTITY)
-            },
-        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
     }
 
 
@@ -291,7 +311,7 @@ def _build_grid_metering_schema(values: dict[str, Any]) -> dict[Any, Any]:
     }
 
 
-def _build_household_schema(values: dict[str, Any]) -> dict[Any, Any]:
+def _build_household_load_schema(values: dict[str, Any]) -> dict[Any, Any]:
     """Build the config schema for household load inputs."""
     return {
         vol.Optional(
@@ -306,6 +326,12 @@ def _build_household_schema(values: dict[str, Any]) -> dict[Any, Any]:
                 "suggested_value": values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)
             },
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+    }
+
+
+def _build_household_activity_schema(values: dict[str, Any]) -> dict[Any, Any]:
+    """Build the config schema for household activity inputs."""
+    return {
         vol.Optional(
             CONF_WATER_HEATER_ACTIVE_ENTITY,
             default=_schema_default(values.get(CONF_WATER_HEATER_ACTIVE_ENTITY)),

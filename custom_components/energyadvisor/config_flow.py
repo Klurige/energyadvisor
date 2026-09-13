@@ -65,21 +65,25 @@ from .const import (
 from .config_flow_helpers import (
     ALL_OPTIMIZER_ENTITY_KEYS,
     ALL_OPTIMIZER_NUMERIC_KEYS,
+    BATTERY_HARDWARE_NUMERIC_KEYS,
+    BATTERY_OPTIMIZATION_NUMERIC_KEYS,
     BATTERY_STEP_ENTITY_KEYS,
     BATTERY_STEP_BOOL_KEYS,
     BATTERY_STEP_NUMERIC_KEYS,
     FLEXIBLE_LOADS_ENTITY_KEYS,
     FLEXIBLE_LOADS_NUMERIC_KEYS,
     GRID_METERING_ENTITY_KEYS,
-    HOUSEHOLD_BINARY_ENTITY_KEYS,
+    HOUSEHOLD_ACTIVITY_ENTITY_KEYS,
+    HOUSEHOLD_LOAD_ENTITY_KEYS,
     HOUSEHOLD_NUMERIC_KEYS,
-    HOUSEHOLD_SENSOR_ENTITY_KEYS,
     HOT_WATER_ENTITY_KEYS,
     HOT_WATER_NUMERIC_KEYS,
-    _build_battery_schema,
+    _build_battery_hardware_schema,
+    _build_battery_optimization_schema,
     _build_flexible_loads_schema,
     _build_grid_metering_schema,
-    _build_household_schema,
+    _build_household_activity_schema,
+    _build_household_load_schema,
     _build_hot_water_schema,
     _build_solar_forecast_schema,
     DEV_DEFAULTS,
@@ -517,7 +521,6 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors = {}
-        unit_of_measurement = self.data.get("unit_of_measurement", "")
         if user_input is not None:
             battery_entities = {
                 key: user_input.get(key) for key in BATTERY_STEP_ENTITY_KEYS
@@ -526,8 +529,6 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
                 _validate_battery_settings(
                     user_input.get(CONF_BATTERY_CAPACITY_KWH),
                     user_input.get(CONF_BATTERY_MAX_CHARGE_POWER_W),
-                    user_input.get(CONF_BATTERY_MIN_SOC_PCT),
-                    user_input.get(CONF_BATTERY_MAX_SOC_PCT),
                 )
             )
             if not errors:
@@ -535,26 +536,54 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
                     _validate_optional_sensor_entities(self.hass, battery_entities)
                 )
             if not errors:
-                for key in BATTERY_STEP_NUMERIC_KEYS:
+                for key in BATTERY_HARDWARE_NUMERIC_KEYS:
                     self.data[key] = user_input.get(key)
-                for key in BATTERY_STEP_BOOL_KEYS:
-                    self.data[key] = bool(user_input.get(key, False))
                 for key, entity_id in battery_entities.items():
                     self.data[key] = entity_id or None
-                return await self.async_step_grid_metering()
+                return await self.async_step_battery_optimization()
 
         form_values = {
             key: _form_value(self.data, key)
             for key in (
-                *BATTERY_STEP_NUMERIC_KEYS,
-                *BATTERY_STEP_BOOL_KEYS,
+                *BATTERY_HARDWARE_NUMERIC_KEYS,
                 *BATTERY_STEP_ENTITY_KEYS,
             )
         }
         return self.async_show_form(
             step_id="battery",
+            data_schema=vol.Schema(_build_battery_hardware_schema(form_values)),
+            errors=errors,
+        )
+
+    async def async_step_battery_optimization(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        unit_of_measurement = self.data.get("unit_of_measurement", "")
+        if user_input is not None:
+            errors.update(
+                _validate_battery_settings(
+                    self.data.get(CONF_BATTERY_CAPACITY_KWH),
+                    self.data.get(CONF_BATTERY_MAX_CHARGE_POWER_W),
+                    user_input.get(CONF_BATTERY_MIN_SOC_PCT),
+                    user_input.get(CONF_BATTERY_MAX_SOC_PCT),
+                )
+            )
+            if not errors:
+                for key in BATTERY_OPTIMIZATION_NUMERIC_KEYS:
+                    self.data[key] = user_input.get(key)
+                for key in BATTERY_STEP_BOOL_KEYS:
+                    self.data[key] = bool(user_input.get(key, False))
+                return await self.async_step_grid_metering()
+
+        form_values = {
+            key: _form_value(self.data, key)
+            for key in (*BATTERY_OPTIMIZATION_NUMERIC_KEYS, *BATTERY_STEP_BOOL_KEYS)
+        }
+        return self.async_show_form(
+            step_id="battery_optimization",
             data_schema=vol.Schema(
-                _build_battery_schema(form_values, unit_of_measurement)
+                _build_battery_optimization_schema(form_values, unit_of_measurement)
             ),
             errors=errors,
         )
@@ -588,11 +617,32 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
         errors = {}
         if user_input is not None:
             household_entities = {
-                key: user_input.get(key)
-                for key in (
-                    *HOUSEHOLD_SENSOR_ENTITY_KEYS,
-                    *HOUSEHOLD_BINARY_ENTITY_KEYS,
-                )
+                key: user_input.get(key) for key in HOUSEHOLD_LOAD_ENTITY_KEYS
+            }
+            errors.update(
+                _validate_optional_sensor_entities(self.hass, household_entities)
+            )
+            if not errors:
+                for key, entity_id in household_entities.items():
+                    self.data[key] = entity_id or None
+                return await self.async_step_household_activity()
+
+        form_values = {
+            key: _form_value(self.data, key) for key in HOUSEHOLD_LOAD_ENTITY_KEYS
+        }
+        return self.async_show_form(
+            step_id="household",
+            data_schema=vol.Schema(_build_household_load_schema(form_values)),
+            errors=errors,
+        )
+
+    async def async_step_household_activity(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            household_entities = {
+                key: user_input.get(key) for key in HOUSEHOLD_ACTIVITY_ENTITY_KEYS
             }
             errors.update(
                 _validate_optional_sensor_entities(self.hass, household_entities)
@@ -606,15 +656,11 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
 
         form_values = {
             key: _form_value(self.data, key)
-            for key in (
-                *HOUSEHOLD_SENSOR_ENTITY_KEYS,
-                *HOUSEHOLD_BINARY_ENTITY_KEYS,
-                *HOUSEHOLD_NUMERIC_KEYS,
-            )
+            for key in (*HOUSEHOLD_ACTIVITY_ENTITY_KEYS, *HOUSEHOLD_NUMERIC_KEYS)
         }
         return self.async_show_form(
-            step_id="household",
-            data_schema=vol.Schema(_build_household_schema(form_values)),
+            step_id="household_activity",
+            data_schema=vol.Schema(_build_household_activity_schema(form_values)),
             errors=errors,
         )
 
@@ -1027,8 +1073,6 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
                 _validate_battery_settings(
                     user_input.get(CONF_BATTERY_CAPACITY_KWH),
                     user_input.get(CONF_BATTERY_MAX_CHARGE_POWER_W),
-                    user_input.get(CONF_BATTERY_MIN_SOC_PCT),
-                    user_input.get(CONF_BATTERY_MAX_SOC_PCT),
                 )
             )
             if not errors:
@@ -1037,20 +1081,48 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
                 )
             if not errors:
                 self.current_options.update(user_input)
-                return await self.async_step_grid_metering()
+                return await self.async_step_battery_optimization()
 
         form_values = {
             key: _form_value(self.current_options, key)
             for key in (
-                *BATTERY_STEP_NUMERIC_KEYS,
-                *BATTERY_STEP_BOOL_KEYS,
+                *BATTERY_HARDWARE_NUMERIC_KEYS,
                 *BATTERY_STEP_ENTITY_KEYS,
             )
         }
         return self.async_show_form(
             step_id="battery",
+            data_schema=vol.Schema(_build_battery_hardware_schema(form_values)),
+            errors=errors,
+        )
+
+    async def async_step_battery_optimization(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            errors.update(
+                _validate_battery_settings(
+                    self.current_options.get(CONF_BATTERY_CAPACITY_KWH),
+                    self.current_options.get(CONF_BATTERY_MAX_CHARGE_POWER_W),
+                    user_input.get(CONF_BATTERY_MIN_SOC_PCT),
+                    user_input.get(CONF_BATTERY_MAX_SOC_PCT),
+                )
+            )
+            if not errors:
+                self.current_options.update(user_input)
+                return await self.async_step_grid_metering()
+
+        form_values = {
+            key: _form_value(self.current_options, key)
+            for key in (*BATTERY_OPTIMIZATION_NUMERIC_KEYS, *BATTERY_STEP_BOOL_KEYS)
+        }
+        return self.async_show_form(
+            step_id="battery_optimization",
             data_schema=vol.Schema(
-                _build_battery_schema(form_values, self.unit_of_measurement)
+                _build_battery_optimization_schema(
+                    form_values, self.unit_of_measurement
+                )
             ),
             errors=errors,
         )
@@ -1085,10 +1157,32 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
         if user_input is not None:
             household_entities = {
                 key: user_input.get(key)
-                for key in (
-                    *HOUSEHOLD_SENSOR_ENTITY_KEYS,
-                    *HOUSEHOLD_BINARY_ENTITY_KEYS,
-                )
+                for key in HOUSEHOLD_LOAD_ENTITY_KEYS
+            }
+            errors.update(
+                _validate_optional_sensor_entities(self.hass, household_entities)
+            )
+            if not errors:
+                self.current_options.update(user_input)
+                return await self.async_step_household_activity()
+
+        form_values = {
+            key: _form_value(self.current_options, key)
+            for key in HOUSEHOLD_LOAD_ENTITY_KEYS
+        }
+        return self.async_show_form(
+            step_id="household",
+            data_schema=vol.Schema(_build_household_load_schema(form_values)),
+            errors=errors,
+        )
+
+    async def async_step_household_activity(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
+        if user_input is not None:
+            household_entities = {
+                key: user_input.get(key) for key in HOUSEHOLD_ACTIVITY_ENTITY_KEYS
             }
             errors.update(
                 _validate_optional_sensor_entities(self.hass, household_entities)
@@ -1101,15 +1195,11 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
 
         form_values = {
             key: _form_value(self.current_options, key)
-            for key in (
-                *HOUSEHOLD_SENSOR_ENTITY_KEYS,
-                *HOUSEHOLD_BINARY_ENTITY_KEYS,
-                *HOUSEHOLD_NUMERIC_KEYS,
-            )
+            for key in (*HOUSEHOLD_ACTIVITY_ENTITY_KEYS, *HOUSEHOLD_NUMERIC_KEYS)
         }
         return self.async_show_form(
-            step_id="household",
-            data_schema=vol.Schema(_build_household_schema(form_values)),
+            step_id="household_activity",
+            data_schema=vol.Schema(_build_household_activity_schema(form_values)),
             errors=errors,
         )
 

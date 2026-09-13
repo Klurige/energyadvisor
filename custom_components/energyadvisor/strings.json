@@ -127,7 +127,7 @@
       },
       "household": {
         "title": "Household load",
-        "description": "Link sensors used to learn the household load forecast automatically. The load forecast is estimated from the energy meter diff between 01:00–04:00 on nights when the water heater and central heating are both off.",
+        "description": "Link sensors that are used to estimate household usage.",
         "data": {
           "power_meter_consumption": "Household energy meter (cumulative kWh)",
           "outdoor_temperature_entity": "Outdoor temperature sensor",
@@ -135,7 +135,7 @@
           "central_heating_active_entity": "Central heating active sensor"
         },
         "data_description": {
-          "power_meter_consumption": "Cumulative energy meter for the whole house. Used to compute the 01:00–04:00 consumption diff on quiet nights.",
+          "power_meter_consumption": "Cumulative energy meter for the whole house.",
           "outdoor_temperature_entity": "Outdoor temperature sensor used for future seasonal load estimation.",
           "water_heater_active_entity": "Binary sensor that is on when the water heater is actively heating. Used to filter out non-quiet nights from Load forecast learning.",
           "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning."
@@ -293,7 +293,7 @@
       },
       "household": {
         "title": "Household load",
-        "description": "Link sensors used to learn the household load forecast automatically. The load forecast is estimated from the energy meter diff between 01:00–04:00 on nights when the water heater and central heating are both off.",
+        "description": "Link sensors that are used to estimate household usage.",
         "data": {
           "power_meter_consumption": "Household energy meter (cumulative kWh)",
           "outdoor_temperature_entity": "Outdoor temperature sensor",
@@ -301,7 +301,7 @@
           "central_heating_active_entity": "Central heating active sensor"
         },
         "data_description": {
-          "power_meter_consumption": "Cumulative energy meter for the whole house. Used to compute the 01:00–04:00 consumption diff on quiet nights.",
+          "power_meter_consumption": "Cumulative energy meter for the whole house.",
           "outdoor_temperature_entity": "Outdoor temperature sensor used for future seasonal load estimation.",
           "water_heater_active_entity": "Binary sensor that is on when the water heater is actively heating. Used to filter out non-quiet nights from Load forecast learning.",
           "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning."

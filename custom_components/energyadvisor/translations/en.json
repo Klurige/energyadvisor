@@ -86,17 +86,12 @@
         }
       },
       "battery": {
-        "title": "Battery",
-        "description": "Configure battery hardware. Leave any field empty if not available yet.",
+        "title": "Battery hardware",
+        "description": "Configure the battery size, power limits, and live battery sensors. Leave any field empty if not available yet.",
         "data": {
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
           "battery_max_discharge_power_w": "Battery max discharge power",
-          "battery_optimization_enabled": "Enable battery optimization",
-          "battery_optimization_horizon_hours": "Optimization horizon",
-          "battery_min_soc_pct": "Minimum SoC",
-          "battery_max_soc_pct": "Maximum SoC",
-          "battery_degradation_cost": "Battery degradation cost margin",
           "battery_soc_entity": "Battery state of charge sensor",
           "battery_charge_power_entity": "Battery charge power sensor"
         },
@@ -104,13 +99,26 @@
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
           "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
           "battery_max_discharge_power_w": "Maximum battery discharge power. If left empty, defaults to the configured charge power.",
+          "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
+          "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
+        }
+      },
+      "battery_optimization": {
+        "title": "Battery optimization",
+        "description": "Configure how the optimizer plans charging and discharging within the allowed battery range.",
+        "data": {
+          "battery_optimization_enabled": "Enable battery optimization",
+          "battery_optimization_horizon_hours": "Optimization horizon",
+          "battery_min_soc_pct": "Minimum SoC",
+          "battery_max_soc_pct": "Maximum SoC",
+          "battery_degradation_cost": "Battery degradation cost margin"
+        },
+        "data_description": {
           "battery_optimization_enabled": "Enable the linear-programming battery optimizer.",
           "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
-          "battery_degradation_cost": "Minimum price spread required before the battery is cycled.",
-          "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
-          "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
+          "battery_degradation_cost": "Minimum price spread required before the battery is cycled."
         }
       },
       "grid_metering": {
@@ -127,18 +135,30 @@
       },
       "household": {
         "title": "Household load",
-        "description": "Link sensors used to learn the household load forecast automatically. The load forecast is estimated from the energy meter diff between 01:00–04:00 on nights when the water heater and central heating are both off.",
+        "description": "Link the main sensors used to learn the household load forecast automatically.",
         "data": {
           "power_meter_consumption": "Household energy meter (cumulative kWh)",
-          "outdoor_temperature_entity": "Outdoor temperature sensor",
-          "water_heater_active_entity": "Water heater active sensor",
-          "central_heating_active_entity": "Central heating active sensor"
+          "outdoor_temperature_entity": "Outdoor temperature sensor"
         },
         "data_description": {
-          "power_meter_consumption": "Cumulative energy meter for the whole house. Used to compute the 01:00–04:00 consumption diff on quiet nights.",
-          "outdoor_temperature_entity": "Outdoor temperature sensor used for future seasonal load estimation.",
+          "power_meter_consumption": "Cumulative energy meter for the whole house.",
+          "outdoor_temperature_entity": "Outdoor temperature sensor used for future seasonal load estimation."
+        }
+      },
+      "household_activity": {
+        "title": "Household activity filters",
+        "description": "Link sensors that are use to estimate household usage",
+        "data": {
+          "water_heater_active_entity": "Water heater active sensor",
+          "central_heating_active_entity": "Central heating active sensor",
+          "central_heating_power_entity": "Central heating power sensor",
+          "central_heating_power_w": "Central heating rated power"
+        },
+        "data_description": {
           "water_heater_active_entity": "Binary sensor that is on when the water heater is actively heating. Used to filter out non-quiet nights from Load forecast learning.",
-          "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning."
+          "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning.",
+          "central_heating_power_entity": "Sensor reporting current central-heating power.",
+          "central_heating_power_w": "Approximate full-power draw of the central heating in watts."
         }
       },
       "hot_water": {
@@ -262,17 +282,12 @@
         }
       },
       "battery": {
-        "title": "Battery",
-        "description": "Configure battery hardware. Leave any field empty if not available yet.",
+        "title": "Battery hardware",
+        "description": "Configure the battery size, power limits, and live battery sensors. Leave any field empty if not available yet.",
         "data": {
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
           "battery_max_discharge_power_w": "Battery max discharge power",
-          "battery_optimization_enabled": "Enable battery optimization",
-          "battery_optimization_horizon_hours": "Optimization horizon",
-          "battery_min_soc_pct": "Minimum SoC",
-          "battery_max_soc_pct": "Maximum SoC",
-          "battery_degradation_cost": "Battery degradation cost margin",
           "battery_soc_entity": "Battery state of charge sensor",
           "battery_charge_power_entity": "Battery charge power sensor"
         },
@@ -280,13 +295,26 @@
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
           "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
           "battery_max_discharge_power_w": "Maximum battery discharge power. If left empty, defaults to the configured charge power.",
+          "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
+          "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
+        }
+      },
+      "battery_optimization": {
+        "title": "Battery optimization",
+        "description": "Configure how the optimizer plans charging and discharging within the allowed battery range.",
+        "data": {
+          "battery_optimization_enabled": "Enable battery optimization",
+          "battery_optimization_horizon_hours": "Optimization horizon",
+          "battery_min_soc_pct": "Minimum SoC",
+          "battery_max_soc_pct": "Maximum SoC",
+          "battery_degradation_cost": "Battery degradation cost margin"
+        },
+        "data_description": {
           "battery_optimization_enabled": "Enable the linear-programming battery optimizer.",
           "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
-          "battery_degradation_cost": "Minimum price spread required before the battery is cycled.",
-          "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
-          "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
+          "battery_degradation_cost": "Minimum price spread required before the battery is cycled."
         }
       },
       "grid_metering": {
@@ -303,18 +331,30 @@
       },
       "household": {
         "title": "Household load",
-        "description": "Link sensors used to learn the household load forecast automatically. The load forecast is estimated from the energy meter diff between 01:00–04:00 on nights when the water heater and central heating are both off.",
+        "description": "Link the main sensors used to learn the household load forecast automatically.",
         "data": {
           "power_meter_consumption": "Household energy meter (cumulative kWh)",
-          "outdoor_temperature_entity": "Outdoor temperature sensor",
-          "water_heater_active_entity": "Water heater active sensor",
-          "central_heating_active_entity": "Central heating active sensor"
+          "outdoor_temperature_entity": "Outdoor temperature sensor"
         },
         "data_description": {
-          "power_meter_consumption": "Cumulative energy meter for the whole house. Used to compute the 01:00–04:00 consumption diff on quiet nights.",
-          "outdoor_temperature_entity": "Outdoor temperature sensor used for future seasonal load estimation.",
+          "power_meter_consumption": "Cumulative energy meter for the whole house.",
+          "outdoor_temperature_entity": "Outdoor temperature sensor used for future seasonal load estimation."
+        }
+      },
+      "household_activity": {
+        "title": "Household activity filters",
+        "description": "Link sensors that are used to estimate household usage.",
+        "data": {
+          "water_heater_active_entity": "Water heater active sensor",
+          "central_heating_active_entity": "Central heating active sensor",
+          "central_heating_power_entity": "Central heating power sensor",
+          "central_heating_power_w": "Central heating rated power"
+        },
+        "data_description": {
           "water_heater_active_entity": "Binary sensor that is on when the water heater is actively heating. Used to filter out non-quiet nights from Load forecast learning.",
-          "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning."
+          "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning.",
+          "central_heating_power_entity": "Sensor reporting current central-heating power.",
+          "central_heating_power_w": "Approximate full-power draw of the central heating in watts."
         }
       },
       "hot_water": {

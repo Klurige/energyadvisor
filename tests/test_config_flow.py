@@ -1,5 +1,7 @@
 """Tests for Energy Advisor config and options flow behavior."""
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -30,10 +32,17 @@ from custom_components.energyadvisor.const import (
     CONF_CENTRAL_HEATING_POWER_W,
     CONF_DEHUMIDIFIER_POWER_ENTITY,
     CONF_DEHUMIDIFIER_POWER_W,
+    CONF_ELECTRICITY_VAT,
     CONF_FORECAST_ENTITY,
     CONF_FORECAST_TOMORROW_ENTITY,
+    CONF_GRID_ENERGY_TAX,
     CONF_GRID_EXPORT_ENTITY,
+    CONF_GRID_FIXED_CREDIT,
+    CONF_GRID_FIXED_FEE,
     CONF_GRID_IMPORT_ENTITY,
+    CONF_GRID_NOTE,
+    CONF_GRID_VARIABLE_CREDIT,
+    CONF_GRID_VARIABLE_FEE,
     CONF_HIGH_THRESHOLD,
     CONF_LOW_THRESHOLD,
     CONF_NORDPOOL_PRICES_SENSOR,
@@ -42,12 +51,75 @@ from custom_components.energyadvisor.const import (
     CONF_POOL_PUMP_POWER_ENTITY,
     CONF_POOL_PUMP_POWER_W,
     CONF_POWER_METER_CONSUMPTION,
+    CONF_SUPPLIER_FIXED_CREDIT,
+    CONF_SUPPLIER_FIXED_FEE,
+    CONF_SUPPLIER_NOTE,
+    CONF_SUPPLIER_VARIABLE_CREDIT,
+    CONF_SUPPLIER_VARIABLE_FEE,
     CONF_WATER_HEATER_ACTIVE_ENTITY,
     CONF_WATER_HEATER_MAX_HOURS,
     CONF_WATER_HEATER_POWER_ENTITY,
     CONF_WATER_HEATER_POWER_W,
     DOMAIN,
 )
+
+
+COMMON_TRANSLATED_STEPS = {
+    "supplier_fees_and_credits": [
+        CONF_SUPPLIER_NOTE,
+        CONF_SUPPLIER_FIXED_FEE,
+        CONF_SUPPLIER_VARIABLE_FEE,
+        CONF_SUPPLIER_FIXED_CREDIT,
+        CONF_SUPPLIER_VARIABLE_CREDIT,
+    ],
+    "grid_fees_and_credits": [
+        CONF_GRID_NOTE,
+        CONF_GRID_FIXED_FEE,
+        CONF_GRID_VARIABLE_FEE,
+        CONF_GRID_FIXED_CREDIT,
+        CONF_GRID_VARIABLE_CREDIT,
+    ],
+    "taxes_and_vat": [CONF_GRID_ENERGY_TAX, CONF_ELECTRICITY_VAT],
+    "solar_forecast": [
+        CONF_FORECAST_ENTITY,
+        CONF_POWER_ENTITY,
+        CONF_FORECAST_TOMORROW_ENTITY,
+    ],
+    "battery": [
+        CONF_BATTERY_CAPACITY_KWH,
+        CONF_BATTERY_MAX_CHARGE_POWER_W,
+        CONF_BATTERY_MAX_DISCHARGE_POWER_W,
+        CONF_BATTERY_SOC_ENTITY,
+        CONF_BATTERY_CHARGE_POWER_ENTITY,
+    ],
+    "battery_optimization": [
+        CONF_BATTERY_OPTIMIZATION_ENABLED,
+        CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
+        CONF_BATTERY_MIN_SOC_PCT,
+        CONF_BATTERY_MAX_SOC_PCT,
+        CONF_BATTERY_DEGRADATION_COST,
+    ],
+    "grid_metering": [CONF_GRID_IMPORT_ENTITY, CONF_GRID_EXPORT_ENTITY],
+    "household": [CONF_POWER_METER_CONSUMPTION, CONF_OUTDOOR_TEMPERATURE_ENTITY],
+    "household_activity": [
+        CONF_WATER_HEATER_ACTIVE_ENTITY,
+        CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
+        CONF_CENTRAL_HEATING_POWER_ENTITY,
+        CONF_CENTRAL_HEATING_POWER_W,
+    ],
+    "hot_water": [
+        CONF_WATER_HEATER_POWER_ENTITY,
+        CONF_WATER_HEATER_POWER_W,
+        CONF_WATER_HEATER_MAX_HOURS,
+        CONF_BATHROOM_HUMIDITY_ENTITY,
+    ],
+    "flexible_loads": [
+        CONF_POOL_PUMP_POWER_ENTITY,
+        CONF_POOL_PUMP_POWER_W,
+        CONF_DEHUMIDIFIER_POWER_ENTITY,
+        CONF_DEHUMIDIFIER_POWER_W,
+    ],
+}
 
 
 def _make_state(
@@ -98,6 +170,46 @@ def _make_state(
 def test_parse_unit_of_measurement(unit_str, expected):
     """Test _parse_unit_of_measurement parses various formats correctly."""
     assert _parse_unit_of_measurement(unit_str) == expected
+
+
+@pytest.mark.parametrize("language", ["en", "sv"])
+def test_config_and_options_flow_fields_have_translations(language: str) -> None:
+    """Test every config and options flow parameter has a label and description."""
+    translations = json.loads(
+        Path(f"custom_components/energyadvisor/translations/{language}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    expected_steps = {
+        "config": {
+            "user": [CONF_NORDPOOL_PRICES_SENSOR],
+            "thresholds": [CONF_LOW_THRESHOLD, CONF_HIGH_THRESHOLD],
+            **COMMON_TRANSLATED_STEPS,
+        },
+        "options": {
+            "init": [
+                CONF_NORDPOOL_PRICES_SENSOR,
+                CONF_LOW_THRESHOLD,
+                CONF_HIGH_THRESHOLD,
+            ],
+            **COMMON_TRANSLATED_STEPS,
+        },
+    }
+
+    missing = []
+    for section, steps in expected_steps.items():
+        translated_steps = translations[section]["step"]
+        for step_id, fields in steps.items():
+            step = translated_steps.get(step_id, {})
+            data = step.get("data", {})
+            descriptions = step.get("data_description", {})
+            for field in fields:
+                if field not in data:
+                    missing.append(f"{section}.{step_id}.data.{field}")
+                if field not in descriptions:
+                    missing.append(f"{section}.{step_id}.data_description.{field}")
+
+    assert missing == []
 
 
 # --- Tests for _validate_nordpool_prices_sensor ---
@@ -202,8 +314,8 @@ async def test_options_flow_init_step_contains_price_and_threshold_fields() -> N
 
 
 @pytest.mark.asyncio
-async def test_options_flow_household_step_contains_new_load_fields() -> None:
-    """Test options flow household step contains the load forecast entities."""
+async def test_options_flow_household_steps_contain_new_load_fields() -> None:
+    """Test options flow household steps contain the load forecast entities."""
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
@@ -221,10 +333,17 @@ async def test_options_flow_household_step_contains_new_load_fields() -> None:
 
     assert CONF_POWER_METER_CONSUMPTION in schema_keys
     assert CONF_OUTDOOR_TEMPERATURE_ENTITY in schema_keys
+    assert CONF_WATER_HEATER_ACTIVE_ENTITY not in schema_keys
+
+    result = await handler.async_step_household_activity()
+    schema = result["data_schema"].schema
+    schema_keys = [getattr(k, "schema", k) for k in schema]
+
     assert CONF_WATER_HEATER_ACTIVE_ENTITY in schema_keys
     assert CONF_CENTRAL_HEATING_ACTIVE_ENTITY in schema_keys
     assert CONF_CENTRAL_HEATING_POWER_ENTITY in schema_keys
     assert CONF_CENTRAL_HEATING_POWER_W in schema_keys
+    assert CONF_POWER_METER_CONSUMPTION not in schema_keys
 
 
 @pytest.mark.asyncio
@@ -410,6 +529,18 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
         validated[CONF_BATTERY_CHARGE_POWER_ENTITY]
         == "sensor.remote_batterychargepower"
     )
+    assert CONF_BATTERY_OPTIMIZATION_ENABLED not in validated
+    assert not any(
+        field["name"] == CONF_BATTERY_OPTIMIZATION_ENABLED for field in serialized
+    )
+
+    result = await handler.async_step_battery_optimization()
+
+    assert result["type"] == "form"
+    validated = result["data_schema"]({})
+    serialized = voluptuous_serialize.convert(
+        result["data_schema"], custom_serializer=cv.custom_serializer
+    )
     assert validated[CONF_BATTERY_OPTIMIZATION_ENABLED] is False
     assert validated[CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 48
     assert validated[CONF_BATTERY_MIN_SOC_PCT] == 5.0
@@ -466,10 +597,11 @@ async def test_main_flow_battery_rejects_invalid_soc_bounds() -> None:
     handler.data = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
     handler.hass = MagicMock()
 
-    result = await handler.async_step_battery(
+    handler.data[CONF_BATTERY_CAPACITY_KWH] = 10.0
+    handler.data[CONF_BATTERY_MAX_CHARGE_POWER_W] = 5000.0
+
+    result = await handler.async_step_battery_optimization(
         {
-            CONF_BATTERY_CAPACITY_KWH: 10.0,
-            CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
             CONF_BATTERY_MIN_SOC_PCT: 90.0,
             CONF_BATTERY_MAX_SOC_PCT: 10.0,
         }
@@ -535,13 +667,19 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
             CONF_BATTERY_CAPACITY_KWH: 10.0,
             CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
             CONF_BATTERY_MAX_DISCHARGE_POWER_W: 4500.0,
+            CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
+            CONF_BATTERY_CHARGE_POWER_ENTITY: "sensor.battery_charge_power",
+        }
+    )
+    assert result["step_id"] == "battery_optimization"
+
+    result = await handler.async_step_battery_optimization(
+        {
             CONF_BATTERY_OPTIMIZATION_ENABLED: True,
             CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: 36.0,
             CONF_BATTERY_MIN_SOC_PCT: 10.0,
             CONF_BATTERY_MAX_SOC_PCT: 90.0,
             CONF_BATTERY_DEGRADATION_COST: 0.0,
-            CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
-            CONF_BATTERY_CHARGE_POWER_ENTITY: "sensor.battery_charge_power",
         }
     )
     assert result["step_id"] == "grid_metering"
@@ -560,6 +698,12 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
         {
             CONF_POWER_METER_CONSUMPTION: "sensor.power_meter",
             CONF_OUTDOOR_TEMPERATURE_ENTITY: "sensor.outdoor_temp",
+        }
+    )
+    assert result["step_id"] == "household_activity"
+
+    result = await handler.async_step_household_activity(
+        {
             CONF_WATER_HEATER_ACTIVE_ENTITY: "binary_sensor.water_heater_active",
             CONF_CENTRAL_HEATING_ACTIVE_ENTITY: "binary_sensor.heating_active",
             CONF_CENTRAL_HEATING_POWER_ENTITY: "sensor.central_heating_power",
@@ -773,6 +917,12 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
             CONF_BATTERY_CAPACITY_KWH: 10.0,
             CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
             CONF_BATTERY_MAX_DISCHARGE_POWER_W: 4500.0,
+        }
+    )
+    assert result["step_id"] == "battery_optimization"
+
+    result = await handler.async_step_battery_optimization(
+        {
             CONF_BATTERY_OPTIMIZATION_ENABLED: True,
             CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: 36.0,
             CONF_BATTERY_MIN_SOC_PCT: 10.0,
@@ -788,6 +938,12 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
     result = await handler.async_step_household(
         {
             CONF_OUTDOOR_TEMPERATURE_ENTITY: "sensor.outdoor_temperature",
+        }
+    )
+    assert result["step_id"] == "household_activity"
+
+    result = await handler.async_step_household_activity(
+        {
             CONF_CENTRAL_HEATING_POWER_ENTITY: "sensor.central_heating_power",
             CONF_CENTRAL_HEATING_POWER_W: 2200.0,
         }

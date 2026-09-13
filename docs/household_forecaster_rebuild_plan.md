@@ -22,7 +22,8 @@ Architecture constraint for this plan: **one coordinator + one sensor**.
 
 ### Target definition
 
-- Forecast target is **gross household load** (household demand), not net grid import/export.
+- Forecast target is **household base load** (household demand), not net grid import/export.
+- Household base load explicitly **excludes** the actively-managed appliance loads: central heating, water heater, dehumidifier, and pool pump. These loads are subtracted from the metered signal before modeling because this integration will control them directly in the future; forecasting them as part of the passive household baseline would be redundant and would fight the integration's own control decisions.
 - Output point forecast is named `load`.
 
 ### Output unit
@@ -87,18 +88,19 @@ The output array format is fixed:
 - `from`: local wall clock, format `YYYY-MM-DDTHH:MM` (no timezone suffix).
 - Array length: **192 slots** (48h at 15-minute resolution).
 - Array attribute name: `forecasts`.
-- Sensor state value: `forecasts[0].load`.
+- Sensor state value: the **current in-progress slot's** `load` (the slot whose `from` covers the current local time), looked up inside the `forecasts` array. This is *not* always `forecasts[0]` (see slot anchoring below).
 
 ### Slot anchoring
 
-- Forecast always starts at the **current in-progress slot**.
-- Anchor rule: floor current local time to the **previous** 15-minute boundary.
-- Slot 0 starts at anchor; slot 191 starts at anchor + 47h45m.
+- The `forecasts` array is anchored to **local midnight** of the current day: slot 0 always starts at `00:00` local time, slot 191 starts at `00:00 + 47h45m`.
+- Once a slot has been published, its `load` value is **frozen** and must not change on subsequent refreshes, even after the slot's start time is in the past. Only the current and future slots may be recomputed on each refresh.
+- Rationale: freezing already-published (past) slots keeps the visualized forecast curve stable across a full day, so users can see how earlier predictions compared to what actually happened without the chart retroactively rewriting history.
+- The sensor `state` is derived separately from the array by locating the slot matching the current in-progress 15-minute period; it is not simply the first array element.
 
 ### Update cadence
 
-- Full 192-slot forecast recomputed every 15 minutes at `:00`, `:15`, `:30`, `:45`.
-- Manual refresh may happen between boundaries, still anchored to current in-progress slot.
+- Full 192-slot forecast recomputed every 15 minutes at `:00`, `:15`, `:30`, `:45`; only the current and future slots are rewritten, past slots are carried forward unchanged.
+- Manual refresh may happen between boundaries; it still only updates the current and future slots, never the frozen past slots.
 
 ### DST behavior
 
@@ -157,7 +159,7 @@ If a sensor is deemed not good enough, ask the user for a replacement sensor.
 3. `ev_charger_power_entity` and/or `ev_charger_active_entity`
 4. `weather_forecast_entity`
 5. `dynamic_price_entity` (optional behavior feature)
-6. `holiday_calendar_entity` (optional, for explicit holiday classification)
+6. `holiday_calendar_entity` (deferred to a future release; see Section 5 day-type handling)
 
 ### Precedence rules
 
@@ -248,14 +250,13 @@ On startup:
 
 ### Day-type and holiday handling
 
-- `day_type` categories are fixed: `workday`, `saturday`, `sunday`, `holiday`.
-- Default mapping when no holiday source is configured:
+- `day_type` categories for v1: `workday`, `saturday`, `sunday`.
+- Mapping:
   - Monday-Friday -> `workday`
   - Saturday -> `saturday`
   - Sunday -> `sunday`
-- If `holiday_calendar_entity` says the local date is a holiday, `day_type=holiday` overrides weekday/weekend mapping.
 - Model keeps separate seasonal profiles per `(day_type, slot_index)`.
-- If holiday history has fewer than 4 days in the fit window, holiday profile falls back to sunday profile.
+- **Deferred to a future release:** explicit `holiday` day-type support driven by a `holiday_calendar_entity` (with fallback to the `sunday` profile when holiday history is thin). Not required for v1; do not block acceptance on it.
 
 ### Training windows
 
@@ -265,8 +266,8 @@ On startup:
 
 ### Retrain cadence
 
-- incremental update every closed slot (15 minutes)
-- full rebuild once daily at 03:10 local time
+- incremental update every closed slot (15 minutes); each refresh refits from retained slot history, so there is no separate daily full-rebuild job.
+- no legacy fixed-hour "quiet window" (e.g. 01:00/04:00) sampling job is used; all retained samples are captured continuously via the event/poll ingestion policy in Section 1.
 
 ### "Good enough" thresholds
 
@@ -413,15 +414,15 @@ The next Copilot session should start by reading the latest filled summary.
 
 | Area | Pass condition |
 |---|---|
-| Contract | `forecasts` length is 192; all `from` match regex `^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$`; state equals first slot `load` |
-| Slot grid | Adjacent slot start times differ by 15 minutes in local wall clock ordering (allow DST jump/overlap behavior) |
+| Contract | `forecasts` length is 192; all `from` match regex `^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$`; state equals the current in-progress slot's `load` |
+| Slot grid | Adjacent slot start times differ by 15 minutes in local wall clock ordering (allow DST jump/overlap behavior); slot 0 is local midnight and previously-published (past) slots are byte-for-byte unchanged across refreshes |
 | Diagnostics surface | Sensor always exposes `reason`, `quality_status`, `quality_warnings`; `quality_warnings` is a list and empty in healthy baseline runs |
 | Ingestion policy | Under normal updates, event-driven ingestion is primary and watchdog polling backfills heartbeat so required-sensor sample age never exceeds 120 s |
-| Step 6 parallax | In synthetic lag test (active state delayed by 30 s), >=95% events matched; median start-time alignment error <=15 s |
+| Step 6 parallax | Skipped; not applicable |
 | Step 7 feature resilience | Remove any one optional sensor: no crash; still 192 slots and valid state within one update cycle |
 | Step 8 residual correction | In step-change test (+2 kW for 2h), next-4-slot MAE improves >=20% vs correction-off baseline; correction never exceeds +/-1.5 kW |
 | Energy-delta refinement | Two scenarios with equal delivered energy in a slot (flat vs short spike) produce slot `load` difference <=0.02 kW |
 | Cadence and gap handling | Intervals >120 s produce no spike events; intervals >300 s are quality-flagged sparse; after >=30 min gap, correction resumes only after 2 fresh intervals <=120 s |
-| Day-type and holiday | With `holiday_calendar_entity` active for a date, stored `features_json.day_type` is `holiday`; with no holiday source, weekday/weekend mapping follows spec |
+| Day-type and holiday | Deferred to a future release (see Section 5); v1 only needs to verify weekday/weekend mapping (`workday`/`saturday`/`sunday`) is correct |
 | Reliability | Restart mid-slot: sensor publishes persisted forecast first, then refreshed forecast; no empty output and no missing 15-minute cadence |
 | Quality gate | Rolling 30-day MAE <=0.35 kW and >=10% better MAE than naive previous-day-slot baseline |

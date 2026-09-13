@@ -120,7 +120,7 @@ async def test_coordinator_creates_sqlite_schema_and_capture_targets(tmp_path: P
         }.issubset(tables)
         assert conn.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
 
-    assert len(coordinator._listeners) == 4
+    assert len(coordinator._listeners) == 1
     assert len(coordinator._capture_listeners) == 2
     assert coordinator._capture_targets["sensor.household_meter"].key == (
         CONF_POWER_METER_CONSUMPTION
@@ -133,8 +133,8 @@ async def test_coordinator_creates_sqlite_schema_and_capture_targets(tmp_path: P
     assert coordinator._capture_targets["sensor.battery_soc"].poll_interval == timedelta(
         seconds=120
     )
-    assert mock_state_change.call_count == 2
-    assert mock_time_change.call_count == 3
+    assert mock_state_change.call_count == 1
+    assert mock_time_change.call_count == 1
     assert mock_time_interval.call_count == 1
 
 
@@ -174,13 +174,13 @@ async def test_coordinator_starts_with_meter_only_optional_sensors_missing(
         coordinator._store = store
         await coordinator.async_setup()
 
-    assert len(coordinator._listeners) == 3
+    assert len(coordinator._listeners) == 1
     assert len(coordinator._capture_listeners) == 2
     assert coordinator._capture_targets["sensor.household_meter"].key == (
         CONF_POWER_METER_CONSUMPTION
     )
     assert mock_state_change.call_count == 1
-    assert mock_time_change.call_count == 3
+    assert mock_time_change.call_count == 1
     assert mock_time_interval.call_count == 1
 
 
@@ -1203,6 +1203,36 @@ def test_coordinator_keeps_historical_forecast_slots_stable_on_refresh(
     snapshot = coordinator.forecast_slots
     snapshot[0]["load"] = -1.0
     assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.0)
+
+
+def test_coordinator_current_load_kw_uses_current_slot_not_first_slot(
+    tmp_path: Path,
+) -> None:
+    """The sensor value should track the current slot, not the midnight anchor."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    now_utc = datetime(2026, 9, 7, 14, 32, tzinfo=UTC)
+    slot_starts_utc = coordinator._forecast_slot_starts_utc(now_utc)
+
+    coordinator._forecast_slots = [
+        {
+            "from": dt_util.as_local(slot_start_utc).strftime("%Y-%m-%dT%H:%M"),
+            "load": float(index),
+        }
+        for index, slot_start_utc in enumerate(slot_starts_utc)
+    ]
+
+    with patch(
+        "custom_components.energyadvisor.coordinators.household_forecast_coordinator.dt_util.now",
+        return_value=dt_util.as_local(now_utc),
+    ):
+        current_index = coordinator._current_slot_index_local()
+        current_value = coordinator.current_load_kw
+
+    assert current_index != 0
+    assert current_value == pytest.approx(float(current_index))
+    # forecasts[0] still reflects the frozen midnight slot, distinct from state.
+    assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.0)
+    assert current_value != coordinator.forecast_slots[0]["load"]
 
 
 @pytest.mark.asyncio

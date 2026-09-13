@@ -16,7 +16,7 @@ agent or computer restarts.
 - [x] `forecast_tomorrow_entity` — existing solar forecast input for tomorrow.
 - [x] `power_entity` — existing solar power input for the refined solar forecast.
 - [x] `battery_soc_entity` — required to know how much usable energy is currently stored.
-- [ ] `power_meter_consumption` — cumulative household energy meter (kWh). Used to compute the 01:00–04:00 consumption diff on nights when all big consumers are off.
+- [ ] `power_meter_consumption` — cumulative household energy meter (kWh).
 - [ ] `water_heater_active_entity` — binary sensor (on/off) indicating whether the water heater is actively heating. Used to filter nights unsuitable for Load forecast learning.
 - [ ] `central_heating_active_entity` — binary sensor (on/off) indicating whether the central heating is running. Used to filter nights unsuitable for Load forecast learning.
 - [ ] `bathroom_humidity_entity` — when humidity reaches `100%`, treat it as a shower and reset the water-heater 24-hour timer.
@@ -148,7 +148,6 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
 
 7. [ ] Replace fixed battery duration with required-energy math.
    - **Deliverable:** stop assuming a fixed discharge length and instead compute required energy until the next useful solar window, using a learned household load forecast.
-   - **Load forecast learning:** each night, if `water_heater_active_entity` and `central_heating_active_entity` are both off for the entire 01:00–04:00 window, compute `load_forecast_kw = (power_meter_consumption(04:00) − power_meter_consumption(01:00)) / 3` and add to a rolling average. Use this learned value immediately from the first valid night — no static fallback is needed or provided.
    - **Required energy:** for each battery-output decision, sum the forecast household load from now until the next slot where solar production exceeds `_MIN_USEFUL_SOLAR_KW`. The battery must not sell or discharge below `reserve_kwh + required_energy_kwh`.
    - **When load forecast is unknown** (0 valid nights): skip the required-energy reservation and document this in the sensor `reason` attribute.
    - **Verify:** the same price curve yields a higher reserved energy on a cold winter night (after several valid measurement nights) than on a mild summer night.
@@ -156,7 +155,7 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
    - **Deploy:** not yet; keep in development until step 12 so the advisory planner can be released as a coherent whole.
 
 8. [ ] Add a temperature-adjusted household load model.
-   - **Deliverable:** extend the learned load forecast with a temperature-driven heating component. Compare the 01:00–04:00 energy diff at different outdoor temperatures to derive a heating coefficient (W/°C below a comfort threshold). Apply this to the `outdoor_temperature_entity` forecast to predict elevated winter load without any user-configured parameters.
+   - **Deliverable:** extend the learned load forecast with a temperature-driven heating component.
    - **Verify:** winter test scenarios reserve more battery energy than summer scenarios for the same price curve.
    - **Deploy:** not yet; hold for the step 12 advisory-planner release.
 
