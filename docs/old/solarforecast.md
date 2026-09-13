@@ -160,9 +160,9 @@ Stale DB files (belonging to removed config entries) are deleted on startup.
 
 ## Dev mode
 
-When `custom_components/energyadvisor/dev_config.py` defines `HA_TOKEN` and `HA_URL`, the coordinator polls the remote HA REST API for solar power every 30 seconds instead of listening to a local state change event. This allows development against a live production instance without `remote_homeassistant`.
+When `../../custom_components/energyadvisor/dev_config.py` defines `HA_TOKEN` and `HA_URL`, the coordinator polls the remote HA REST API for solar power every 30 seconds instead of listening to a local state change event. This allows development against a live production instance without `remote_homeassistant`.
 
-See `custom_components/energyadvisor/const.py` and the gitignored `custom_components/energyadvisor/dev_config.py` for details.
+See `../../custom_components/energyadvisor/const.py` and the gitignored `custom_components/energyadvisor/dev_config.py` for details.
 
 ---
 
@@ -173,4 +173,4 @@ See `custom_components/energyadvisor/const.py` and the gitignored `custom_compon
 - `sensor/__init__.py` — conditionally creates `SolarForecastCoordinator` + sensor when both `forecast_entity` and `power_entity` are configured in entry options.
 - `config_flow.py` — `solar_forecast` config step (after `thresholds`); options flow includes the same three fields.
 - Algorithm constants are at the top of `coordinators/solar_forecast_coordinator.py`: `MAX_HISTORY_DAYS`, `CORRECTION_HALF_LIFE_DAYS`, `MIN_CORRECTION_SAMPLES`, `SLOT_ELEVATION_STEP`, `SLOT_AZIMUTH_BINS`.
-- Tests: `tests/test_solar_forecast_coordinator.py` and `tests/test_solar_forecast_sensor.py`.
+- Tests: `../../tests/test_solar_forecast_coordinator.py` and `tests/test_solar_forecast_sensor.py`.

@@ -196,9 +196,9 @@ CompactLevelsSensor
 
 ## Development setup
 
-### `custom_components/energyadvisor/dev_config.py` (gitignored)
+### `../../custom_components/energyadvisor/dev_config.py` (gitignored)
 
-Create `custom_components/energyadvisor/dev_config.py` to pre-fill the config-flow
+Create `../../custom_components/energyadvisor/dev_config.py` to pre-fill the config-flow
 wizard with real values during development. When `DEV_DEFAULTS_ENABLED = True`,
 `config_flow.py` pre-populates every form field from `DEV_DEFAULTS`.
 
@@ -219,11 +219,11 @@ HA_TOKEN = "<long_lived_access_token>"
 a `try/except ImportError` fallback so the integration works normally when the file
 is absent.
 
-### `scripts/fetch_ha_history.py`
+### `../../scripts/fetch_ha_history.py`
 
 Fetches historical sensor data from a live HA instance over the REST API.
 Used to seed solar/price history for solar forecast calibration.
-Requires `HA_URL` and `HA_TOKEN` in `custom_components/energyadvisor/dev_config.py`.
+Requires `HA_URL` and `HA_TOKEN` in `../../custom_components/energyadvisor/dev_config.py`.
 
 ### Tests
 
@@ -232,7 +232,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/mypycache \
   .venv/bin/python -m pytest tests/ -q
 ```
 
-All tests live in `tests/`. The compact levels sensor has dedicated tests in
+All tests live in `../../tests`. The compact levels sensor has dedicated tests in
 `tests/test_compact_levels_sensor.py`. Pass the new compact `rates` format
 (`{ "from": ..., "cost": ..., "level": "L/M/H" }`) when mocking state attributes.
 

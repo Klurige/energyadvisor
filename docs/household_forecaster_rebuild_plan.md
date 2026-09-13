@@ -341,7 +341,7 @@ The next Copilot session should start by reading the latest filled summary.
 ### Step 1 summary - Contract shell
 
 - Status: `done`
-- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `custom_components/energyadvisor/sensor/householdforecastsensor.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `docs/householdforecast.md`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `custom_components/energyadvisor/sensor/householdforecastsensor.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `old/householdforecast.md`
 - What was implemented: The household forecast sensor now exposes a 192-slot `forecasts` array using local `from`/`load` entries anchored to local midnight, while keeping the existing static 0.5 kW shell in place.
 - Output contract check (state + 192 slots + from/load format): `state` stays at 0.5 kW; `forecasts` length is 192; every slot has only `from` and `load`, and historical slots remain fixed when the shell refreshes.
 - Handover to Step 2: add the scheduler heartbeat so the forecast shell can refresh quickly without shifting the midnight anchor.
@@ -349,7 +349,7 @@ The next Copilot session should start by reading the latest filled summary.
 ### Step 2 summary - 15-minute scheduler
 
 - Status: `done`
-- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `docs/householdforecast.md`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `old/householdforecast.md`
 - What was implemented: Added a quarter-hour heartbeat that triggers the same forecast refresh callback, so the 192-slot shell is republished on `:00`, `:15`, `:30`, and `:45` while keeping the midnight anchor fixed. A `last_forecast_generation` attribute now changes on each tick so HA surfaces the update.
 - Quarter-hour refresh behavior observed: The coordinator now registers a dedicated refresh listener and the sensor updates through the shared update callback path while previously published slots stay fixed. The generation timestamp advances on each tick, so HA can show the refresh even when the forecast values are unchanged.
 - Handover to Step 3: add raw sample capture and persistence schema so refreshes can survive restart with real history instead of the static shell.
@@ -357,7 +357,7 @@ The next Copilot session should start by reading the latest filled summary.
 ### Step 3 summary - Raw capture and DB schema
 
 - Status: `done`
-- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_coordinator.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `docs/householdforecast.md`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_coordinator.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `old/householdforecast.md`
 - What was implemented: The coordinator now opens `.storage/energyadvisor_household_forecast_<entry_id>.db`, creates the planned raw capture schema, captures raw numeric samples and quiet-night event rows for the configured household entities, and reloads the latest persisted rows on restart.
 - DB schema/retention/checkpoint notes: The SQLite file now includes `raw_samples`, `interval_energy`, `raw_events`, `slot_rows`, `forecast_runs`, and `meta`; raw rows are pruned on a daily heartbeat with 21-day retention, `slot_rows` retain 180 days, and `forecast_runs` retain 14 days.
 - Handover to Step 4: use the persisted raw meter history to convert interval deltas into `interval_energy` and then into slot-level load rows.
@@ -373,7 +373,7 @@ The next Copilot session should start by reading the latest filled summary.
 ### Step 5 summary - Baseline statistical model
 
 - Status: `done`
-- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_coordinator.py`, `docs/householdforecast.md`, `README.md`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_coordinator.py`, `old/householdforecast.md`, `README.md`
 - What was implemented: The coordinator now fits a seasonal baseline from retained slot rows, with recency weighting and a short-term trend blend, then persists the learned 192-slot forecast into `forecast_runs`. Cold start still publishes a full forecast shell so the sensor never goes empty.
 - Retrain/history window notes: The learned model uses retained slot history up to 180 days, prefers the latest 56 days for fitting, and switches into the learned path once at least 7 distinct learning days are available.
 - Handover to Step 6: add the parallax matcher so delayed active-state transitions can be attributed to the correct meter spike before the next context step.
@@ -389,7 +389,7 @@ The next Copilot session should start by reading the latest filled summary.
 ### Step 7 summary - Context features and precedence
 
 - Status: `done`
-- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `custom_components/energyadvisor/sensor/__init__.py`, `custom_components/energyadvisor/config_flow.py`, `custom_components/energyadvisor/config_flow_helpers.py`, `custom_components/energyadvisor/const.py`, `tests/test_household_forecast_coordinator.py`, `tests/test_config_flow.py`, `README.md`, `docs/householdforecast.md`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `custom_components/energyadvisor/sensor/__init__.py`, `custom_components/energyadvisor/config_flow.py`, `custom_components/energyadvisor/config_flow_helpers.py`, `custom_components/energyadvisor/const.py`, `tests/test_household_forecast_coordinator.py`, `tests/test_config_flow.py`, `README.md`, `old/householdforecast.md`
 - What was implemented: The household forecast now starts from the household meter alone, keeps optional appliance sensors available, and subtracts the measured water-heater, central-heating, pool-pump, and dehumidifier loads before fitting the seasonal model. Live appliance power sensors take precedence over fallback watt values, and the docs/config flow now expose central-heating power alongside the other subtractable loads.
 - Optional-sensor degradation behavior: Missing optional sensors no longer block the forecast; the subtraction for that appliance simply drops out and the sensor keeps publishing the full 192-slot baseline.
 - Handover to Step 8: add residual correction on top of the net household base load.
@@ -397,7 +397,7 @@ The next Copilot session should start by reading the latest filled summary.
 ### Step 8 summary - Residual correction
 
 - Status: `done`
-- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_coordinator.py`, `README.md`, `docs/householdforecast.md`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `tests/test_household_forecast_coordinator.py`, `README.md`, `old/householdforecast.md`
 - What was implemented: Added an online residual layer on top of the learned household baseline. The coordinator now looks at the most recent closed slots from the current day, compares them against the previously published forecast, and nudges the next few slots when the last two errors stay above the activation threshold.
 - Error-improvement and clamp behavior: The correction is EMA-smoothed with `RESIDUAL_ALPHA = 0.35`, decays by `0.82` across the next 8 slots, and is clamped to +/-1.5 kW so sudden step changes adapt faster without runaway adjustments.
 - Handover to Step 9: add guardrails, quality flags, and diagnostics for stale data and degraded sensor inputs.
@@ -405,7 +405,7 @@ The next Copilot session should start by reading the latest filled summary.
 ### Step 9 summary - Guardrails and diagnostics
 
 - Status: `done`
-- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `custom_components/energyadvisor/sensor/householdforecastsensor.py`, `tests/test_household_forecast_coordinator.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `docs/householdforecast.md`
+- Files changed: `custom_components/energyadvisor/coordinators/household_forecast_coordinator.py`, `custom_components/energyadvisor/sensor/householdforecastsensor.py`, `tests/test_household_forecast_coordinator.py`, `tests/test_household_forecast_sensor.py`, `README.md`, `old/householdforecast.md`
 - What was implemented: Added sensor-facing diagnostics for `quality_status`, `quality_warnings`, and `last_valid_required_sample`, plus coordinator guardrails for stale required-meter samples and retained warnings for dropped invalid samples. The forecast still publishes a full 192-slot contract, but the reason string now explains stale/degraded/fallback states when the required meter is late or unavailable.
 - Fallback/reliability outcomes: Healthy runs report `quality_status=ok` with an empty warning list; short required-meter outages surface as `stale`; longer outages and sparse/invalid input surface as `degraded`; cold start stays on the fixed 0.60 kW fallback profile.
 - Final handover/remaining work: Step 9 is complete. The acceptance checks now have a diagnostic surface to verify against during restart and fault-injection tests.

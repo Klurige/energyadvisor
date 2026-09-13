@@ -123,12 +123,12 @@ A companion SQLite history file at
 `.storage/energyadvisor_household_forecast_<entry_id>.db` stores the raw meter
 samples, interval-energy rows, slot rows, forecast checkpoints, and quiet-night
 event rows for the rebuild.
-See [docs/householdforecast.md](docs/householdforecast.md) for current
+See [docs/householdforecast.md](docs/old/householdforecast.md) for current
 attributes and status messaging.
 
 Those inputs are preserved in the config entry now, but they do not
 change the current battery scheduler yet. The rollout plan for using them lives
-in [docs/battery-optimizer-README.md](docs/battery-optimizer-README.md).
+in [docs/battery-optimizer-README.md](docs/old/battery-optimizer-README.md).
 
 When `exclude_from_recording` is `true` (default), Home Assistant recorder/history excludes:
 - `sensor.energy_advisor_price`
@@ -205,7 +205,7 @@ The integration also provides `sensor.energy_advisor_compact_levels`, which expo
   - `data_since`: Oldest learned sample date.
   - `intraday_scaling`: Real-time scaling factor applied to today's remaining forecast.
 
-See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast description, correction model, and database behavior.
+See [docs/solarforecast.md](docs/old/solarforecast.md) for the full solar forecast description, correction model, and database behavior.
 
 ### `sensor.energy_advisor_battery_charge_mode`
 - **Description:** Energy Advisor's price- and solar-aware battery schedule recommendation based on the linked `sensor.energy_advisor_price` entry.
@@ -226,7 +226,7 @@ helper reserves battery headroom for the forecast solar production before
 falling back to the legacy price schedule when the optimizer or solver stack
 is unavailable.
 
-See [docs/batterychargemode.md](docs/batterychargemode.md) for the battery scheduling rules and configuration details.
+See [docs/batterychargemode.md](docs/old/batterychargemode.md) for the battery scheduling rules and configuration details.
 
 ### `energyadvisor.get_levels`
 - **Description:** The price levels for today and tomorrow as a string with one char per time period. Main purpose is to provide data for the Level Indicator Clock (https://github.com/Klurige/LevelIndicatorClock)

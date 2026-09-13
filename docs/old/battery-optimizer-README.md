@@ -96,7 +96,7 @@ Where a live rollout is useful, the step includes an explicit **Deploy**
 substep. Here, **Deploy** means releasing to the live Home Assistant system.
 
 1. [x] Create this roadmap file.
-   - **Done when:** this file exists in `docs/` and becomes the source of truth for progress notes.
+   - **Done when:** this file exists in `..` and becomes the source of truth for progress notes.
 
 2. [x] Lock current battery behavior with tests.
    - **Deliverable:** add or tighten tests that pin the current battery logic.
@@ -197,7 +197,7 @@ substep. Here, **Deploy** means releasing to the live Home Assistant system.
    - **Deploy:** no — development/offline only.
 
 15. [ ] Promote Energy Advisor to the primary live integration.
-   - **Deliverable:** once the live soak periods and backtests are good enough, treat the Energy Advisor mode set as the primary live path and update `docs/batterychargemode.md` to document the final decision logic.
+   - **Deliverable:** once the live soak periods and backtests are good enough, treat the Energy Advisor mode set as the primary live path and update `batterychargemode.md` to document the final decision logic.
    - **Verify:** scenario tests, regression tests, and documentation all match the new behavior.
    - **Deploy:** **Yes — R4.** Release this only after the live soak periods and offline backtesting both look safe.
 
@@ -219,15 +219,15 @@ Steps 13–14 are **dev/offline only** and do not require a live release.
 
 ## Likely files to touch
 
-- `custom_components/energyadvisor/const.py`
-- `custom_components/energyadvisor/config_flow.py`
-- `custom_components/energyadvisor/sensor/batterychargemodesensor.py`
-- `custom_components/energyadvisor/sensor/__init__.py`
-- `custom_components/energyadvisor/strings.json`
-- `custom_components/energyadvisor/translations/en.json`
-- `custom_components/energyadvisor/translations/sv.json`
-- `docs/batterychargemode.md` *(update at step 15)*
-- `README.md`
+- `../../custom_components/energyadvisor/const.py`
+- `../../custom_components/energyadvisor/config_flow.py`
+- `../../custom_components/energyadvisor/sensor/batterychargemodesensor.py`
+- `../../custom_components/energyadvisor/sensor/__init__.py`
+- `../../custom_components/energyadvisor/strings.json`
+- `../../custom_components/energyadvisor/translations/en.json`
+- `../../custom_components/energyadvisor/translations/sv.json`
+- `batterychargemode.md` *(update at step 15)*
+- `../../README.md`
 - `tests/test_energyadvisor_battery_charge_mode_sensor.py`
 - New helper modules for optimization logic (see implementation note below)
 
