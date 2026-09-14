@@ -29,6 +29,12 @@ DEFAULT_CHARGE_EFFICIENCY = 0.95
 DEFAULT_DISCHARGE_EFFICIENCY = 0.95
 DEFAULT_DEGRADATION_COST = 0.0
 _EPSILON = 1e-6
+#: Minimum battery export in a ``sell`` slot, in kWh. Keeps ``sell`` and
+#: ``discharge`` distinguishable: a slot labelled ``sell`` must export.
+_MIN_SELL_EXPORT_KWH = 1e-3
+#: Pass-3 tie-break weight discouraging a `sell` label when an identical-cost
+#: `discharge` labelling exists. Kept well below the flow-minimization weight.
+_SELL_LABEL_TIE_BREAK_WEIGHT = 1e-3
 
 #: Battery modes in mutual-exclusivity order. ``maxuse`` and ``standby`` are
 #: both idle modes; ``maxuse`` is the preferred fallback/tie-break default.
@@ -795,16 +801,19 @@ def _solve_milp_unsafe(
             [ch_grid_idx[t], ch_pv_idx[t], m_charge_idx[t], m_maxuse_idx[t]],
             [1.0, 1.0, -max_charge_kwh[t], -max_charge_kwh[t]],
         )
-        # Load-serving discharge only in discharge mode; export-only discharge
-        # only in sell mode. This keeps discharge and sell mathematically
-        # distinguishable and prevents the battery from charging from PV
-        # while discharging.
+        # Load-serving discharge is allowed in both discharge and sell mode.
+        # A sell slot serves the household from the battery first and exports
+        # only the surplus; forcing it to import the load at the same time
+        # would collide with the simultaneous import/export prohibition and
+        # make sell structurally infeasible whenever load > 0 and PV = 0.
+        # Export-only discharge remains reserved for sell mode, which keeps
+        # discharge and sell mathematically distinguishable.
         _add_highs_row(
             highs,
             -infinity,
             0.0,
-            [dis_load_idx[t], m_discharge_idx[t]],
-            [1.0, -max_discharge_kwh[t]],
+            [dis_load_idx[t], m_discharge_idx[t], m_sell_idx[t]],
+            [1.0, -max_discharge_kwh[t], -max_discharge_kwh[t]],
         )
         _add_highs_row(
             highs,
@@ -812,6 +821,28 @@ def _solve_milp_unsafe(
             0.0,
             [dis_export_idx[t], m_sell_idx[t]],
             [1.0, -max_discharge_kwh[t]],
+        )
+        # Total discharge power cap across both discharge sinks.
+        _add_highs_row(
+            highs,
+            -infinity,
+            0.0,
+            [
+                dis_load_idx[t],
+                dis_export_idx[t],
+                m_discharge_idx[t],
+                m_sell_idx[t],
+            ],
+            [1.0, 1.0, -max_discharge_kwh[t], -max_discharge_kwh[t]],
+        )
+        # A sell slot must actually export from the battery, otherwise it is
+        # indistinguishable from a plain discharge slot.
+        _add_highs_row(
+            highs,
+            0.0,
+            infinity,
+            [dis_export_idx[t], m_sell_idx[t]],
+            [1.0, -_MIN_SELL_EXPORT_KWH],
         )
         _add_highs_row(
             highs, -infinity, 0.0, [dis_export_idx[t], g_exp_idx[t]], [1.0, -1.0]
@@ -972,13 +1003,19 @@ def _solve_milp_unsafe(
         [1.0] * total,
     )
 
-    # Pass 3: minimize total absolute battery flow.
+    # Pass 3: minimize total absolute battery flow, with a subordinate
+    # preference against `sell`. Because `sell` may now also serve load, a
+    # marginal slot can be labelled either `sell` or `discharge` at an
+    # identical objective; the tiny weight resolves that ambiguity towards
+    # the simpler `discharge` label without ever overriding flow
+    # minimization or the pinned economic objective.
     costs3 = np.zeros(num_cols, dtype=float)
     for t in range(total):
         costs3[ch_grid_idx[t]] = 1.0
         costs3[ch_pv_idx[t]] = 1.0
         costs3[dis_load_idx[t]] = 1.0
         costs3[dis_export_idx[t]] = 1.0
+        costs3[m_sell_idx[t]] = _SELL_LABEL_TIE_BREAK_WEIGHT
     if not _set_costs(costs3):
         return None
     if not _run():

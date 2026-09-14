@@ -69,7 +69,7 @@ Definitions:
 - `maxuse`: Prioritises solar for household use. If solar is not enough, battery will be used for household. If still not enough, energy will be imported from the grid. This is the default fallback mode and the preferred mode when the optimizer cannot confidently distinguish a profitable action.
 - `charge`: the optimizer intends to charge the battery during the slot, Primarily from solar surplus, but will top up with grid import to the set charging power. The schedule entry must include `target_soc` equal to the end-of-slot SoC target.
 - `discharge`: the battery discharges to serve household load. Battery discharge must never charge from PV. It may reduce grid import and may support self-consumption.
-- `sell`: the battery discharges for export at a favourable price. The schedule entry must include `target_soc` equal to the end-of-slot SoC target.
+- `sell`: the battery discharges at a favourable export price. It serves the household load from the battery first and exports the surplus; it must not import from the grid while exporting. The schedule entry must include `target_soc` equal to the end-of-slot SoC target.
 
 Important rules:
 - Battery modes are mutually exclusive within a slot: `m_charge_t + m_discharge_t + m_sell_t + m_maxuse_t + m_standby_t = 1`.
@@ -157,17 +157,37 @@ To keep discharge and sell mathematically distinguishable, the model must use se
 Constraints:
 - `b_dis_load_t <= load_t`
 - `b_dis_export_t <= g_exp_t`
-- `b_dis_load_t <= max_discharge_kwh_t * m_discharge_t`
+- `b_dis_load_t <= max_discharge_kwh_t * (m_discharge_t + m_sell_t)`
 - `b_dis_export_t <= max_discharge_kwh_t * m_sell_t`
+- `b_dis_load_t + b_dis_export_t <= max_discharge_kwh_t * (m_discharge_t + m_sell_t)`
+- `b_dis_export_t >= min_sell_export_kwh * m_sell_t`
 - `b_ch_pv_t <= pv_t`
 - `b_ch_pv_t <= max_charge_kwh_t * m_charge_t`
 - `b_ch_grid_t <= max_charge_kwh_t * m_charge_t`
 - `b_ch_grid_t + b_ch_pv_t <= max_charge_kwh_t * m_charge_t`
 - `b_ch_pv_t = 0` when `m_discharge_t = 1` or `m_sell_t = 1`
-- `b_dis_load_t = 0` when `m_sell_t = 1`
 - `b_ch_grid_t = 0`, `b_ch_pv_t = 0`, `b_dis_load_t = 0`, and `b_dis_export_t = 0` whenever `m_maxuse_t = 1`
 
 This makes `maxuse` an idle mode, not a discharge mode with a different label. It preserves a distinct economic `discharge` action while keeping the lexicographic tie-break consistent with explicit load-serving discharge semantics.
+
+`sell` must be allowed to serve load. An earlier revision of this plan required `b_dis_load_t = 0` when `m_sell_t = 1`, which made `sell` structurally infeasible in every realistic slot. The reasoning chain was:
+
+1. `m_sell_t = 1` forces `m_discharge_t = 0`, so `b_dis_load_t = 0`.
+2. The grid balance `g_imp_t + b_dis_load_t + pv_to_load_t = load_t + b_ch_grid_t` then forces `g_imp_t = load_t > 0` whenever there is load and no PV (for example a winter or autumn evening).
+3. `g_imp_t > 0` forces `d_grid_t = 1` under section 4.4, which forces `g_exp_t = 0`.
+4. `b_dis_export_t <= g_exp_t` then forces `b_dis_export_t = 0`.
+
+A `sell` slot therefore degenerated into "import the entire household load at the peak price and export nothing", which is strictly worse than `discharge` at any price. The solver correctly rejected it, so `sell` could never be selected during an evening price peak no matter how high the export credit. Allowing `b_dis_load_t` under `m_sell_t` resolves this and matches real hybrid-inverter behaviour, where the battery covers the house first and only the surplus is exported.
+
+The distinction between `discharge` and `sell` is preserved by `b_dis_export_t`, which remains reserved for `m_sell_t`:
+- `discharge`: `b_dis_export_t = 0`; the battery only offsets grid import.
+- `sell`: `b_dis_export_t > 0`; the battery additionally exports for credit.
+
+Because both modes may now serve load, a marginal slot can be labelled either way at an identical objective value. To keep the label meaningful and the solve deterministic:
+- a slot labelled `sell` must export a non-trivial amount from the battery, enforced by `b_dis_export_t >= min_sell_export_kwh * m_sell_t` with `min_sell_export_kwh = 1e-3` kWh
+- the pass-3 tie-break additionally applies a small weight to `sum_t m_sell_t` so an equal-cost `discharge` labelling is preferred over `sell` (see section 4.6)
+
+The combined cap `b_dis_load_t + b_dis_export_t <= max_discharge_kwh_t * (m_discharge_t + m_sell_t)` is required because the two discharge sinks now share one inverter power budget within a `sell` slot.
 
 ### 4.4 Simultaneous import/export prohibition
 
@@ -179,6 +199,8 @@ Constraints:
 - `g_exp_t <= max_export_kwh_t * (1 - d_grid_t)`
 
 This makes import and export mutually exclusive in the same slot and prohibits physically impossible simultaneous import and export.
+
+Because this rule interacts with `sell`, a `sell` slot must be able to cover its own household load from the battery (section 4.3). If it could not, it would be forced to import, which would in turn force `g_exp_t = 0` and make `sell` unselectable. A consequence of the combined rules is that `sell` is only feasible when the battery can supply the full slot load plus the exported surplus within `max_discharge_kwh_t`; otherwise the solver must fall back to `discharge` or `maxuse`.
 
 ### 4.5 Terminal SoC policy
 
@@ -201,7 +223,7 @@ Procedure:
 2. Add the constraint `objective <= obj_1 + 1e-6`.
 3. Then maximise `sum_t m_maxuse_t`.
 4. Add the constraint `sum_t m_maxuse_t >= maxuse_2 - 1e-6` where `maxuse_2` is the maximum value from pass 2.
-5. If there is still a tie, minimise the total absolute battery flow `sum_t (b_ch_grid_t + b_ch_pv_t + b_dis_load_t + b_dis_export_t)`.
+5. If there is still a tie, minimise `sum_t (b_ch_grid_t + b_ch_pv_t + b_dis_load_t + b_dis_export_t) + sell_label_weight * sum_t m_sell_t`, i.e. the total absolute battery flow plus a small preference against the `sell` label. `sell_label_weight = 1e-3` is deliberately far below the unit flow weight, so it only resolves `discharge`/`sell` labelling ties and never overrides flow minimisation or the pinned economic objective from step 2.
 
 This is the required implementation of “prefer maxuse when it is difficult to make a decision.” It is valid in HiGHS and deterministic.
 
