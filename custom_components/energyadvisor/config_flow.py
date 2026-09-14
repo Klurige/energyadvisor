@@ -1156,8 +1156,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
         errors = {}
         if user_input is not None:
             household_entities = {
-                key: user_input.get(key)
-                for key in HOUSEHOLD_LOAD_ENTITY_KEYS
+                key: user_input.get(key) for key in HOUSEHOLD_LOAD_ENTITY_KEYS
             }
             errors.update(
                 _validate_optional_sensor_entities(self.hass, household_entities)

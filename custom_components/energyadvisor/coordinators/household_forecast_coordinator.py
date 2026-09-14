@@ -31,7 +31,10 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from ..config_flow_helpers import ALL_OPTIMIZER_ENTITY_KEYS, HOUSEHOLD_BINARY_ENTITY_KEYS
+from ..config_flow_helpers import (
+    ALL_OPTIMIZER_ENTITY_KEYS,
+    HOUSEHOLD_BINARY_ENTITY_KEYS,
+)
 from ..const import (
     CONF_CENTRAL_HEATING_POWER_ENTITY,
     CONF_CENTRAL_HEATING_POWER_W,
@@ -70,9 +73,7 @@ RESIDUAL_MAX_STALE_MINUTES = 30
 QUALITY_WARNING_RETENTION = timedelta(days=1)
 STATIC_LOAD_FORECAST_W = 600.0
 STATIC_LOAD_FORECAST_KW = STATIC_LOAD_FORECAST_W / 1000.0
-STATIC_REASON = (
-    "Household forecast is in cold-start mode; using a fixed 600 W profile."
-)
+STATIC_REASON = "Household forecast is in cold-start mode; using a fixed 600 W profile."
 MAX_INTERVAL_FOR_SPIKES_SEC = 120
 MAX_INTERVAL_FOR_TRAINING_SEC = 300
 HARD_GAP_SEC = 1800
@@ -661,15 +662,16 @@ class HouseholdForecastCoordinator:
     def _db_path(self) -> str:
         storage_dir = os.path.join(self.hass.config.config_dir, ".storage")
         os.makedirs(storage_dir, exist_ok=True)
-        return os.path.join(storage_dir, f"energyadvisor_household_forecast_{self.entry.entry_id}.db")
+        return os.path.join(
+            storage_dir, f"energyadvisor_household_forecast_{self.entry.entry_id}.db"
+        )
 
     def _open_db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path(), check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS raw_samples (
                 ts_utc TEXT NOT NULL,
                 sensor_key TEXT NOT NULL,
@@ -678,14 +680,12 @@ class HouseholdForecastCoordinator:
                 quality TEXT NOT NULL,
                 PRIMARY KEY (ts_utc, sensor_key)
             )
-            """
-        )
+            """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_raw_samples_sensor_ts "
             "ON raw_samples(sensor_key, ts_utc DESC)"
         )
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS interval_energy (
                 ts_from_utc TEXT NOT NULL,
                 ts_to_utc TEXT NOT NULL,
@@ -696,14 +696,12 @@ class HouseholdForecastCoordinator:
                 quality TEXT NOT NULL,
                 PRIMARY KEY (ts_from_utc, sensor_key)
             )
-            """
-        )
+            """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_interval_energy_sensor_to "
             "ON interval_energy(sensor_key, ts_to_utc DESC)"
         )
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS raw_events (
                 ts_utc TEXT NOT NULL,
                 event_key TEXT NOT NULL,
@@ -712,14 +710,12 @@ class HouseholdForecastCoordinator:
                 quality TEXT NOT NULL,
                 PRIMARY KEY (ts_utc, event_key)
             )
-            """
-        )
+            """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_raw_events_key_ts "
             "ON raw_events(event_key, ts_utc DESC)"
         )
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS slot_rows (
                 slot_start_utc TEXT NOT NULL PRIMARY KEY,
                 slot_energy_kwh REAL NOT NULL,
@@ -728,30 +724,25 @@ class HouseholdForecastCoordinator:
                 quality_score REAL NOT NULL,
                 features_json TEXT NOT NULL
             )
-            """
-        )
-        conn.execute(
-            """
+            """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS forecast_runs (
                 generated_at_utc TEXT NOT NULL,
                 slot_start_utc TEXT NOT NULL,
                 load_kw REAL NOT NULL,
                 PRIMARY KEY (generated_at_utc, slot_start_utc)
             )
-            """
-        )
+            """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_forecast_runs_generated "
             "ON forecast_runs(generated_at_utc DESC)"
         )
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT NOT NULL PRIMARY KEY,
                 value TEXT NOT NULL
             )
-            """
-        )
+            """)
 
         version_row = conn.execute("PRAGMA user_version").fetchone()
         version = int(version_row[0] if version_row else 0)
@@ -978,7 +969,9 @@ class HouseholdForecastCoordinator:
             ("last_generation_utc",),
         ).fetchone()
         if generation_row and generation_row[0]:
-            self._last_generation_utc = self._parse_utc_timestamp(str(generation_row[0]))
+            self._last_generation_utc = self._parse_utc_timestamp(
+                str(generation_row[0])
+            )
             self._last_forecast_generation = dt_util.as_local(
                 self._last_generation_utc
             ).strftime("%Y-%m-%dT%H:%M")
@@ -1341,9 +1334,7 @@ class HouseholdForecastCoordinator:
                     QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
                 )
                 return None
-            delta_kwh = ((previous_kw + current_kw) / 2.0) * (
-                interval_sec / 3600.0
-            )
+            delta_kwh = ((previous_kw + current_kw) / 2.0) * (interval_sec / 3600.0)
         else:
             previous_kwh = self._value_to_kwh(previous.value, previous.unit)
             current_kwh = self._value_to_kwh(current.value, current.unit)
@@ -1427,15 +1418,21 @@ class HouseholdForecastCoordinator:
             0.0, gross_slot_energy_kwh - accumulator.subtracted_energy_kwh
         )
         load_kw = (
-            net_slot_energy_kwh / slot_duration_hours if slot_duration_hours > 0 else 0.0
+            net_slot_energy_kwh / slot_duration_hours
+            if slot_duration_hours > 0
+            else 0.0
         )
         slot_duration_seconds = SLOT_MINUTES * 60
-        coverage_fraction = min(1.0, accumulator.observed_seconds / slot_duration_seconds)
+        coverage_fraction = min(
+            1.0, accumulator.observed_seconds / slot_duration_seconds
+        )
         quality_score = 0.0
         if accumulator.sample_count > 0:
             quality_score = coverage_fraction
             if accumulator.sparse_interval_count:
-                sparse_fraction = accumulator.sparse_interval_count / accumulator.sample_count
+                sparse_fraction = (
+                    accumulator.sparse_interval_count / accumulator.sample_count
+                )
                 quality_score *= max(0.0, 1.0 - (0.5 * sparse_fraction))
         return (
             self._format_utc_timestamp(slot_start_utc),
@@ -1584,34 +1581,42 @@ class HouseholdForecastCoordinator:
             self._load_appliance_interval_rows_sync(
                 CONF_WATER_HEATER_POWER_ENTITY,
                 active_key=CONF_WATER_HEATER_ACTIVE_ENTITY,
-                fallback_kw=self._water_heater_power_w / 1000.0
-                if self._water_heater_power_w is not None
-                else None,
+                fallback_kw=(
+                    self._water_heater_power_w / 1000.0
+                    if self._water_heater_power_w is not None
+                    else None
+                ),
             )
         )
         rows.extend(
             self._load_appliance_interval_rows_sync(
                 CONF_CENTRAL_HEATING_POWER_ENTITY,
                 active_key=CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
-                fallback_kw=self._central_heating_power_w / 1000.0
-                if self._central_heating_power_w is not None
-                else None,
+                fallback_kw=(
+                    self._central_heating_power_w / 1000.0
+                    if self._central_heating_power_w is not None
+                    else None
+                ),
             )
         )
         rows.extend(
             self._load_appliance_interval_rows_sync(
                 CONF_POOL_PUMP_POWER_ENTITY,
-                fallback_kw=self._pool_pump_power_w / 1000.0
-                if self._pool_pump_power_w is not None
-                else None,
+                fallback_kw=(
+                    self._pool_pump_power_w / 1000.0
+                    if self._pool_pump_power_w is not None
+                    else None
+                ),
             )
         )
         rows.extend(
             self._load_appliance_interval_rows_sync(
                 CONF_DEHUMIDIFIER_POWER_ENTITY,
-                fallback_kw=self._dehumidifier_power_w / 1000.0
-                if self._dehumidifier_power_w is not None
-                else None,
+                fallback_kw=(
+                    self._dehumidifier_power_w / 1000.0
+                    if self._dehumidifier_power_w is not None
+                    else None
+                ),
             )
         )
         return rows
@@ -1738,16 +1743,12 @@ class HouseholdForecastCoordinator:
             quality_warnings = set()
 
         recent_rows = self._load_recent_closed_slot_rows_sync(normalized_now_utc)
-        if any(
-            row.sample_count <= 0 or row.quality_score < 1.0 for row in recent_rows
-        ):
+        if any(row.sample_count <= 0 or row.quality_score < 1.0 for row in recent_rows):
             quality_warnings.add(QUALITY_WARNING_SPARSE_SAMPLING)
             if quality_status == QUALITY_STATUS_OK:
                 quality_status = QUALITY_STATUS_DEGRADED
 
-        active_quality_warnings = self._active_quality_warning_codes(
-            normalized_now_utc
-        )
+        active_quality_warnings = self._active_quality_warning_codes(normalized_now_utc)
         if active_quality_warnings:
             quality_warnings.update(active_quality_warnings)
             if (
@@ -1784,7 +1785,9 @@ class HouseholdForecastCoordinator:
         reason = base_reason
         if quality_status == QUALITY_STATUS_STALE:
             stale_reference = (
-                last_valid_required_sample if last_valid_required_sample is not None else "the required household meter"
+                last_valid_required_sample
+                if last_valid_required_sample is not None
+                else "the required household meter"
             )
             reason = (
                 f"Household forecast is stale; required household meter last "
@@ -1810,19 +1813,20 @@ class HouseholdForecastCoordinator:
             if lead is not None:
                 reason = f"Household forecast is degraded because {lead}. {base_reason}"
         elif quality_status == QUALITY_STATUS_FALLBACK:
-            if QUALITY_WARNING_REQUIRED_METER_MISSING in quality_warnings and history_rows:
-                reason = (
-                    f"{STATIC_REASON} The required household meter is unavailable."
-                )
+            if (
+                QUALITY_WARNING_REQUIRED_METER_MISSING in quality_warnings
+                and history_rows
+            ):
+                reason = f"{STATIC_REASON} The required household meter is unavailable."
             else:
                 reason = STATIC_REASON
 
         return _ForecastSummary(
             learning_nights=learning_nights,
             data_since=unique_dates[0].isoformat(),
-            last_sample_date=dt_util.as_local(
-                last_sample.slot_start_utc
-            ).date().isoformat(),
+            last_sample_date=dt_util.as_local(last_sample.slot_start_utc)
+            .date()
+            .isoformat(),
             last_sample_kw=last_sample.load_kw,
             reason=reason,
             quality_status=quality_status,
@@ -1965,8 +1969,7 @@ class HouseholdForecastCoordinator:
         correction_kw = residual_tail[0]
         for residual_kw in residual_tail[1:]:
             correction_kw = (
-                RESIDUAL_ALPHA * residual_kw
-                + (1.0 - RESIDUAL_ALPHA) * correction_kw
+                RESIDUAL_ALPHA * residual_kw + (1.0 - RESIDUAL_ALPHA) * correction_kw
             )
 
         return max(
@@ -2007,8 +2010,7 @@ class HouseholdForecastCoordinator:
             else:
                 corrected_load_kw = max(
                     0.0,
-                    base_load_kw
-                    + correction_kw * (RESIDUAL_DECAY_FACTOR**slots_ahead),
+                    base_load_kw + correction_kw * (RESIDUAL_DECAY_FACTOR**slots_ahead),
                 )
             corrected_slots.append(
                 {
@@ -2069,13 +2071,13 @@ class HouseholdForecastCoordinator:
                 0.0,
                 (now_utc - row.slot_start_utc).total_seconds() / 86400.0,
             )
-            recency_weight = math.exp(
-                -age_days / FORECAST_RECENCY_HALF_LIFE_DAYS
-            )
+            recency_weight = math.exp(-age_days / FORECAST_RECENCY_HALF_LIFE_DAYS)
             weight = max(0.0, row.quality_score) * recency_weight
             if weight <= 0.0:
                 continue
-            weighted_stats.setdefault((row.day_type, row.slot_index), _WeightedStats()).add(
+            weighted_stats.setdefault(
+                (row.day_type, row.slot_index), _WeightedStats()
+            ).add(
                 row.load_kw,
                 weight,
             )
@@ -2095,7 +2097,7 @@ class HouseholdForecastCoordinator:
 
         recent_rows = [row for row in model_rows if row.quality_score > 0.0]
         if len(recent_rows) >= FORECAST_TREND_WINDOW_SLOTS * 2:
-            recent_window = recent_rows[-FORECAST_TREND_WINDOW_SLOTS :]
+            recent_window = recent_rows[-FORECAST_TREND_WINDOW_SLOTS:]
             previous_window = recent_rows[
                 -FORECAST_TREND_WINDOW_SLOTS * 2 : -FORECAST_TREND_WINDOW_SLOTS
             ]
@@ -2201,10 +2203,10 @@ class HouseholdForecastCoordinator:
         if not self._forecast_slots or len(self._forecast_slots) != len(forecast_slots):
             return [dict(slot) for slot in forecast_slots]
 
-        current_anchor_text = dt_util.as_local(
-            self._normalize_utc_timestamp(now_utc)
-        ).replace(hour=0, minute=0, second=0, microsecond=0).strftime(
-            "%Y-%m-%dT%H:%M"
+        current_anchor_text = (
+            dt_util.as_local(self._normalize_utc_timestamp(now_utc))
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .strftime("%Y-%m-%dT%H:%M")
         )
         first_existing = self._forecast_slots[0]
         previous_anchor = (
@@ -2217,7 +2219,9 @@ class HouseholdForecastCoordinator:
 
         current_slot_start_utc = self._floor_to_slot_start_utc(now_utc)
         merged_slots: list[dict[str, object]] = []
-        for index, (slot, slot_start_utc) in enumerate(zip(forecast_slots, slot_starts_utc)):
+        for index, (slot, slot_start_utc) in enumerate(
+            zip(forecast_slots, slot_starts_utc)
+        ):
             if slot_start_utc < current_slot_start_utc:
                 previous_slot = self._forecast_slots[index]
                 if isinstance(previous_slot, Mapping):
@@ -2348,7 +2352,9 @@ class HouseholdForecastCoordinator:
         return slot_accumulators
 
     def _persist_slot_rows_sync(
-        self, slot_accumulators: list[_SlotAccumulator], rebuild_start_slot_utc: datetime
+        self,
+        slot_accumulators: list[_SlotAccumulator],
+        rebuild_start_slot_utc: datetime,
     ) -> None:
         """Replace the rebuilt slot rows for the finalized window."""
         if not slot_accumulators:

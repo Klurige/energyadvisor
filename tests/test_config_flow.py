@@ -63,7 +63,6 @@ from custom_components.energyadvisor.const import (
     DOMAIN,
 )
 
-
 COMMON_TRANSLATED_STEPS = {
     "supplier_fees_and_credits": [
         CONF_SUPPLIER_NOTE,

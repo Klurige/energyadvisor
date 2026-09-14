@@ -7,7 +7,10 @@ from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 
-def find_current_mode(modes: list[dict], reference_time: datetime | None = None) -> dict:
+
+def find_current_mode(
+    modes: list[dict], reference_time: datetime | None = None
+) -> dict:
     now = reference_time or dt_util.now()
     previous_slot = None
     for slot in modes:
@@ -28,6 +31,7 @@ def find_current_mode(modes: list[dict], reference_time: datetime | None = None)
     else:
         return default_modes(now)[0]
 
+
 def default_modes(reference_time: datetime | None = None):
     # Default mode is maxuse if no price data is available.
     base_time = reference_time or dt_util.now()
@@ -43,6 +47,7 @@ def default_modes(reference_time: datetime | None = None):
             "credit": 0.0,
         }
     ]
+
 
 def find_peaks_in_modes(modes: list[dict], margin: float) -> list[dict]:
     # Find any peaks in modes by looking at cost. A peak is defined as a mode that has a higher cost than the previous and next modes,
@@ -67,7 +72,8 @@ def find_peaks_in_modes(modes: list[dict], margin: float) -> list[dict]:
                 modes[i].get("cost") <= mode_cost - margin for i in range(mode_index)
             )
             has_lower_after = any(
-                modes[i].get("cost") <= mode_cost - margin for i in range(mode_index + 1, len(modes))
+                modes[i].get("cost") <= mode_cost - margin
+                for i in range(mode_index + 1, len(modes))
             )
             if has_lower_before and has_lower_after:
                 peak_indexes.append(mode_index)
@@ -87,7 +93,9 @@ def find_peaks_in_modes(modes: list[dict], margin: float) -> list[dict]:
                 if peak_position < len(filtered_peak_indexes) - 1
                 else len(modes) - 1
             )
-            min_before = min(modes[j].get("cost") for j in range(previous_peak_index, peak_index))
+            min_before = min(
+                modes[j].get("cost") for j in range(previous_peak_index, peak_index)
+            )
             min_after = min(
                 modes[j].get("cost") for j in range(peak_index + 1, next_peak_index + 1)
             )

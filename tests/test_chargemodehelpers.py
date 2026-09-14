@@ -52,7 +52,7 @@ MODES = [
     {"from": "2026-08-16T19:00", "mode": "discharge", "cost": 1.50825},
     {"from": "2026-08-16T19:15", "mode": "sell", "cost": 1.19838},
     {"from": "2026-08-16T19:30", "mode": "standby", "cost": 1.6095},
-    {"from": "2026-08-16T19:45", "mode": "charge", "cost": 2.038}, # peak
+    {"from": "2026-08-16T19:45", "mode": "charge", "cost": 2.038},  # peak
     {"from": "2026-08-16T20:00", "mode": "maxuse", "cost": 1.83404},
     {"from": "2026-08-16T20:15", "mode": "discharge", "cost": 1.90082},
     {"from": "2026-08-16T20:30", "mode": "sell", "cost": 1.70974},
@@ -61,11 +61,11 @@ MODES = [
     {"from": "2026-08-16T21:15", "mode": "maxuse", "cost": 1.61067},
     {"from": "2026-08-16T21:30", "mode": "discharge", "cost": 1.40017},
     {"from": "2026-08-16T21:45", "mode": "sell", "cost": 1.00007},
-    {"from": "2026-08-16T22:00", "mode": "standby", "cost": 2.07219}, # peak
+    {"from": "2026-08-16T22:00", "mode": "standby", "cost": 2.07219},  # peak
     {"from": "2026-08-16T22:15", "mode": "charge", "cost": 1.34788},
     {"from": "2026-08-16T22:30", "mode": "maxuse", "cost": 1.39945},
     {"from": "2026-08-16T22:45", "mode": "discharge", "cost": 0.95081},
-    {"from": "2026-08-16T23:00", "mode": "sell", "cost": 1.93833}, # peak
+    {"from": "2026-08-16T23:00", "mode": "sell", "cost": 1.93833},  # peak
     {"from": "2026-08-16T23:15", "mode": "standby", "cost": 1.32195},
     {"from": "2026-08-16T23:30", "mode": "charge", "cost": 1.05352},
     {"from": "2026-08-16T23:45", "mode": "maxuse", "cost": 0.80697},
@@ -75,7 +75,7 @@ MODES = [
 def test_find_peaks_in_modes_returns_list():
     result = find_peaks_in_modes(MODES, 0.7)
     assert isinstance(result, list)
-    assert(result[0].get("from") == "2026-08-16T19:45")
-    assert(result[1].get("from") == "2026-08-16T22:00")
-    assert(result[2].get("from") == "2026-08-16T23:00")
-    assert(len(result) == 3)
+    assert result[0].get("from") == "2026-08-16T19:45"
+    assert result[1].get("from") == "2026-08-16T22:00"
+    assert result[2].get("from") == "2026-08-16T23:00"
+    assert len(result) == 3

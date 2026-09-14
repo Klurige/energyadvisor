@@ -126,9 +126,7 @@ def test_case2_expensive_discharge() -> None:
     assert debug is not None
     assert debug.discharge_load_kwh[0] > 0
     assert debug.discharge_export_kwh[0] == pytest.approx(0.0, abs=1e-9)
-    for imp, exp in zip(
-        debug.grid_import_kwh, debug.grid_export_kwh, strict=True
-    ):
+    for imp, exp in zip(debug.grid_import_kwh, debug.grid_export_kwh, strict=True):
         assert min(imp, exp) <= 1e-6
 
 
@@ -284,9 +282,7 @@ def test_case9_no_simultaneous_import_export() -> None:
 
     assert result.optimized is True
     assert debug is not None
-    for imp, exp in zip(
-        debug.grid_import_kwh, debug.grid_export_kwh, strict=True
-    ):
+    for imp, exp in zip(debug.grid_import_kwh, debug.grid_export_kwh, strict=True):
         assert min(imp, exp) <= 1e-6
     assert any(imp > 0 for imp in debug.grid_import_kwh)
 

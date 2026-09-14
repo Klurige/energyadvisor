@@ -74,7 +74,9 @@ class BatteryChargeModeSensor(SensorEntity):
         self._optimization_enabled = bool(
             entry.options.get(CONF_BATTERY_OPTIMIZATION_ENABLED, False)
         )
-        optimization_horizon = entry.options.get(CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS)
+        optimization_horizon = entry.options.get(
+            CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS
+        )
         self._optimization_horizon_hours = (
             float(optimization_horizon) if optimization_horizon is not None else 48.0
         )
@@ -82,9 +84,10 @@ class BatteryChargeModeSensor(SensorEntity):
         self._battery_max_charge_power_w = entry.options.get(
             CONF_BATTERY_MAX_CHARGE_POWER_W
         )
-        self._battery_max_discharge_power_w = entry.options.get(
-            CONF_BATTERY_MAX_DISCHARGE_POWER_W
-        ) or self._battery_max_charge_power_w
+        self._battery_max_discharge_power_w = (
+            entry.options.get(CONF_BATTERY_MAX_DISCHARGE_POWER_W)
+            or self._battery_max_charge_power_w
+        )
         battery_min_soc_pct = entry.options.get(CONF_BATTERY_MIN_SOC_PCT)
         battery_max_soc_pct = entry.options.get(CONF_BATTERY_MAX_SOC_PCT)
         self._battery_min_soc_pct = (
@@ -137,7 +140,9 @@ class BatteryChargeModeSensor(SensorEntity):
         self._solar_coordinator = getattr(runtime_data, "solar_coordinator", None)
         if self._solar_coordinator is not None:
             solar_coordinator = self._solar_coordinator
-            _LOGGER.debug("Battery charge mode sensor registering listener for solar forecast")
+            _LOGGER.debug(
+                "Battery charge mode sensor registering listener for solar forecast"
+            )
             solar_coordinator.register_update_callback(self._handle_source_update)
 
             def _remove_solar_listener() -> None:
@@ -284,10 +289,10 @@ class BatteryChargeModeSensor(SensorEntity):
         """
         if self._household_coordinator is None:
             return []
-        forecast_slots = getattr(self._household_coordinator, "forecast_slots", []) or []
-        return household_forecast_slots_to_load_forecasts(
-            forecast_slots, dt_util.now()
+        forecast_slots = (
+            getattr(self._household_coordinator, "forecast_slots", []) or []
         )
+        return household_forecast_slots_to_load_forecasts(forecast_slots, dt_util.now())
 
     def calculate_battery_mode(self) -> None:
         """Calculate the battery schedule and current mode."""

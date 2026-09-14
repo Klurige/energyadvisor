@@ -20,7 +20,6 @@ from custom_components.energyadvisor.sensor.batterychargemodesensor import (
     BatteryChargeModeSensor,
 )
 
-
 TEST_TIMEZONE = ZoneInfo("Europe/Stockholm")
 
 

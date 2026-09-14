@@ -742,9 +742,7 @@ def _solve_milp_unsafe(
             _add_highs_variable(highs, 0.0, min(max_discharge_kwh[t], load_t[t]))
         )
         dis_export_idx.append(_add_highs_variable(highs, 0.0, max_discharge_kwh[t]))
-        pv_to_load_idx.append(
-            _add_highs_variable(highs, 0.0, min(pv_t[t], load_t[t]))
-        )
+        pv_to_load_idx.append(_add_highs_variable(highs, 0.0, min(pv_t[t], load_t[t])))
         pv_to_export_idx.append(_add_highs_variable(highs, 0.0, pv_t[t]))
         d_grid_idx.append(_add_highs_variable(highs, 0.0, 1.0, integer=True))
         m_charge_idx.append(_add_highs_variable(highs, 0.0, 1.0, integer=True))
@@ -755,9 +753,7 @@ def _solve_milp_unsafe(
         if t < t_hi:
             shortfall_idx[t] = _add_highs_variable(highs, 0.0, infinity)
 
-    soc_idx: list[int] = [
-        _add_highs_variable(highs, initial_soc_kwh, initial_soc_kwh)
-    ]
+    soc_idx: list[int] = [_add_highs_variable(highs, initial_soc_kwh, initial_soc_kwh)]
     for _ in range(total):
         soc_idx.append(_add_highs_variable(highs, soc_min_kwh, soc_max_kwh))
 
@@ -785,7 +781,11 @@ def _solve_milp_unsafe(
         # surplus solar tops up the battery even when there is no active,
         # price-driven charge decision (i.e. no grid import is planned).
         _add_highs_row(
-            highs, -infinity, 0.0, [ch_grid_idx[t], m_charge_idx[t]], [1.0, -max_charge_kwh[t]]
+            highs,
+            -infinity,
+            0.0,
+            [ch_grid_idx[t], m_charge_idx[t]],
+            [1.0, -max_charge_kwh[t]],
         )
         _add_highs_row(
             highs,
@@ -1045,15 +1045,9 @@ def _solve_milp_unsafe(
     return _MilpResult(
         mode_indexes=mode_indexes,
         soc_values=[float(solution.col_value[index]) for index in soc_idx],
-        grid_import_values=[
-            float(solution.col_value[index]) for index in g_imp_idx
-        ],
-        grid_export_values=[
-            float(solution.col_value[index]) for index in g_exp_idx
-        ],
-        charge_grid_values=[
-            float(solution.col_value[index]) for index in ch_grid_idx
-        ],
+        grid_import_values=[float(solution.col_value[index]) for index in g_imp_idx],
+        grid_export_values=[float(solution.col_value[index]) for index in g_exp_idx],
+        charge_grid_values=[float(solution.col_value[index]) for index in ch_grid_idx],
         charge_pv_values=[float(solution.col_value[index]) for index in ch_pv_idx],
         discharge_load_values=[
             float(solution.col_value[index]) for index in dis_load_idx
@@ -1297,9 +1291,7 @@ def debug_solve_battery_schedule(
     ):
         return None
 
-    inputs = replace(
-        inputs, horizon_hours=min(max(inputs.horizon_hours, 1.0), 48.0)
-    )
+    inputs = replace(inputs, horizon_hours=min(max(inputs.horizon_hours, 1.0), 48.0))
     slots = _normalize_slots(inputs)
     if not slots:
         return None
@@ -1370,4 +1362,3 @@ def debug_solve_battery_schedule(
         t_hi=t_hi,
         reserve_kwh=reserve_kwh,
     )
-

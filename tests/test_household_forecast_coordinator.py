@@ -68,7 +68,9 @@ def _make_coordinator(
 
 
 @pytest.mark.asyncio
-async def test_coordinator_creates_sqlite_schema_and_capture_targets(tmp_path: Path) -> None:
+async def test_coordinator_creates_sqlite_schema_and_capture_targets(
+    tmp_path: Path,
+) -> None:
     """The coordinator should open the SQLite history file and wire capture targets."""
     coordinator, _hass = _make_coordinator(
         tmp_path,
@@ -127,12 +129,12 @@ async def test_coordinator_creates_sqlite_schema_and_capture_targets(tmp_path: P
     )
     assert coordinator._capture_targets["binary_sensor.water_heater_active"].is_event
     assert not coordinator._capture_targets["sensor.battery_soc"].is_event
-    assert coordinator._capture_targets["sensor.household_meter"].poll_interval == timedelta(
-        seconds=60
-    )
-    assert coordinator._capture_targets["sensor.battery_soc"].poll_interval == timedelta(
-        seconds=120
-    )
+    assert coordinator._capture_targets[
+        "sensor.household_meter"
+    ].poll_interval == timedelta(seconds=60)
+    assert coordinator._capture_targets[
+        "sensor.battery_soc"
+    ].poll_interval == timedelta(seconds=120)
     assert mock_state_change.call_count == 1
     assert mock_time_change.call_count == 1
     assert mock_time_interval.call_count == 1
@@ -387,7 +389,9 @@ async def test_coordinator_restarts_with_cold_start_forecast(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_coordinator_finalizes_interval_energy_and_slot_rows(tmp_path: Path) -> None:
+async def test_coordinator_finalizes_interval_energy_and_slot_rows(
+    tmp_path: Path,
+) -> None:
     """Power samples should become interval energy and split across slots."""
     coordinator, _hass = _make_coordinator(tmp_path)
     store = MagicMock()
@@ -477,14 +481,20 @@ async def test_coordinator_finalizes_interval_energy_and_slot_rows(tmp_path: Pat
         assert slot_rows[1][4] == pytest.approx(1 / 12)
         assert json.loads(slot_rows[1][5])["required_missing"] is True
 
-        assert conn.execute(
-            "SELECT value FROM meta WHERE key = ?",
-            ("last_finalized_slot_utc",),
-        ).fetchone()[0] == "2026-09-05T12:15:00+00:00"
-        assert conn.execute(
-            "SELECT value FROM meta WHERE key = ?",
-            ("last_generation_utc",),
-        ).fetchone()[0] == "2026-09-05T12:30:00+00:00"
+        assert (
+            conn.execute(
+                "SELECT value FROM meta WHERE key = ?",
+                ("last_finalized_slot_utc",),
+            ).fetchone()[0]
+            == "2026-09-05T12:15:00+00:00"
+        )
+        assert (
+            conn.execute(
+                "SELECT value FROM meta WHERE key = ?",
+                ("last_generation_utc",),
+            ).fetchone()[0]
+            == "2026-09-05T12:30:00+00:00"
+        )
         latest_generation = conn.execute(
             "SELECT value FROM meta WHERE key = ?",
             ("last_generation_utc",),
@@ -709,10 +719,13 @@ async def test_coordinator_marks_sparse_interval_quality(tmp_path: Path) -> None
     )
 
     with sqlite3.connect(coordinator._db_path()) as conn:
-        assert conn.execute(
-            "SELECT quality FROM interval_energy WHERE sensor_key = ?",
-            (CONF_POWER_METER_CONSUMPTION,),
-        ).fetchone()[0] == "sparse_gap"
+        assert (
+            conn.execute(
+                "SELECT quality FROM interval_energy WHERE sensor_key = ?",
+                (CONF_POWER_METER_CONSUMPTION,),
+            ).fetchone()[0]
+            == "sparse_gap"
+        )
 
         slot_row = conn.execute(
             "SELECT slot_energy_kwh, load_kw, sample_count, quality_score, "
@@ -829,18 +842,22 @@ async def test_coordinator_builds_learned_forecast_from_slot_history(
         assert len(forecast_rows) == 2
         assert forecast_rows[0][0] == pytest.approx(0.72)
         assert forecast_rows[1][0] == pytest.approx(1.28)
-        assert conn.execute(
-            "SELECT COUNT(*) FROM forecast_runs WHERE generated_at_utc = ?",
-            (latest_generation,),
-        ).fetchone()[0] == FORECAST_SLOT_COUNT
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM forecast_runs WHERE generated_at_utc = ?",
+                (latest_generation,),
+            ).fetchone()[0]
+            == FORECAST_SLOT_COUNT
+        )
 
     assert coordinator.load_forecast_kw == pytest.approx(0.72)
     assert coordinator.household_load_forecast_w == pytest.approx(720.0)
     assert coordinator.learning_nights == 8
     assert coordinator.data_since == dt_util.as_local(base_day).date().isoformat()
-    assert coordinator.last_sample_date == dt_util.as_local(
-        base_day + timedelta(days=7, minutes=45)
-    ).date().isoformat()
+    assert (
+        coordinator.last_sample_date
+        == dt_util.as_local(base_day + timedelta(days=7, minutes=45)).date().isoformat()
+    )
     assert coordinator.last_sample_kw == pytest.approx(0.94)
     assert coordinator.quality_status == "ok"
     assert coordinator.quality_warnings == []
@@ -850,7 +867,9 @@ async def test_coordinator_builds_learned_forecast_from_slot_history(
     assert "seasonal baseline" in coordinator.reason
     assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.72)
     assert coordinator.forecast_slots[1]["load"] == pytest.approx(1.28)
-    assert coordinator.forecast_slots[0]["load"] != coordinator.forecast_slots[1]["load"]
+    assert (
+        coordinator.forecast_slots[0]["load"] != coordinator.forecast_slots[1]["load"]
+    )
 
 
 @pytest.mark.asyncio
@@ -1136,16 +1155,22 @@ def test_coordinator_applies_residual_correction_to_step_change(
         with patch.object(
             coordinator, "_compute_residual_correction_kw_sync", return_value=0.0
         ):
-            baseline_slots, _summary = coordinator._build_forecast_slots_from_history_sync(
-                now_utc
+            baseline_slots, _summary = (
+                coordinator._build_forecast_slots_from_history_sync(now_utc)
             )
 
         assert await coordinator._async_finalize_history(now_utc)
         return baseline_slots, coordinator.forecast_slots
 
     baseline_slots, corrected_slots = asyncio.run(_exercise())
-    baseline_future = [float(slot["load"]) for slot in baseline_slots[current_slot_index:current_slot_index + 4]]
-    corrected_future = [float(slot["load"]) for slot in corrected_slots[current_slot_index:current_slot_index + 4]]
+    baseline_future = [
+        float(slot["load"])
+        for slot in baseline_slots[current_slot_index : current_slot_index + 4]
+    ]
+    corrected_future = [
+        float(slot["load"])
+        for slot in corrected_slots[current_slot_index : current_slot_index + 4]
+    ]
     actual_future_kw = 2.6
     baseline_mae = sum(abs(load - actual_future_kw) for load in baseline_future) / len(
         baseline_future
@@ -1167,7 +1192,9 @@ def test_coordinator_keeps_historical_forecast_slots_stable_on_refresh(
     slot_starts_utc = coordinator._forecast_slot_starts_utc(now_utc)
     current_slot_start_utc = coordinator._floor_to_slot_start_utc(now_utc)
     historical_count = sum(
-        1 for slot_start_utc in slot_starts_utc if slot_start_utc < current_slot_start_utc
+        1
+        for slot_start_utc in slot_starts_utc
+        if slot_start_utc < current_slot_start_utc
     )
 
     coordinator._forecast_slots = [
@@ -1198,7 +1225,9 @@ def test_coordinator_keeps_historical_forecast_slots_stable_on_refresh(
     assert merged_slots[historical_count]["load"] == pytest.approx(
         float(1000 + historical_count)
     )
-    assert merged_slots[-1]["load"] == pytest.approx(float(1000 + FORECAST_SLOT_COUNT - 1))
+    assert merged_slots[-1]["load"] == pytest.approx(
+        float(1000 + FORECAST_SLOT_COUNT - 1)
+    )
 
     snapshot = coordinator.forecast_slots
     snapshot[0]["load"] = -1.0

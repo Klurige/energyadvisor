@@ -9,7 +9,6 @@ from custom_components.energyadvisor.battery_optimizer import (
     optimize_battery_schedule,
 )
 
-
 TEST_TIMEZONE = ZoneInfo("Europe/Stockholm")
 
 
@@ -143,7 +142,9 @@ def test_optimize_battery_schedule_keeps_quarter_hour_slots() -> None:
     ]
 
 
-def test_optimize_battery_schedule_keeps_remaining_soc_when_sell_spread_is_flat() -> None:
+def test_optimize_battery_schedule_keeps_remaining_soc_when_sell_spread_is_flat() -> (
+    None
+):
     """Flat sell/repurchase economics should not trigger a sell cycle."""
     pytest.importorskip("highspy")
 
