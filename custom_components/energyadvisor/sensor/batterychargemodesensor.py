@@ -45,10 +45,10 @@ _LOGGER = logging.getLogger(__name__)
 
 MODE_ICONS = {
     "standby": "mdi:battery-off",
-    "charge": "mdi:battery-charging",
-    "maxuse": "mdi:battery-check",
-    "discharge": "mdi:battery-minus",
-    "sell": "mdi:battery-arrow-up",
+    "charge": "mdi:battery-arrow-up",
+    "maxuse": "mdi:battery-sync",
+    "discharge": "mdi:battery-arrow-down",
+    "sell": "mdi:battery-minus",
     "unknown": "mdi:battery-unknown",
 }
 
