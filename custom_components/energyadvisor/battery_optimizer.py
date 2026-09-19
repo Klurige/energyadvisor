@@ -20,7 +20,9 @@ from typing import Any
 
 try:
     import highspy
-except ModuleNotFoundError:  # pragma: no cover - optional dependency in minimal test envs
+except (
+    ModuleNotFoundError
+):  # pragma: no cover - optional dependency in minimal test envs
     highspy = None
 
 import numpy as np
