@@ -18,12 +18,27 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
-import highspy
+try:
+    import highspy
+except ModuleNotFoundError:  # pragma: no cover - optional dependency in minimal test envs
+    highspy = None
+
 import numpy as np
 
 from .sensor.chargemodehelpers import find_current_mode
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _require_highspy() -> Any:
+    """Raise a clear error when the HiGHS Python bindings are unavailable."""
+    if highspy is None:
+        raise ModuleNotFoundError(
+            "highspy is required for battery optimization; install it with "
+            "'pip install \"highspy>=1.8,<2\"'"
+        )
+    return highspy
+
 
 DEFAULT_CHARGE_EFFICIENCY = 0.95
 DEFAULT_DISCHARGE_EFFICIENCY = 0.95
@@ -661,6 +676,12 @@ def _solve_milp(
     reserve_kwh: float,
 ) -> _MilpResult | None:
     """Solve the MILP, degrading to ``None`` (solver failure) on any error."""
+    if highspy is None:
+        _LOGGER.warning(
+            "HiGHS is not installed; battery optimization is unavailable and will "
+            "fall back to maxuse scheduling."
+        )
+        return None
     try:
         return _solve_milp_unsafe(
             inputs,
@@ -700,6 +721,7 @@ def _solve_milp_unsafe(
     reserve_kwh: float,
 ) -> _MilpResult | None:
     """Build and solve the full battery MILP with a lexicographic tie-break."""
+    _require_highspy()
     total = len(slots)
     if total == 0:
         return None
@@ -1280,6 +1302,8 @@ def debug_solve_battery_schedule(
     inputs: BatteryOptimizationInputs,
 ) -> BatterySolverDebugResult | None:
     """Solve the MILP and return per-slot flow internals for test validation."""
+    if highspy is None:
+        return None
     if (
         inputs.capacity_kwh is None
         or inputs.max_charge_power_w is None

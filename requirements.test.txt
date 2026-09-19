@@ -1,3 +1,4 @@
 pytest
 pytest-cov
 pytest-homeassistant-custom-component
+highspy>=1.8,<2
