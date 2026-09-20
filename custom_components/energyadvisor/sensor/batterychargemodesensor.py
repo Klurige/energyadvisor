@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
@@ -237,8 +238,11 @@ class BatteryChargeModeSensor(SensorEntity):
             )
             return None
 
-    def _build_optimizer_inputs(self) -> BatteryOptimizationInputs:
+    def _build_optimizer_inputs(
+        self, reference_time: datetime | None = None
+    ) -> BatteryOptimizationInputs:
         """Build the request object used by the optimizer."""
+        reference_time = reference_time or dt_util.now()
         price_rates = list(getattr(self._price_sensor, "_rates", []) or [])
         solar_forecasts = self._read_solar_forecasts()
         current_soc_pct = (
@@ -247,7 +251,7 @@ class BatteryChargeModeSensor(SensorEntity):
         self._current_soc_pct = current_soc_pct
         return BatteryOptimizationInputs(
             rates=price_rates,
-            reference_time=dt_util.now(),
+            reference_time=reference_time,
             current_soc_pct=current_soc_pct,
             capacity_kwh=(
                 float(self._battery_capacity_kwh)
@@ -269,7 +273,7 @@ class BatteryChargeModeSensor(SensorEntity):
             horizon_hours=self._optimization_horizon_hours,
             optimization_enabled=self._optimization_enabled,
             solar_forecasts=solar_forecasts,
-            load_forecasts=self._read_load_forecasts(),
+            load_forecasts=self._read_load_forecasts(reference_time),
             degradation_cost=self._battery_degradation_cost,
         )
 
@@ -280,7 +284,9 @@ class BatteryChargeModeSensor(SensorEntity):
         forecasts = getattr(self._solar_coordinator, "forecast", []) or []
         return [dict(entry) for entry in forecasts if isinstance(entry, dict)]
 
-    def _read_load_forecasts(self) -> list[dict[str, object]]:
+    def _read_load_forecasts(
+        self, reference_time: datetime | None = None
+    ) -> list[dict[str, object]]:
         """Read household load forecast slots from the registered coordinator.
 
         Adapts ``HouseholdForecastCoordinator.forecast_slots`` (authoritative
@@ -292,17 +298,62 @@ class BatteryChargeModeSensor(SensorEntity):
         forecast_slots = (
             getattr(self._household_coordinator, "forecast_slots", []) or []
         )
-        return household_forecast_slots_to_load_forecasts(forecast_slots, dt_util.now())
+        return household_forecast_slots_to_load_forecasts(
+            forecast_slots, reference_time or dt_util.now()
+        )
+
+    def _merge_schedule_with_elapsed_modes(
+        self, schedule: list[dict[str, object]], reference_time: datetime
+    ) -> list[dict[str, object]]:
+        """Keep today's elapsed entries while updating the current schedule."""
+        elapsed_modes: dict[datetime, dict[str, object]] = {}
+        for mode in self._modes:
+            slot_from = dt_util.parse_datetime(mode.get("from"))
+            if slot_from is None:
+                continue
+            if slot_from.tzinfo is None:
+                slot_from = slot_from.replace(tzinfo=reference_time.tzinfo)
+            else:
+                slot_from = dt_util.as_local(slot_from)
+            if slot_from.date() == reference_time.date() and slot_from < reference_time:
+                elapsed_modes[slot_from] = mode
+
+        merged_modes = dict(elapsed_modes)
+        for mode in schedule:
+            slot_from = dt_util.parse_datetime(mode.get("from"))
+            if slot_from is None:
+                continue
+            if slot_from.tzinfo is None:
+                slot_from = slot_from.replace(tzinfo=reference_time.tzinfo)
+            else:
+                slot_from = dt_util.as_local(slot_from)
+            if slot_from >= reference_time or (
+                slot_from.date() == reference_time.date()
+                and slot_from not in elapsed_modes
+            ):
+                merged_modes[slot_from] = mode
+
+        today_midnight = reference_time.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        if not any(slot_from == today_midnight for slot_from in merged_modes):
+            merged_modes[today_midnight] = default_modes(reference_time)[0]
+
+        return [merged_modes[slot_from] for slot_from in sorted(merged_modes)]
 
     def calculate_battery_mode(self) -> None:
         """Calculate the battery schedule and current mode."""
         if not self._modes:
             self._modes = default_modes()
 
-        optimizer_inputs = self._build_optimizer_inputs()
+        reference_time = dt_util.now()
+        optimizer_inputs = self._build_optimizer_inputs(reference_time)
         result = optimize_battery_schedule(optimizer_inputs)
 
-        self._modes = result.schedule or default_modes()
+        self._modes = self._merge_schedule_with_elapsed_modes(
+            result.schedule or default_modes(reference_time),
+            reference_time,
+        )
         self._current_mode = result.current_mode
         self._current_target_soc_pct = result.current_target_soc_pct
         self._reason = result.reason

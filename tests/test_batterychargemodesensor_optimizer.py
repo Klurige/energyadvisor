@@ -140,10 +140,11 @@ def test_calculate_battery_mode_uses_optimizer_and_exposes_schedule() -> None:
     assert attrs["current_target_soc"] == 80.0
     assert attrs["reason"].startswith("Optimized 3h price schedule with HiGHS")
     assert attrs["solver"] == "HIGHS"
-    assert attrs["modes"][0]["mode"] == "charge"
-    assert attrs["modes"][1]["mode"] == "sell"
-    assert attrs["modes"][0]["target_soc"] == 80.0
-    assert attrs["modes"][1]["target_soc"] == 20.0
+    assert attrs["modes"][0]["from"] == "2026-08-15T00:00"
+    assert attrs["modes"][1]["mode"] == "charge"
+    assert attrs["modes"][2]["mode"] == "sell"
+    assert attrs["modes"][1]["target_soc"] == 80.0
+    assert attrs["modes"][2]["target_soc"] == 20.0
     assert "charge_entries" not in attrs
 
 
@@ -177,7 +178,7 @@ def test_calculate_battery_mode_respects_forecast_solar_headroom() -> None:
     assert sensor.state == "charge"
     assert attrs["current_target_soc"] == 60.0
     assert "forecast solar" in attrs["reason"]
-    assert attrs["modes"][0]["target_soc"] == 60.0
+    assert attrs["modes"][1]["target_soc"] == 60.0
 
 
 def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> None:
@@ -221,10 +222,46 @@ def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> No
         "maxuse",
         "maxuse",
         "maxuse",
+        "maxuse",
     ]
     assert [entry["from"] for entry in attrs["modes"]] == [
+        "2026-08-15T00:00",
         "2026-08-15T12:00",
         "2026-08-15T12:15",
         "2026-08-15T12:30",
         "2026-08-15T12:45",
     ]
+
+
+def test_recalculation_keeps_elapsed_modes() -> None:
+    """Recalculation must not replace slots that have already elapsed."""
+    first_now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
+    sensor = _build_sensor(first_now, optimization_enabled=False)
+    with (
+        patch(
+            "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
+            return_value=first_now,
+        ),
+        patch(
+            "custom_components.energyadvisor.sensor.chargemodehelpers.dt_util.now",
+            return_value=first_now,
+        ),
+    ):
+        sensor.calculate_battery_mode()
+
+    elapsed_mode = dict(sensor._modes[1])
+    second_now = first_now + datetime.timedelta(minutes=15)
+    with (
+        patch(
+            "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
+            return_value=second_now,
+        ),
+        patch(
+            "custom_components.energyadvisor.sensor.chargemodehelpers.dt_util.now",
+            return_value=second_now,
+        ),
+    ):
+        sensor.calculate_battery_mode()
+
+    assert sensor._modes[0]["from"] == "2026-08-15T00:00"
+    assert sensor._modes[1] == elapsed_mode
