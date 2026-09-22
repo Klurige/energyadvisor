@@ -8,7 +8,8 @@ import sys
 import types
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -652,6 +653,69 @@ class TestCollectOmData:
         assert len(result) == 2
         assert result[coord._parse_ts(first)] == 3500.0
         assert result[coord._parse_ts(second)] == 2100.0
+
+    def test_tomorrow_forecast_entity_is_included(self):
+        """The optional tomorrow entity should contribute forecast entries."""
+        now_utc = datetime.now(UTC)
+        today_ts = (now_utc + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        tomorrow_ts = (now_utc + timedelta(hours=25)).strftime(
+            "%Y-%m-%dT%H:%M:%S+00:00"
+        )
+        coord = _make_coordinator(forecast_tomorrow_entity="sensor.om_tomorrow")
+        today_state = SimpleNamespace(state="0", attributes={"watts": {today_ts: 1200}})
+        tomorrow_state = SimpleNamespace(
+            state="0", attributes={"watts": {tomorrow_ts: 2200}}
+        )
+        coord.hass.states.get = lambda entity_id: {
+            coord._forecast_entity: today_state,
+            "sensor.om_tomorrow": tomorrow_state,
+        }.get(entity_id)
+
+        result = coord._collect_om_data()
+
+        assert result[coord._parse_ts(today_ts)] == 1200.0
+        assert result[coord._parse_ts(tomorrow_ts)] == 2200.0
+
+
+class TestAsyncSetup:
+
+    @pytest.mark.asyncio
+    async def test_setup_listens_to_tomorrow_forecast_updates(self):
+        """The coordinator should refresh when either forecast sensor changes."""
+        coord = _make_coordinator(
+            forecast_tomorrow_entity="sensor.om_tomorrow",
+            power_entity="",
+        )
+        coord._cleanup_stale_dbs = AsyncMock()
+        coord._ensure_db = MagicMock(return_value=None)
+        coord._refresh = AsyncMock()
+        coord.hass.async_add_executor_job = AsyncMock(return_value=None)
+        coord.hass.async_create_task = MagicMock()
+        coord.hass.states.get = MagicMock(return_value=None)
+
+        with (
+            patch(
+                "custom_components.energyadvisor.coordinators.solar_forecast_coordinator.async_track_utc_time_change",
+                return_value=lambda: None,
+            ) as mock_time_change,
+            patch(
+                "custom_components.energyadvisor.coordinators.solar_forecast_coordinator.async_track_state_change_event",
+                return_value=lambda: None,
+            ) as mock_state_change,
+            patch(
+                "custom_components.energyadvisor.coordinators.solar_forecast_coordinator.async_call_later",
+                return_value=lambda: None,
+            ) as mock_call_later,
+        ):
+            await coord.async_setup()
+
+        mock_state_change.assert_called_once_with(
+            coord.hass,
+            [coord._forecast_entity, coord._forecast_tomorrow_entity],
+            coord._on_forecast_updated,
+        )
+        mock_time_change.assert_called_once()
+        mock_call_later.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

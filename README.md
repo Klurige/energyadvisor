@@ -151,7 +151,7 @@ storage to avoid oversized state attributes.
   - `sensor.energy_advisor_load_forecast` currently provides a learned
     household Load forecast profile with a `0.60 kW` cold-start shell and
     15-minute `forecasts` entries for today+tomorrow.
-  - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors.
+  - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors. When a tomorrow forecast sensor is configured, updates from either forecast sensor rebuild the solar forecast.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).
 

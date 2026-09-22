@@ -273,6 +273,14 @@ class SolarForecastCoordinator:
     def _forecast_tomorrow_entity(self) -> str | None:
         return self.entry.options.get(CONF_FORECAST_TOMORROW_ENTITY)
 
+    def _forecast_entities(self) -> list[str]:
+        """Return the configured forecast entities in refresh order."""
+        return [
+            entity
+            for entity in (self._forecast_entity, self._forecast_tomorrow_entity)
+            if entity
+        ]
+
     @property
     def _local_tz(self) -> ZoneInfo:
         return ZoneInfo(self.hass.config.time_zone)
@@ -595,11 +603,7 @@ class SolarForecastCoordinator:
         horizon = day_start_utc + timedelta(hours=49)  # today + tomorrow + 1 h buffer
         result: dict[datetime, float] = {}
 
-        entities = [self._forecast_entity]
-        if self._forecast_tomorrow_entity:
-            entities.append(self._forecast_tomorrow_entity)
-
-        for entity_id in entities:
+        for entity_id in self._forecast_entities():
             state = self.hass.states.get(entity_id)
             if state is None:
                 _LOGGER.debug("Entity %s not found in hass.states", entity_id)
@@ -1071,7 +1075,7 @@ class SolarForecastCoordinator:
         self._listeners.append(
             async_track_state_change_event(
                 self.hass,
-                [self._forecast_entity],
+                self._forecast_entities(),
                 self._on_forecast_updated,
             )
         )
