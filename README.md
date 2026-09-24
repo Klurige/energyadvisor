@@ -75,9 +75,9 @@ called differently for other grids and suppliers.
 | `grid_energy_tax`          | Grid energy tax              | 0.45          |
 | `electricity_vat`          | Electricity VAT              | 0.25          |
 | `exclude_from_recording`   | Exclude integration sensors from recorder/history | `true` |
-| `forecast_entity`          | Optional solar forecast sensor for today | `sensor.home_energy_production_today` |
+| `forecast_entity`          | Optional raw solar forecast sensor for today | `sensor.home_energy_production_today` |
 | `power_entity`             | Optional solar actual power sensor in watts | `sensor.solar_active_power` |
-| `forecast_tomorrow_entity` | Optional solar forecast sensor for tomorrow | `sensor.home_energy_production_tomorrow` |
+| `forecast_tomorrow_entity` | Optional raw solar forecast sensor for tomorrow | `sensor.home_energy_production_tomorrow` |
 | `battery_capacity_kwh`     | Optional battery capacity; provide together with max charge power to override default timings | `10.0` |
 | `battery_max_charge_power_w` | Optional maximum battery charge power; provide together with capacity | `5000` |
 | `battery_max_discharge_power_w` | Optional maximum battery discharge power; defaults to max charge power when empty | `5000` |
@@ -151,7 +151,7 @@ storage to avoid oversized state attributes.
   - `sensor.energy_advisor_load_forecast` currently provides a learned
     household Load forecast profile with a `0.60 kW` cold-start shell and
     15-minute `forecasts` entries for today+tomorrow.
-  - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors. When a tomorrow forecast sensor is configured, updates from either forecast sensor rebuild the solar forecast.
+  - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors. The forecast inputs must be the raw 15-minute forecast sensors with `watts`, `wh_period`, or `forecasts` data; when a tomorrow forecast sensor is configured, updates from either forecast sensor rebuild the solar forecast.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
 - Use these sensors in automations to optimize energy usage (e.g., run appliances when prices are low).
 

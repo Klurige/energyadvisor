@@ -424,7 +424,10 @@ async def test_main_flow_solar_forecast_rejects_missing_tomorrow_entity() -> Non
 
     hass = MagicMock()
     hass.states.get.side_effect = lambda entity_id: {
-        "sensor.solar_today": _make_state("500", {"watts": {}}),
+        "sensor.solar_today": _make_state(
+            "500",
+            {"watts": {"2026-09-23T12:00:00+02:00": 500}},
+        ),
         "sensor.solar_power": _make_state("1500"),
     }.get(entity_id)
     handler.hass = hass
@@ -439,6 +442,37 @@ async def test_main_flow_solar_forecast_rejects_missing_tomorrow_entity() -> Non
 
     assert result["type"] == "form"
     assert result["errors"][CONF_FORECAST_TOMORROW_ENTITY] == "entity_not_found"
+
+
+@pytest.mark.asyncio
+async def test_main_flow_solar_forecast_rejects_tomorrow_entity_without_forecast_data() -> (
+    None
+):
+    """Test solar step rejects sensors that do not expose forecast slots."""
+    handler = EnergyAdvisorFlowHandler()
+    handler.data = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
+
+    hass = MagicMock()
+    hass.states.get.side_effect = lambda entity_id: {
+        "sensor.solar_today": _make_state(
+            "500",
+            {"watts": {"2026-09-23T12:00:00+02:00": 500}},
+        ),
+        "sensor.solar_power": _make_state("1500"),
+        "sensor.solar_tomorrow": _make_state("20.243"),
+    }.get(entity_id)
+    handler.hass = hass
+
+    result = await handler.async_step_solar_forecast(
+        {
+            CONF_FORECAST_ENTITY: "sensor.solar_today",
+            CONF_POWER_ENTITY: "sensor.solar_power",
+            CONF_FORECAST_TOMORROW_ENTITY: "sensor.solar_tomorrow",
+        }
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"][CONF_FORECAST_TOMORROW_ENTITY] == "invalid_sensor"
 
 
 @pytest.mark.asyncio
@@ -478,7 +512,10 @@ async def test_main_flow_valid_solar_forecast_proceeds_to_battery() -> None:
 
     hass = MagicMock()
     hass.states.get.side_effect = lambda entity_id: {
-        "sensor.solar_today": _make_state("500", {"watts": {}}),
+        "sensor.solar_today": _make_state(
+            "500",
+            {"watts": {"2026-09-23T12:00:00+02:00": 500}},
+        ),
         "sensor.solar_power": _make_state("1500"),
     }.get(entity_id)
     handler.hass = hass

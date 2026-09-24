@@ -32,8 +32,10 @@ Configure via **Settings → Devices & Services → Energy Advisor → Configure
 
 The sensor is only created when both `forecast_entity` and `power_entity` are set.
 If `forecast_tomorrow_entity` is provided, it must also refer to an existing
-entity. The coordinator watches both forecast sensors and rebuilds the
-forecast when either one changes.
+entity. Both forecast sensors must expose the raw 15-minute forecast payload
+used by the coordinator (`watts`, `wh_period`, or `forecasts`); energy-only
+summary sensors will be rejected. The coordinator watches both forecast sensors
+and rebuilds the forecast when either one changes.
 
 ### HA location
 

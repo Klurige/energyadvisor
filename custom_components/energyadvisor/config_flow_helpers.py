@@ -131,6 +131,12 @@ FLEXIBLE_LOADS_NUMERIC_KEYS: tuple[str, ...] = (
     CONF_DEHUMIDIFIER_POWER_W,
 )
 
+_SOLAR_FORECAST_PAYLOAD_KEYS: tuple[str, ...] = (
+    "watts",
+    "wh_period",
+    "forecasts",
+)
+
 ALL_OPTIMIZER_ENTITY_KEYS: tuple[str, ...] = (
     *BATTERY_STEP_ENTITY_KEYS,
     *GRID_METERING_ENTITY_KEYS,
@@ -184,6 +190,21 @@ def _validate_optional_sensor_entities(
         if entity_id and hass.states.get(entity_id) is None:
             errors[key] = "entity_not_found"
     return errors
+
+
+def _has_usable_solar_forecast_payload(state: Any) -> bool:
+    """Return whether a sensor state exposes forecast data the coordinator can read."""
+    if state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+        return False
+
+    attributes = getattr(state, "attributes", None) or {}
+    for key in _SOLAR_FORECAST_PAYLOAD_KEYS:
+        payload = attributes.get(key)
+        if isinstance(payload, dict) and payload:
+            return True
+        if isinstance(payload, list) and payload:
+            return True
+    return False
 
 
 def _build_solar_forecast_schema(values: dict[str, Any]) -> dict[Any, Any]:
@@ -438,8 +459,17 @@ def _validate_solar_forecast_entities(
         (CONF_POWER_ENTITY, power_entity),
         (CONF_FORECAST_TOMORROW_ENTITY, tomorrow_entity),
     ):
-        if entity_id and hass.states.get(entity_id) is None:
+        if not entity_id:
+            continue
+        state = hass.states.get(entity_id)
+        if state is None:
             errors[key] = "entity_not_found"
+            continue
+        if key in (
+            CONF_FORECAST_ENTITY,
+            CONF_FORECAST_TOMORROW_ENTITY,
+        ) and not _has_usable_solar_forecast_payload(state):
+            errors[key] = "invalid_sensor"
 
     return errors
 
