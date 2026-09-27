@@ -77,13 +77,13 @@ jobs:
           if git diff --cached --quiet; then
             echo "Manifest versions already set to $VERSION."
           else
-            git commit -m "Bump integration manifest versions to $VERSION"
+            git commit -m "$TAG"
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
       - name: Create and push tag
         run: |
-          git tag -a "$TAG" -m "Release $TAG"
+          git tag -a "$TAG" -m "$TAG"
           git push origin "$TAG"
 
       - name: Create GitHub release
