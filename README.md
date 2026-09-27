@@ -437,6 +437,16 @@ Or without coverage:
 pytest -v tests/
 ```
 
+To enable the tracked pre-commit hook in this clone, set the repository hook
+path once:
+
+```bash
+git config --local core.hooksPath .githooks
+```
+
+The hook runs the same unit-test and formatting checks used in CI:
+`black --check .` and `pytest --maxfail=1 --disable-warnings -q`.
+
 
 ## License
 

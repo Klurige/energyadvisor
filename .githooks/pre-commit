@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+export PATH="$repo_root/.venv/bin:$repo_root/venv/bin:$PATH"
+
+if ! command -v black >/dev/null 2>&1; then
+  echo "pre-commit: black is not available. Activate the repo virtualenv or install black." >&2
+  exit 1
+fi
+
+if ! command -v pytest >/dev/null 2>&1; then
+  echo "pre-commit: pytest is not available. Activate the repo virtualenv or install pytest." >&2
+  exit 1
+fi
+
+black --check .
+pytest --maxfail=1 --disable-warnings -q
