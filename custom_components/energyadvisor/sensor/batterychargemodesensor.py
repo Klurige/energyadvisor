@@ -26,7 +26,6 @@ from ..const import (
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_MIN_SOC_PCT,
-    CONF_BATTERY_OPTIMIZATION_ENABLED,
     CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
@@ -72,9 +71,6 @@ class BatteryChargeModeSensor(SensorEntity):
         self._entry = entry
         self._price_sensor = price_sensor
         self._battery_soc_entity_id = entry.options.get(CONF_BATTERY_SOC_ENTITY) or None
-        self._optimization_enabled = bool(
-            entry.options.get(CONF_BATTERY_OPTIMIZATION_ENABLED, False)
-        )
         optimization_horizon = entry.options.get(
             CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS
         )
@@ -105,6 +101,7 @@ class BatteryChargeModeSensor(SensorEntity):
         )
         self._current_soc_pct: float | None = None
         self._current_target_soc_pct: float | None = None
+        self._optimization_enabled = True
         self._reason = "Waiting for electricity price data."
         self._solver: str | None = None
         self._remove_source_listener = None
@@ -168,7 +165,7 @@ class BatteryChargeModeSensor(SensorEntity):
 
             self.async_on_remove(_remove_household_listener)
 
-        if self._optimization_enabled and self._battery_soc_entity_id:
+        if self._battery_soc_entity_id:
             _LOGGER.debug(
                 "Battery charge mode sensor registering listener for SoC entity %s",
                 self._battery_soc_entity_id,
@@ -245,9 +242,7 @@ class BatteryChargeModeSensor(SensorEntity):
         reference_time = reference_time or dt_util.now()
         price_rates = list(getattr(self._price_sensor, "_rates", []) or [])
         solar_forecasts = self._read_solar_forecasts()
-        current_soc_pct = (
-            self._read_current_soc_pct() if self._optimization_enabled else None
-        )
+        current_soc_pct = self._read_current_soc_pct()
         self._current_soc_pct = current_soc_pct
         return BatteryOptimizationInputs(
             rates=price_rates,
@@ -305,7 +300,12 @@ class BatteryChargeModeSensor(SensorEntity):
     def _merge_schedule_with_elapsed_modes(
         self, schedule: list[dict[str, object]], reference_time: datetime
     ) -> list[dict[str, object]]:
-        """Keep today's elapsed entries while updating the current schedule."""
+        """Keep completed slots while replacing the current quarter-hour slot."""
+        current_slot_start = reference_time.replace(
+            minute=(reference_time.minute // 15) * 15,
+            second=0,
+            microsecond=0,
+        )
         elapsed_modes: dict[datetime, dict[str, object]] = {}
         for mode in self._modes:
             slot_from = dt_util.parse_datetime(mode.get("from"))
@@ -315,8 +315,19 @@ class BatteryChargeModeSensor(SensorEntity):
                 slot_from = slot_from.replace(tzinfo=reference_time.tzinfo)
             else:
                 slot_from = dt_util.as_local(slot_from)
-            if slot_from.date() == reference_time.date() and slot_from < reference_time:
-                elapsed_modes[slot_from] = mode
+            slot_start = slot_from.replace(
+                minute=(slot_from.minute // 15) * 15,
+                second=0,
+                microsecond=0,
+            )
+            if (
+                slot_start.date() == reference_time.date()
+                and slot_start < current_slot_start
+                and slot_start not in elapsed_modes
+            ):
+                elapsed_mode = dict(mode)
+                elapsed_mode["from"] = slot_start.strftime("%Y-%m-%dT%H:%M")
+                elapsed_modes[slot_start] = elapsed_mode
 
         merged_modes = dict(elapsed_modes)
         for mode in schedule:
@@ -327,11 +338,15 @@ class BatteryChargeModeSensor(SensorEntity):
                 slot_from = slot_from.replace(tzinfo=reference_time.tzinfo)
             else:
                 slot_from = dt_util.as_local(slot_from)
-            if slot_from >= reference_time or (
-                slot_from.date() == reference_time.date()
-                and slot_from not in elapsed_modes
-            ):
-                merged_modes[slot_from] = mode
+            slot_start = slot_from.replace(
+                minute=(slot_from.minute // 15) * 15,
+                second=0,
+                microsecond=0,
+            )
+            if slot_start >= current_slot_start:
+                current_mode = dict(mode)
+                current_mode["from"] = slot_start.strftime("%Y-%m-%dT%H:%M")
+                merged_modes[slot_start] = current_mode
 
         today_midnight = reference_time.replace(
             hour=0, minute=0, second=0, microsecond=0

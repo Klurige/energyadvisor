@@ -78,7 +78,7 @@ class BatteryOptimizationInputs:
     min_soc_pct: float
     max_soc_pct: float
     horizon_hours: float
-    optimization_enabled: bool
+    optimization_enabled: bool = True
     solar_forecasts: Sequence[Mapping[str, Any]] | None = None
     load_forecasts: Sequence[Mapping[str, Any]] | None = None
     charge_efficiency: float = DEFAULT_CHARGE_EFFICIENCY

@@ -33,11 +33,13 @@ Required battery inputs:
 - `battery_max_charge_power_w`
 - `battery_max_discharge_power_w`
 - `battery_soc_entity`
-- `battery_optimization_enabled`
 - `battery_optimization_horizon_hours`
 - `battery_min_soc_pct`
 - `battery_max_soc_pct`
 - `battery_degradation_cost` (optional wear term; default 0 unless configured)
+
+The optimiser is always enabled in the integration; there is no on/off
+configuration flag.
 
 `BatteryOptimizationInputs` must accept an optional `load_forecasts` series, expressed as a chronological list of per-slot kWh values aligned to the optimizer horizon. Each entry must be a normalized 15-minute slot with a UTC/local timestamp converted to the Home Assistant timezone before interpolation. The sensor must subscribe to `runtime_data.household_coordinator.forecast_slots` updates in addition to the existing price, SoC, and solar update triggers. The schedule is still advisory-only; the debug contract is separate from the HA state attributes.
 

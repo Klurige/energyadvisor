@@ -25,7 +25,6 @@ from .const import (
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MIN_SOC_PCT,
-    CONF_BATTERY_OPTIMIZATION_ENABLED,
     CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_DEHUMIDIFIER_POWER_ENTITY,
@@ -68,7 +67,6 @@ from .config_flow_helpers import (
     BATTERY_HARDWARE_NUMERIC_KEYS,
     BATTERY_OPTIMIZATION_NUMERIC_KEYS,
     BATTERY_STEP_ENTITY_KEYS,
-    BATTERY_STEP_BOOL_KEYS,
     BATTERY_STEP_NUMERIC_KEYS,
     FLEXIBLE_LOADS_ENTITY_KEYS,
     FLEXIBLE_LOADS_NUMERIC_KEYS,
@@ -572,13 +570,11 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
             if not errors:
                 for key in BATTERY_OPTIMIZATION_NUMERIC_KEYS:
                     self.data[key] = user_input.get(key)
-                for key in BATTERY_STEP_BOOL_KEYS:
-                    self.data[key] = bool(user_input.get(key, False))
                 return await self.async_step_grid_metering()
 
         form_values = {
             key: _form_value(self.data, key)
-            for key in (*BATTERY_OPTIMIZATION_NUMERIC_KEYS, *BATTERY_STEP_BOOL_KEYS)
+            for key in BATTERY_OPTIMIZATION_NUMERIC_KEYS
         }
         return self.async_show_form(
             step_id="battery_optimization",
@@ -708,6 +704,7 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
                     self.data[key] = entity_id or None
                 for key in FLEXIBLE_LOADS_NUMERIC_KEYS:
                     self.data[key] = user_input.get(key)
+                self.data.pop("battery_optimization_enabled", None)
                 return self.async_create_entry(
                     title="Energy Advisor",
                     data=self.data,
@@ -755,9 +752,6 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
                         ),
                         CONF_BATTERY_MAX_DISCHARGE_POWER_W: self.data.get(
                             CONF_BATTERY_MAX_DISCHARGE_POWER_W
-                        ),
-                        CONF_BATTERY_OPTIMIZATION_ENABLED: bool(
-                            self.data.get(CONF_BATTERY_OPTIMIZATION_ENABLED, False)
                         ),
                         CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: self.data.get(
                             CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS
@@ -1115,7 +1109,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
 
         form_values = {
             key: _form_value(self.current_options, key)
-            for key in (*BATTERY_OPTIMIZATION_NUMERIC_KEYS, *BATTERY_STEP_BOOL_KEYS)
+            for key in BATTERY_OPTIMIZATION_NUMERIC_KEYS
         }
         return self.async_show_form(
             step_id="battery_optimization",
@@ -1138,6 +1132,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
             errors.update(_validate_optional_sensor_entities(self.hass, grid_entities))
             if not errors:
                 self.current_options.update(user_input)
+                self.current_options.pop("battery_optimization_enabled", None)
                 return await self.async_step_household()
 
         form_values = {
@@ -1255,10 +1250,6 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
                         self.current_options[key]
                         if key in self.current_options
                         else None
-                    )
-                for key in BATTERY_STEP_BOOL_KEYS:
-                    self.current_options[key] = bool(
-                        self.current_options.get(key, False)
                     )
                 return self.async_create_entry(title="", data=self.current_options)
 

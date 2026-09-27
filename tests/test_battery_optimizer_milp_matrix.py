@@ -146,6 +146,8 @@ def test_case3_flat_price_no_trade() -> None:
 
     assert result.optimized is True
     assert all(entry["mode"] == "maxuse" for entry in result.schedule)
+    assert all("target_soc" in entry for entry in result.schedule)
+    assert all(entry["target_soc"] is None for entry in result.schedule)
 
 
 def test_case4_solar_reserve() -> None:

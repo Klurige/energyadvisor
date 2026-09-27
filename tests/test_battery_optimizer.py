@@ -130,6 +130,7 @@ def test_optimize_battery_schedule_keeps_quarter_hour_slots() -> None:
     assert result.optimized is True
     assert result.solver == "HIGHS"
     assert len(result.schedule) == 8
+    assert all("target_soc" in entry for entry in result.schedule)
     assert [entry["from"] for entry in result.schedule] == [
         "2026-08-15T12:00",
         "2026-08-15T12:15",
@@ -174,6 +175,8 @@ def test_optimize_battery_schedule_keeps_remaining_soc_when_sell_spread_is_flat(
     assert result.current_mode == "maxuse"
     assert result.current_target_soc_pct is None
     assert all(entry["mode"] != "sell" for entry in result.schedule)
+    assert all("target_soc" in entry for entry in result.schedule)
+    assert all(entry["target_soc"] is None for entry in result.schedule)
 
 
 def test_optimize_battery_schedule_discharges_on_high_prices() -> None:

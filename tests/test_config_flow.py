@@ -24,7 +24,6 @@ from custom_components.energyadvisor.const import (
     CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MIN_SOC_PCT,
-    CONF_BATTERY_OPTIMIZATION_ENABLED,
     CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
@@ -92,7 +91,6 @@ COMMON_TRANSLATED_STEPS = {
         CONF_BATTERY_CHARGE_POWER_ENTITY,
     ],
     "battery_optimization": [
-        CONF_BATTERY_OPTIMIZATION_ENABLED,
         CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
         CONF_BATTERY_MIN_SOC_PCT,
         CONF_BATTERY_MAX_SOC_PCT,
@@ -565,10 +563,7 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
         validated[CONF_BATTERY_CHARGE_POWER_ENTITY]
         == "sensor.remote_batterychargepower"
     )
-    assert CONF_BATTERY_OPTIMIZATION_ENABLED not in validated
-    assert not any(
-        field["name"] == CONF_BATTERY_OPTIMIZATION_ENABLED for field in serialized
-    )
+    assert "battery_optimization_enabled" not in validated
 
     result = await handler.async_step_battery_optimization()
 
@@ -577,15 +572,16 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
     serialized = voluptuous_serialize.convert(
         result["data_schema"], custom_serializer=cv.custom_serializer
     )
-    assert validated[CONF_BATTERY_OPTIMIZATION_ENABLED] is False
+    assert set(validated) == {
+        CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
+        CONF_BATTERY_MIN_SOC_PCT,
+        CONF_BATTERY_MAX_SOC_PCT,
+    }
     assert validated[CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 48
     assert validated[CONF_BATTERY_MIN_SOC_PCT] == 5.0
     assert validated[CONF_BATTERY_MAX_SOC_PCT] == 95.0
-    assert any(
-        field["name"] == CONF_BATTERY_OPTIMIZATION_ENABLED
-        and field["type"] == "boolean"
-        for field in serialized
-    )
+    assert any(field["name"] == CONF_BATTERY_DEGRADATION_COST for field in serialized)
+    assert not any(field["type"] == "boolean" for field in serialized)
 
 
 @pytest.mark.asyncio
@@ -711,7 +707,6 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
 
     result = await handler.async_step_battery_optimization(
         {
-            CONF_BATTERY_OPTIMIZATION_ENABLED: True,
             CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: 36.0,
             CONF_BATTERY_MIN_SOC_PCT: 10.0,
             CONF_BATTERY_MAX_SOC_PCT: 90.0,
@@ -771,7 +766,7 @@ async def test_main_flow_battery_step_creates_entry_and_preserves_zero_margin() 
     assert result["type"] == "create_entry"
     assert result["options"][CONF_BATTERY_CAPACITY_KWH] == 10.0
     assert result["options"][CONF_BATTERY_MAX_DISCHARGE_POWER_W] == 4500.0
-    assert result["options"][CONF_BATTERY_OPTIMIZATION_ENABLED] is True
+    assert "battery_optimization_enabled" not in result["options"]
     assert result["options"][CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 36.0
     assert result["options"][CONF_BATTERY_MIN_SOC_PCT] == 10.0
     assert result["options"][CONF_BATTERY_MAX_SOC_PCT] == 90.0
@@ -959,7 +954,6 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
 
     result = await handler.async_step_battery_optimization(
         {
-            CONF_BATTERY_OPTIMIZATION_ENABLED: True,
             CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: 36.0,
             CONF_BATTERY_MIN_SOC_PCT: 10.0,
             CONF_BATTERY_MAX_SOC_PCT: 90.0,
@@ -1000,7 +994,7 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
     assert result["type"] == "create_entry"
     assert result["data"][CONF_BATTERY_DEGRADATION_COST] == 0.0
     assert result["data"][CONF_BATTERY_MAX_DISCHARGE_POWER_W] == 4500.0
-    assert result["data"][CONF_BATTERY_OPTIMIZATION_ENABLED] is True
+    assert "battery_optimization_enabled" not in result["data"]
     assert result["data"][CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 36.0
     assert result["data"][CONF_BATTERY_MIN_SOC_PCT] == 10.0
     assert result["data"][CONF_BATTERY_MAX_SOC_PCT] == 90.0

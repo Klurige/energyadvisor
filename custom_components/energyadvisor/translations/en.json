@@ -107,14 +107,12 @@
         "title": "Battery optimization",
         "description": "Configure how the optimizer plans charging and discharging within the allowed battery range.",
         "data": {
-          "battery_optimization_enabled": "Enable battery optimization",
           "battery_optimization_horizon_hours": "Optimization horizon",
           "battery_min_soc_pct": "Minimum SoC",
           "battery_max_soc_pct": "Maximum SoC",
           "battery_degradation_cost": "Battery degradation cost margin"
         },
         "data_description": {
-          "battery_optimization_enabled": "Enable the linear-programming battery optimizer.",
           "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
@@ -303,14 +301,12 @@
         "title": "Battery optimization",
         "description": "Configure how the optimizer plans charging and discharging within the allowed battery range.",
         "data": {
-          "battery_optimization_enabled": "Enable battery optimization",
           "battery_optimization_horizon_hours": "Optimization horizon",
           "battery_min_soc_pct": "Minimum SoC",
           "battery_max_soc_pct": "Maximum SoC",
           "battery_degradation_cost": "Battery degradation cost margin"
         },
         "data_description": {
-          "battery_optimization_enabled": "Enable the linear-programming battery optimizer.",
           "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",

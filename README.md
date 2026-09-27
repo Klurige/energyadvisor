@@ -81,13 +81,14 @@ called differently for other grids and suppliers.
 | `battery_capacity_kwh`     | Optional battery capacity; provide together with max charge power to override default timings | `10.0` |
 | `battery_max_charge_power_w` | Optional maximum battery charge power; provide together with capacity | `5000` |
 | `battery_max_discharge_power_w` | Optional maximum battery discharge power; defaults to max charge power when empty | `5000` |
-| `battery_optimization_enabled` | Enable the linear-programming battery optimizer | `false` |
 | `battery_optimization_horizon_hours` | Look-ahead horizon used by the optimizer | `48` |
 | `battery_min_soc_pct` | Lower SoC bound used by the optimizer | `5` |
 | `battery_max_soc_pct` | Upper SoC bound used by the optimizer | `95` |
 | `battery_degradation_cost` | Optional planner setting kept for future battery logic | `0.7` |
 | `battery_soc_entity`       | Optional battery state-of-charge sensor kept for future battery logic | `sensor.home_battery_soc` |
 
+The battery optimizer is always enabled; configure only the SoC bounds,
+horizon, and optional degradation margin.
 The battery optimizer uses the linked price schedule, the current battery SoC,
 the configured capacity and power limits, the optimization horizon, the
 SoC bounds above, the end-of-horizon value of stored energy, and the configured
@@ -212,20 +213,20 @@ See [docs/solarforecast.md](docs/old/solarforecast.md) for the full solar foreca
 - **Default Entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
 - **State:** the current schedule mode, one of `standby`, `maxuse`, `charge`, `discharge`, or `sell`.
 - **Attributes:**
-  - `modes`: Sequential schedule entries, one per 15-minute input slot, with local `from`, `mode`, and optional `target_soc`.
+  - `modes`: Sequential schedule entries, one per 15-minute input slot, with local `from`, `mode`, and `target_soc` (`null` for idle modes).
   - `current_soc_pct`: Current battery state of charge read from the configured SoC sensor.
   - `current_target_soc`: Target SoC for the current schedule segment, if applicable.
-  - `optimization_enabled`: Whether the LP optimizer is active.
+  - `optimization_enabled`: Always `true`; the LP optimizer is always active.
   - `reason`: Human-readable explanation for the current recommendation.
   - `solver`: Solver used for the most recent optimization run, or `null` when falling back.
 
-When optimization is enabled and the SoC sensor is available, the helper uses
-the HiGHS solver through the `highspy` Python bindings to solve a mixed-integer
-program over the configured horizon, with mutually exclusive battery modes
-per slot and explicit PV/grid/load energy-balance constraints. If a solar
-forecast is configured, the helper reserves battery headroom for the forecast
-solar production. The optimizer falls back to a `maxuse` schedule with an
-explicit reason string whenever inputs are invalid or the solver fails.
+The helper uses the HiGHS solver through the `highspy` Python bindings to
+solve a mixed-integer program over the configured horizon, with mutually
+exclusive battery modes per slot and explicit PV/grid/load energy-balance
+constraints. If a solar forecast is configured, the helper reserves battery
+headroom for the forecast solar production. The optimizer falls back to a
+`maxuse` schedule with an explicit reason string whenever inputs are invalid
+or the solver fails.
 
 See [docs/battery_charge_mode_optimiser.md](docs/battery_charge_mode_optimiser.md)
 for the full MILP specification and configuration details.

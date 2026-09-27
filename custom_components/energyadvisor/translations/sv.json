@@ -107,14 +107,12 @@
         "title": "Batterioptimering",
         "description": "Konfigurera hur optimeraren planerar laddning och urladdning inom batteriets tillåtna intervall.",
         "data": {
-          "battery_optimization_enabled": "Aktivera batterioptimering",
           "battery_optimization_horizon_hours": "Optimeringshorisont",
           "battery_min_soc_pct": "Minsta SoC",
           "battery_max_soc_pct": "Högsta SoC",
           "battery_degradation_cost": "Marginal för batterislitage"
         },
         "data_description": {
-          "battery_optimization_enabled": "Aktivera den linjära batterioptimeraren.",
           "battery_optimization_horizon_hours": "Optimeringshorisont i timmar som används av optimeraren.",
           "battery_min_soc_pct": "Nedre SoC-gräns som används av optimeraren.",
           "battery_max_soc_pct": "Övre SoC-gräns som används av optimeraren.",
@@ -303,14 +301,12 @@
         "title": "Batterioptimering",
         "description": "Konfigurera hur optimeraren planerar laddning och urladdning inom batteriets tillåtna intervall.",
         "data": {
-          "battery_optimization_enabled": "Aktivera batterioptimering",
           "battery_optimization_horizon_hours": "Optimeringshorisont",
           "battery_min_soc_pct": "Minsta SoC",
           "battery_max_soc_pct": "Högsta SoC",
           "battery_degradation_cost": "Marginal för batterislitage"
         },
         "data_description": {
-          "battery_optimization_enabled": "Aktivera den linjära batterioptimeraren.",
           "battery_optimization_horizon_hours": "Optimeringshorisont i timmar som används av optimeraren.",
           "battery_min_soc_pct": "Nedre SoC-gräns som används av optimeraren.",
           "battery_max_soc_pct": "Övre SoC-gräns som används av optimeraren.",

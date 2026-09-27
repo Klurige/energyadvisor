@@ -9,7 +9,6 @@ import voluptuous as vol
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import EntitySelector, EntitySelectorConfig
 
 from .const import (
@@ -21,7 +20,6 @@ from .const import (
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MIN_SOC_PCT,
-    CONF_BATTERY_OPTIMIZATION_ENABLED,
     CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
@@ -76,7 +74,6 @@ BATTERY_STEP_ENTITY_KEYS: tuple[str, ...] = (
     CONF_BATTERY_SOC_ENTITY,
     CONF_BATTERY_CHARGE_POWER_ENTITY,
 )
-BATTERY_STEP_BOOL_KEYS: tuple[str, ...] = (CONF_BATTERY_OPTIMIZATION_ENABLED,)
 BATTERY_HARDWARE_NUMERIC_KEYS: tuple[str, ...] = (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
@@ -277,10 +274,6 @@ def _build_battery_optimization_schema(
     battery_min_soc_pct = values.get(CONF_BATTERY_MIN_SOC_PCT)
     battery_max_soc_pct = values.get(CONF_BATTERY_MAX_SOC_PCT)
     return {
-        vol.Optional(
-            CONF_BATTERY_OPTIMIZATION_ENABLED,
-            default=bool(values.get(CONF_BATTERY_OPTIMIZATION_ENABLED, False)),
-        ): cv.boolean,
         vol.Optional(
             CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
             default=_schema_default(

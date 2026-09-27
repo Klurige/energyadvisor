@@ -11,7 +11,6 @@ from custom_components.energyadvisor.const import (
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_MIN_SOC_PCT,
-    CONF_BATTERY_OPTIMIZATION_ENABLED,
     CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
@@ -26,7 +25,6 @@ TEST_TIMEZONE = ZoneInfo("Europe/Stockholm")
 def _build_sensor(
     now: datetime.datetime,
     rates: list[dict[str, object]] | None = None,
-    optimization_enabled: bool = True,
 ) -> BatteryChargeModeSensor:
     """Create a battery sensor backed by a lightweight price and SoC stub."""
     hass = MagicMock()
@@ -41,7 +39,6 @@ def _build_sensor(
         CONF_BATTERY_CAPACITY_KWH: 10.0,
         CONF_BATTERY_MAX_CHARGE_POWER_W: 10000.0,
         CONF_BATTERY_MAX_DISCHARGE_POWER_W: 10000.0,
-        CONF_BATTERY_OPTIMIZATION_ENABLED: optimization_enabled,
         CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: 2.0,
         CONF_BATTERY_MIN_SOC_PCT: 20.0,
         CONF_BATTERY_MAX_SOC_PCT: 80.0,
@@ -145,6 +142,7 @@ def test_calculate_battery_mode_uses_optimizer_and_exposes_schedule() -> None:
     assert attrs["modes"][2]["mode"] == "sell"
     assert attrs["modes"][1]["target_soc"] == 80.0
     assert attrs["modes"][2]["target_soc"] == 20.0
+    assert all("target_soc" in entry for entry in attrs["modes"])
     assert "charge_entries" not in attrs
 
 
@@ -179,6 +177,7 @@ def test_calculate_battery_mode_respects_forecast_solar_headroom() -> None:
     assert attrs["current_target_soc"] == 60.0
     assert "forecast solar" in attrs["reason"]
     assert attrs["modes"][1]["target_soc"] == 60.0
+    assert all("target_soc" in entry for entry in attrs["modes"])
 
 
 def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> None:
@@ -198,7 +197,7 @@ def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> No
         )
         current = end
 
-    sensor = _build_sensor(now, rates=rates, optimization_enabled=False)
+    sensor = _build_sensor(now, rates=rates)
 
     with (
         patch(
@@ -215,7 +214,7 @@ def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> No
     attrs = sensor.extra_state_attributes
 
     assert sensor.state == "maxuse"
-    assert attrs["optimization_enabled"] is False
+    assert attrs["optimization_enabled"] is True
     assert "charge_entries" not in attrs
     assert [entry["mode"] for entry in attrs["modes"]] == [
         "maxuse",
@@ -224,6 +223,8 @@ def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> No
         "maxuse",
         "maxuse",
     ]
+    assert all("target_soc" in entry for entry in attrs["modes"])
+    assert all(entry["target_soc"] is None for entry in attrs["modes"])
     assert [entry["from"] for entry in attrs["modes"]] == [
         "2026-08-15T00:00",
         "2026-08-15T12:00",
@@ -236,7 +237,7 @@ def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> No
 def test_recalculation_keeps_elapsed_modes() -> None:
     """Recalculation must not replace slots that have already elapsed."""
     first_now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
-    sensor = _build_sensor(first_now, optimization_enabled=False)
+    sensor = _build_sensor(first_now)
     with (
         patch(
             "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
@@ -265,3 +266,33 @@ def test_recalculation_keeps_elapsed_modes() -> None:
 
     assert sensor._modes[0]["from"] == "2026-08-15T00:00"
     assert sensor._modes[1] == elapsed_mode
+
+
+def test_recalculation_replaces_current_quarter_hour_slot() -> None:
+    """Repeated SoC updates must not accumulate partial-slot schedule entries."""
+    first_now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
+    sensor = _build_sensor(first_now)
+
+    for minutes in (0, 5, 10):
+        now = first_now + datetime.timedelta(minutes=minutes)
+        with (
+            patch(
+                "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
+                return_value=now,
+            ),
+            patch(
+                "custom_components.energyadvisor.sensor.chargemodehelpers.dt_util.now",
+                return_value=now,
+            ),
+        ):
+            sensor.calculate_battery_mode()
+
+    slot_starts = [entry["from"] for entry in sensor._modes]
+
+    assert slot_starts.count("2026-08-15T12:00") == 1
+    assert "2026-08-15T12:05" not in slot_starts
+    assert "2026-08-15T12:10" not in slot_starts
+    assert all(
+        datetime.datetime.fromisoformat(slot_start).minute % 15 == 0
+        for slot_start in slot_starts
+    )
