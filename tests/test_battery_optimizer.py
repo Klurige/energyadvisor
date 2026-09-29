@@ -219,16 +219,15 @@ def test_optimize_battery_schedule_discharges_on_high_prices() -> None:
 
     assert result.optimized is True
     assert result.solver == "HIGHS"
-    assert result.current_mode == "discharge"
-    # Per the schedule contract, target_soc is null for discharge (only
-    # charge and sell carry an end-of-slot target).
+    assert result.current_mode == "maxuse"
+    # Only charge and sell carry an end-of-slot target.
     assert result.current_target_soc_pct is None
-    assert result.schedule[0]["mode"] == "discharge"
+    assert result.schedule[0]["mode"] == "maxuse"
     assert result.schedule[0]["target_soc"] is None
 
 
-def test_optimize_battery_schedule_reserves_room_for_forecast_solar() -> None:
-    """Forecast solar should reduce the target SoC before the solar window."""
+def test_optimize_battery_schedule_headroom_does_not_override_profit() -> None:
+    """Headroom must not displace cheap charging when exporting PV pays more."""
     pytest.importorskip("highspy")
 
     reference_time = datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
@@ -263,9 +262,9 @@ def test_optimize_battery_schedule_reserves_room_for_forecast_solar() -> None:
     assert result.optimized is True
     assert result.solver == "HIGHS"
     assert result.current_mode == "charge"
-    assert result.current_target_soc_pct == pytest.approx(60.0, abs=0.2)
+    assert result.current_target_soc_pct == pytest.approx(80.0, abs=0.2)
     assert "forecast solar" in result.reason
-    assert result.schedule[0]["target_soc"] == pytest.approx(60.0, abs=0.2)
+    assert result.schedule[0]["target_soc"] == pytest.approx(80.0, abs=0.2)
 
 
 def test_optimize_battery_schedule_labels_pv_only_charging_as_maxuse() -> None:

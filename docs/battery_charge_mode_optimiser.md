@@ -75,12 +75,12 @@ Definitions:
 
 Important rules:
 - Battery modes are mutually exclusive within a slot: `m_charge_t + m_discharge_t + m_sell_t + m_maxuse_t + m_standby_t = 1`.
-- `maxuse` maximizes self-consumption: `b_ch_pv_t` may be non-zero (PV surplus tops up the battery) whenever `m_maxuse_t = 1`, but `b_ch_grid_t = 0`, `b_dis_load_t = 0`, and `b_dis_export_t = 0` always hold under `maxuse` — grid-funded charging and deliberate discharging are reserved for `charge`/`discharge`/`sell`.
+- `maxuse` is automatic self-consumption: PV serves the household first, surplus PV charges the battery, and the battery covers any remaining household demand up to its power and SoC limits. `b_ch_grid_t = 0` and `b_dis_export_t = 0`. These self-consumption flows are required, not merely permitted; the optimizer must not label an idle battery `maxuse` to preserve energy for later.
 - `standby` is a fully idle mode: `b_ch_grid_t = 0`, `b_ch_pv_t = 0`, `b_dis_load_t = 0`, and `b_dis_export_t = 0` whenever `m_standby_t = 1`.
 - `target_soc` is required for `charge` and `sell` and must be end-of-slot SoC in percent.
 - The schedule object must always include a `target_soc` key; for `standby`, `maxuse`, and `discharge`, the value is `null`.
 - `maxuse` is preferred when the objective difference is numerically indiscernible or effectively zero.
-- `standby` is semantically valid but economically redundant with `maxuse` in this objective; because both are forced-idle modes with the same cost structure, the lexicographic tie-break will normally prefer `maxuse` and the implementation should not require a non-zero `standby` schedule.
+- `standby` preserves battery energy when automatic self-consumption would be less valuable than later use. Unlike `maxuse`, it does not absorb PV surplus or cover household demand from the battery.
 
 ## 4. Completing the MILP
 
@@ -138,12 +138,18 @@ Complete grid balance:
 These equations are the required provenance check: PV charged into the battery is explicitly allocated from `pv_t`, and grid energy is never relabelled as PV energy.
 
 Objective:
-- `minimise sum_t [ price_t * g_imp_t - credit_t * g_exp_t + degradation_cost_t * (b_ch_grid_t + b_ch_pv_t + b_dis_load_t + b_dis_export_t) + reserve_penalty_t ] - terminal_value * soc_T`
+- `minimise sum_t [ price_t * g_imp_t - credit_t * g_exp_t + degradation_cost_t * (b_ch_grid_t + b_ch_pv_t + b_dis_load_t + b_dis_export_t) ] - terminal_value * soc_T`
 
 where:
 - `price_t` is the slot import price, `credit_t` is export credit, and `degradation_cost_t` is the configured degradation cost
 - `terminal_value = max(last_import_price, last_export_credit, 0) * eta_dis`
-- `reserve_penalty_t` is the solar headroom shortfall penalty defined in section 4.7
+- solar headroom is a subordinate tie-break (section 4.7), not a monetary cost. It must not justify uneconomic selling or prevent profitable charging.
+
+Degradation is charged on both charging and discharging throughput. For example,
+with degradation `0.7`, final import price `2.396`, and discharge efficiency
+`0.95`, exporting existing stored energy must earn more than approximately
+`2.396 + 0.7 = 3.096` per delivered kWh to beat retaining it for the horizon end.
+Avoiding a household import can still be profitable when export is not.
 - the terminal value is negative in the objective so the solver prefers retaining end-of-horizon energy, rather than penalising it
 
 ### 4.3 Battery flow variables and discharge/sell distinction
@@ -159,18 +165,25 @@ To keep discharge and sell mathematically distinguishable, the model must use se
 Constraints:
 - `b_dis_load_t <= load_t`
 - `b_dis_export_t <= g_exp_t`
-- `b_dis_load_t <= max_discharge_kwh_t * (m_discharge_t + m_sell_t)`
+- `b_dis_load_t <= max_discharge_kwh_t * (m_discharge_t + m_sell_t + m_maxuse_t)`
 - `b_dis_export_t <= max_discharge_kwh_t * m_sell_t`
-- `b_dis_load_t + b_dis_export_t <= max_discharge_kwh_t * (m_discharge_t + m_sell_t)`
+- `b_dis_load_t + b_dis_export_t <= max_discharge_kwh_t * (m_discharge_t + m_sell_t + m_maxuse_t)`
 - `b_dis_export_t >= min_sell_export_kwh * m_sell_t`
 - `b_ch_pv_t <= pv_t`
-- `b_ch_pv_t <= max_charge_kwh_t * m_charge_t`
+- `b_ch_pv_t <= max_charge_kwh_t * (m_charge_t + m_maxuse_t)`
 - `b_ch_grid_t <= max_charge_kwh_t * m_charge_t`
-- `b_ch_grid_t + b_ch_pv_t <= max_charge_kwh_t * m_charge_t`
+- `b_ch_grid_t + b_ch_pv_t <= max_charge_kwh_t * (m_charge_t + m_maxuse_t)`
 - `b_ch_pv_t = 0` when `m_discharge_t = 1` or `m_sell_t = 1`
-- `b_ch_grid_t = 0`, `b_ch_pv_t = 0`, `b_dis_load_t = 0`, and `b_dis_export_t = 0` whenever `m_maxuse_t = 1`
+- `b_ch_grid_t = 0` and `b_dis_export_t = 0` whenever `m_maxuse_t = 1`
 
-This makes `maxuse` an idle mode, not a discharge mode with a different label. It preserves a distinct economic `discharge` action while keeping the lexicographic tie-break consistent with explicit load-serving discharge semantics.
+Under `maxuse`, `pv_to_load_t = min(pv_t, load_t)`. For PV surplus,
+`b_ch_pv_t = min(pv_t - load_t, max_charge_kwh_t, (soc_max - soc_t) / eta_ch)`.
+For a deficit, `b_dis_load_t = min(load_t - pv_t, max_discharge_kwh_t,
+(soc_t - soc_min) * eta_dis)`. A binary SoC-saturation selector enforces
+either the full available power or the corresponding end-of-slot SoC bound.
+This prevents simultaneous charging/discharging and makes the label match
+automatic inverter behavior. `discharge` remains available for deliberate
+load-serving discharge that differs from this solar-first policy.
 
 `sell` must be allowed to serve load. An earlier revision of this plan required `b_dis_load_t = 0` when `m_sell_t = 1`, which made `sell` structurally infeasible in every realistic slot. The reasoning chain was:
 
@@ -187,9 +200,9 @@ The distinction between `discharge` and `sell` is preserved by `b_dis_export_t`,
 
 Because both modes may now serve load, a marginal slot can be labelled either way at an identical objective value. To keep the label meaningful and the solve deterministic:
 - a slot labelled `sell` must export a non-trivial amount from the battery, enforced by `b_dis_export_t >= min_sell_export_kwh * m_sell_t` with `min_sell_export_kwh = 1e-3` kWh
-- the pass-3 tie-break additionally applies a small weight to `sum_t m_sell_t` so an equal-cost `discharge` labelling is preferred over `sell` (see section 4.6)
+- the final tie-break applies a small weight to active mode labels so idle actions are labelled `standby`, not `charge`, `discharge`, or `sell` (see section 4.6)
 
-The combined cap `b_dis_load_t + b_dis_export_t <= max_discharge_kwh_t * (m_discharge_t + m_sell_t)` is required because the two discharge sinks now share one inverter power budget within a `sell` slot.
+The combined discharge cap is required because the two discharge sinks share one inverter power budget within a `sell` slot.
 
 ### 4.4 Simultaneous import/export prohibition
 
@@ -218,14 +231,19 @@ The terminal value prevents the optimizer from draining the battery to the minim
 
 ### 4.6 Tie-break / lexicographic solve
 
-The tie-break must be implemented as a deterministic two-pass solve, not as an undefined epsilon test.
+The tie-break is a deterministic lexicographic solve.
 
 Procedure:
 1. Solve for the minimum objective value `obj_1`.
 2. Add the constraint `objective <= obj_1 + 1e-6`.
-3. Then maximise `sum_t m_maxuse_t`.
-4. Add the constraint `sum_t m_maxuse_t >= maxuse_2 - 1e-6` where `maxuse_2` is the maximum value from pass 2.
-5. If there is still a tie, minimise `sum_t (b_ch_grid_t + b_ch_pv_t + b_dis_load_t + b_dis_export_t) + sell_label_weight * sum_t m_sell_t`, i.e. the total absolute battery flow plus a small preference against the `sell` label. `sell_label_weight = 1e-3` is deliberately far below the unit flow weight, so it only resolves `discharge`/`sell` labelling ties and never overrides flow minimisation or the pinned economic objective from step 2.
+3. If a solar headroom profile exists, minimise its weighted shortfall and pin that optimum within `1e-6`, without relaxing the economic optimum.
+4. Maximise `sum_t m_maxuse_t` and pin the rounded integer count within `1e-6`.
+5. Minimise total battery throughput plus `1e-3 * sum_t (m_charge_t + m_discharge_t + m_sell_t)`. This prefers `standby` over inactive action labels without overriding the pinned economic optimum or maxuse count.
+
+Solver feasibility and optimality tolerances must be tighter than the `1e-6`
+objective pins: use `mip_rel_gap = 0`, `mip_abs_gap = 1e-8`, and
+MIP/primal/dual feasibility tolerances of `1e-8`. Explicitly pass the previous
+feasible solution as a MIP start after adding pins and changing objectives.
 
 This is the required implementation of “prefer maxuse when it is difficult to make a decision.” It is valid in HiGHS and deterministic.
 
@@ -248,10 +266,12 @@ Solar headroom logic:
 - apply headroom only for slots before the window start: `t < t_hi`
 - define the positive surplus available through the end of the high-solar window as `surplus_pre_hi_t = max(0, sum_{k=t}^{t_end-1} (pv_k - load_k))` for `t < t_hi`, and `headroom_t = min(soc_max - soc_min, surplus_pre_hi_t)`
 - define the non-negative shortfall variable `headroom_shortfall_t >= 0` for each `t < t_hi` with the linear constraint `headroom_shortfall_t >= soc_t - (soc_max - headroom_t)`
-- add a soft penalty `reserve_penalty_t = penalty_factor * headroom_shortfall_t`, where `penalty_factor = max(last_import_price, last_export_credit, 1.0)`
-- this is intentionally a soft headroom policy: the optimizer may trade some headroom against price arbitrage, but it pays a measurable penalty when it consumes empty capacity that could have been reserved for the upcoming PV window
+- minimise `sum_t penalty_factor * headroom_shortfall_t` only after pinning the economic optimum, where `penalty_factor = max(last_import_price, last_export_credit, 1.0)`
+- repeated pre-window shortfalls must never be added to the monetary objective: doing so charges for retaining the same energy over and over, encouraging immediate low-price selling and suppressing useful overnight charging
 
-The solar test must validate the penalty behavior, not a hard inequality: it should assert the computed `headroom_t`, `headroom_shortfall_t`, and objective effect for the relevant pre-window slots, rather than requiring `soc_t <= soc_max - headroom_t` as a hard feasibility rule.
+Solar tests must validate that headroom cannot override profitable household
+use or arbitrage, as well as the computed profile and SoC bounds. Headroom
+is a preference among economically equivalent schedules, not a hard bound.
 
 The terminal reserve is capped to avoid infeasibility on narrow usable SoC ranges and short horizons:
 - `reserve_kwh = min(soc_max - soc_min, max(0.10 * capacity_kwh, 0.05 * (soc_max - soc_min)), soc_0 - soc_min + eta_ch * sum_t max_charge_kwh_t)`
@@ -470,7 +490,7 @@ The following cases are mandatory before sign-off. Each case must include exact 
    - max charge = 5000 W, max discharge = 5000 W, eta_ch = 0.95, eta_dis = 0.95, slot_duration = 0.25 h
    - prices = [0.70, 0.70, 0.10, 0.10], credits = [0.05, 0.05, 0.05, 0.05]
    - PV = [0.0, 0.0, 0.0, 0.0], load = [1.0, 1.0, 1.0, 1.0]
-   - expected first slot mode = `discharge`
+   - expected first slot mode = `maxuse`, with positive household-serving discharge
    - require `b_dis_load > 0`, `b_dis_export = 0`, and `g_imp_t * g_exp_t == 0` in every solved slot
 
 3. Flat price / no trade:
@@ -486,7 +506,7 @@ The following cases are mandatory before sign-off. Each case must include exact 
    - PV forecast = [0.0, 0.0, 2.0, 2.0], prices = [0.10, 0.60, 0.60, 0.60], credits = [0.05, 0.05, 0.05, 0.05]
    - load = [0.3, 0.3, 0.3, 0.3]
    - expected optimizer to preserve headroom before the PV window without violating terminal reserve constraints
-   - assert `pv_hi = 1.5`, `t_hi = 2`, and `headroom_t = max(0, sum_{k=t}^{t_end-1}(pv_k - load_k))` for each pre-window slot `t < t_hi`; require `headroom_shortfall_t >= soc_t - (soc_max - headroom_t)` and the objective includes the soft penalty `penalty_factor * headroom_shortfall_t`
+   - assert `pv_hi = 1.5`, `t_hi = 2`, and `headroom_t = max(0, sum_{k=t}^{t_end-1}(pv_k - load_k))` for each pre-window slot `t < t_hi`; headroom shortfall is minimized only after pinning the economic objective
 
 5. Invalid SoC bounds:
    - min_soc_pct = 80, max_soc_pct = 60

@@ -102,7 +102,7 @@ def test_case1_cheap_charge_then_expensive_sell() -> None:
 
 
 def test_case2_expensive_discharge() -> None:
-    """Case 2: an expensive-then-cheap price curve should open on discharge."""
+    """Case 2: expensive load is covered by automatic self-consumption."""
     rates = _make_rates([0.70, 0.70, 0.10, 0.10], [0.05, 0.05, 0.05, 0.05])
     loads = _make_loads([1.0, 1.0, 1.0, 1.0])
     inputs = _base_inputs(
@@ -116,7 +116,7 @@ def test_case2_expensive_discharge() -> None:
     result = optimize_battery_schedule(inputs)
 
     assert result.optimized is True
-    assert result.schedule[0]["mode"] == "discharge"
+    assert result.schedule[0]["mode"] == "maxuse"
 
     from custom_components.energyadvisor.battery_optimizer import (
         debug_solve_battery_schedule,
@@ -399,5 +399,130 @@ def test_discharge_slots_are_not_labelled_sell_without_export() -> None:
     debug = debug_solve_battery_schedule(inputs)
 
     assert debug is not None
-    assert "discharge" in debug.modes
+    assert "maxuse" in debug.modes
+    assert sum(debug.discharge_load_kwh) > 0
     assert "sell" not in debug.modes
+
+
+def test_headroom_does_not_force_low_value_export_before_household_use() -> None:
+    """Tomorrow's solar must not make today's cheap export beat self-use."""
+    inputs = _base_inputs(
+        rates=_make_rates([1, 1, 5, 1, 1], [0.1] * 5, slot_hours=1),
+        load_forecasts=_make_loads([0, 0, 1, 0, 0], slot_hours=1),
+        solar_forecasts=_make_pv([0, 0, 0, 20, 0], slot_hours=1),
+        current_soc_pct=80,
+        degradation_cost=0.7,
+        horizon_hours=5,
+    )
+    debug = debug_solve_battery_schedule(inputs)
+    assert debug is not None
+    assert "sell" not in debug.modes
+    assert debug.discharge_load_kwh[2] == pytest.approx(1, abs=1e-5)
+    assert debug.modes[2] == "maxuse"
+    assert debug.soc_values[2] == pytest.approx(8, abs=1e-5)
+
+
+def test_standby_preserves_energy_for_later_expensive_load() -> None:
+    inputs = _base_inputs(
+        rates=_make_rates([0.1, 5, 0.1], [0] * 3, slot_hours=1),
+        load_forecasts=_make_loads([1, 4.75, 0], slot_hours=1),
+        current_soc_pct=80,
+        max_charge_power_w=0,
+        horizon_hours=3,
+    )
+    debug = debug_solve_battery_schedule(inputs)
+    assert debug is not None
+    assert debug.modes[0] == "standby"
+    assert debug.grid_import_kwh[0] == pytest.approx(1, abs=1e-5)
+    assert debug.discharge_load_kwh[1] == pytest.approx(4.75, abs=1e-5)
+    assert debug.modes[1] == "maxuse"
+
+
+@pytest.mark.parametrize("initial_soc", [20, 50, 80])
+@pytest.mark.parametrize("pv_kw,load_kw", [(8, 1), (1, 8), (1, 1)])
+def test_maxuse_flows_match_automatic_self_consumption(
+    initial_soc: float, pv_kw: float, load_kw: float
+) -> None:
+    inputs = _base_inputs(
+        rates=_make_rates([5] * 4, [0] * 4),
+        load_forecasts=_make_loads([load_kw] * 4),
+        solar_forecasts=_make_pv([pv_kw] * 4),
+        current_soc_pct=initial_soc,
+    )
+    debug = debug_solve_battery_schedule(inputs)
+    assert debug is not None
+    assert "maxuse" in debug.modes
+    for i, mode in enumerate(debug.modes):
+        if mode != "maxuse":
+            continue
+        surplus = (pv_kw - load_kw) * SLOT_HOURS
+        expected_charge = min(max(0, surplus), 1.25, (8 - debug.soc_values[i]) / 0.95)
+        expected_discharge = min(
+            max(0, -surplus), 1.25, (debug.soc_values[i] - 2) * 0.95
+        )
+        assert debug.charge_pv_kwh[i] == pytest.approx(expected_charge, abs=1e-5)
+        assert debug.discharge_load_kwh[i] == pytest.approx(
+            expected_discharge, abs=1e-5
+        )
+        assert debug.charge_grid_kwh[i] == pytest.approx(0, abs=1e-5)
+        assert debug.discharge_export_kwh[i] == pytest.approx(0, abs=1e-5)
+        assert min(debug.grid_import_kwh[i], debug.grid_export_kwh[i]) <= 1e-5
+
+
+@pytest.mark.parametrize("wear,expected_mode", [(0, "sell"), (0.7, "maxuse")])
+def test_export_must_beat_wear_and_terminal_value(
+    wear: float, expected_mode: str
+) -> None:
+    inputs = _base_inputs(
+        rates=_make_rates([2.2, 4, 2.396], [1.324, 2.772, 1.482], slot_hours=1),
+        load_forecasts=_make_loads([0, 1, 0], slot_hours=1),
+        solar_forecasts=_make_pv([5, 0, 0], slot_hours=1),
+        current_soc_pct=80,
+        degradation_cost=wear,
+        horizon_hours=3,
+    )
+    debug = debug_solve_battery_schedule(inputs)
+    assert debug is not None
+    assert debug.modes[1] == expected_mode
+    assert debug.discharge_load_kwh[1] == pytest.approx(1, abs=1e-5)
+    if wear:
+        assert sum(debug.discharge_export_kwh) == pytest.approx(0, abs=1e-5)
+    else:
+        assert debug.discharge_export_kwh[1] > 0.1
+
+
+def test_two_day_schedule_remains_feasible_with_partial_first_slot() -> None:
+    """Exercise all tie-breaks with tiny evening loads and realistic wear."""
+    prices = ([2] * 28 + [4] * 8 + [2.2] * 32 + [4] * 16 + [2.396] * 12) * 2
+    credits = [price * 0.8 - 0.4 for price in prices]
+    loads = ([0.8] * 20 + [0] * 48 + [0.011, 0, 0, 0.007] * 4 + [0] * 12) * 2
+    pv = ([0] * 28 + [1] * 12 + [5] * 24 + [1] * 8 + [0] * 24) * 2
+    inputs = _base_inputs(
+        rates=_make_rates(prices, credits),
+        load_forecasts=_make_loads(loads),
+        solar_forecasts=_make_pv(pv),
+        reference_time=REFERENCE_TIME + timedelta(minutes=2, seconds=21),
+        current_soc_pct=99,
+        capacity_kwh=15,
+        min_soc_pct=5,
+        max_soc_pct=95,
+        degradation_cost=0.7,
+        horizon_hours=48,
+    )
+    debug = debug_solve_battery_schedule(inputs)
+    assert debug is not None
+    assert len(debug.modes) == 192
+    assert debug.load_t[0] == pytest.approx(0.8 * (15 * 60 - 141) / 3600)
+    assert all(0.75 - 1e-6 <= soc <= 14.25 + 1e-6 for soc in debug.soc_values)
+    assert debug.soc_values[-1] >= 0.75 + debug.reserve_kwh - 1e-6
+    for i, mode in enumerate(debug.modes):
+        assert min(debug.grid_import_kwh[i], debug.grid_export_kwh[i]) <= 1e-6
+        assert (
+            debug.discharge_load_kwh[i] + debug.discharge_export_kwh[i] <= 1.25 + 1e-6
+        )
+        if mode == "standby":
+            assert debug.soc_values[i + 1] == pytest.approx(
+                debug.soc_values[i], abs=1e-6
+            )
+        if mode == "sell":
+            assert debug.discharge_export_kwh[i] >= 1e-3 - 1e-6

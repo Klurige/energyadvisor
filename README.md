@@ -84,8 +84,8 @@ called differently for other grids and suppliers.
 | `battery_optimization_horizon_hours` | Look-ahead horizon used by the optimizer | `48` |
 | `battery_min_soc_pct` | Lower SoC bound used by the optimizer | `5` |
 | `battery_max_soc_pct` | Upper SoC bound used by the optimizer | `95` |
-| `battery_degradation_cost` | Optional planner setting kept for future battery logic | `0.7` |
-| `battery_soc_entity`       | Optional battery state-of-charge sensor kept for future battery logic | `sensor.home_battery_soc` |
+| `battery_degradation_cost` | Wear cost per kWh of battery throughput, charged on both charging and discharging; default `0` | `0.7` |
+| `battery_soc_entity`       | Current battery state-of-charge sensor used by the optimizer | `sensor.home_battery_soc` |
 
 The battery optimizer is always enabled; configure only the SoC bounds,
 horizon, and optional degradation margin.
@@ -213,7 +213,7 @@ See [docs/solarforecast.md](docs/old/solarforecast.md) for the full solar foreca
 - **Default Entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
 - **State:** the current schedule mode, one of `standby`, `maxuse`, `charge`, `discharge`, or `sell`.
 - **Attributes:**
-  - `modes`: Sequential schedule entries, one per 15-minute input slot, with local `from`, `mode`, and `target_soc` (`null` for idle modes).
+  - `modes`: Sequential schedule entries, one per 15-minute input slot, with local `from`, `mode`, and `target_soc` (numeric for `charge`/`sell`, otherwise `null`). Elapsed slots preserve earlier recommendations, not measured battery actions.
   - `current_soc_pct`: Current battery state of charge read from the configured SoC sensor.
   - `current_target_soc`: Target SoC for the current schedule segment, if applicable.
   - `optimization_enabled`: Always `true`; the LP optimizer is always active.
@@ -223,8 +223,14 @@ See [docs/solarforecast.md](docs/old/solarforecast.md) for the full solar foreca
 The helper uses the HiGHS solver through the `highspy` Python bindings to
 solve a mixed-integer program over the configured horizon, with mutually
 exclusive battery modes per slot and explicit PV/grid/load energy-balance
-constraints. If a solar forecast is configured, the helper reserves battery
-headroom for the forecast solar production. The optimizer falls back to a
+constraints. `maxuse` means automatic self-consumption: solar serves the house,
+surplus solar charges the battery, and the battery covers any deficit within
+power and SoC limits. `standby` preserves the battery instead. Solar headroom
+is preferred only among economically equivalent schedules; it cannot force
+low-value selling. Export must beat wear costs and the value of retaining
+energy, so a high import price does not necessarily justify selling.
+Degraded household forecast quality is included in the recommendation reason.
+The optimizer falls back to a
 `maxuse` schedule with an explicit reason string whenever inputs are invalid
 or the solver fails.
 

@@ -5,7 +5,7 @@ This module implements the battery charge mode optimizer specified in
 linear program over a 15-minute-resolution horizon, with mutually exclusive
 battery modes (``standby``, ``maxuse``, ``charge``, ``discharge``, ``sell``),
 explicit PV/grid energy-balance equations, a simultaneous import/export
-prohibition, a solar-headroom soft penalty and a terminal SoC reserve policy.
+prohibition, an economic-first solar-headroom preference and a terminal SoC reserve policy.
 The optimizer degrades to a deterministic ``maxuse`` fallback schedule
 whenever configuration, SoC, price or solver data is invalid or unavailable.
 """
@@ -49,12 +49,11 @@ _EPSILON = 1e-6
 #: Minimum battery export in a ``sell`` slot, in kWh. Keeps ``sell`` and
 #: ``discharge`` distinguishable: a slot labelled ``sell`` must export.
 _MIN_SELL_EXPORT_KWH = 1e-3
-#: Pass-3 tie-break weight discouraging a `sell` label when an identical-cost
-#: `discharge` labelling exists. Kept well below the flow-minimization weight.
-_SELL_LABEL_TIE_BREAK_WEIGHT = 1e-3
+#: Prefer standby over an inactive charge/discharge/sell label.
+_ACTIVE_LABEL_TIE_BREAK_WEIGHT = 1e-3
 
-#: Battery modes in mutual-exclusivity order. ``maxuse`` and ``standby`` are
-#: both idle modes; ``maxuse`` is the preferred fallback/tie-break default.
+#: Battery modes in mutual-exclusivity order. ``maxuse`` is automatic
+#: self-consumption; ``standby`` preserves the battery.
 MODE_CHARGE = "charge"
 MODE_DISCHARGE = "discharge"
 MODE_SELL = "sell"
@@ -730,6 +729,12 @@ def _solve_milp_unsafe(
 
     highs = highspy.Highs()
     highs.setOptionValue("output_flag", False)
+    # Tighter than the lexicographic objective pins below.
+    highs.setOptionValue("mip_rel_gap", 0.0)
+    highs.setOptionValue("mip_abs_gap", 1e-8)
+    highs.setOptionValue("mip_feasibility_tolerance", 1e-8)
+    highs.setOptionValue("primal_feasibility_tolerance", 1e-8)
+    highs.setOptionValue("dual_feasibility_tolerance", 1e-8)
     highs.setMinimize()
     infinity = highs.getInfinity()
 
@@ -825,7 +830,7 @@ def _solve_milp_unsafe(
             [ch_grid_idx[t], ch_pv_idx[t], m_charge_idx[t], m_maxuse_idx[t]],
             [1.0, 1.0, -max_charge_kwh[t], -max_charge_kwh[t]],
         )
-        # Load-serving discharge is allowed in both discharge and sell mode.
+        # Load-serving discharge is also allowed during automatic self-use.
         # A sell slot serves the household from the battery first and exports
         # only the surplus; forcing it to import the load at the same time
         # would collide with the simultaneous import/export prohibition and
@@ -836,8 +841,8 @@ def _solve_milp_unsafe(
             highs,
             -infinity,
             0.0,
-            [dis_load_idx[t], m_discharge_idx[t], m_sell_idx[t]],
-            [1.0, -max_discharge_kwh[t], -max_discharge_kwh[t]],
+            [dis_load_idx[t], m_discharge_idx[t], m_sell_idx[t], m_maxuse_idx[t]],
+            [1.0, -max_discharge_kwh[t], -max_discharge_kwh[t], -max_discharge_kwh[t]],
         )
         _add_highs_row(
             highs,
@@ -856,9 +861,58 @@ def _solve_milp_unsafe(
                 dis_export_idx[t],
                 m_discharge_idx[t],
                 m_sell_idx[t],
+                m_maxuse_idx[t],
             ],
-            [1.0, 1.0, -max_discharge_kwh[t], -max_discharge_kwh[t]],
+            [
+                1.0,
+                1.0,
+                -max_discharge_kwh[t],
+                -max_discharge_kwh[t],
+                -max_discharge_kwh[t],
+            ],
         )
+        # Automatic self-consumption cannot silently idle to save energy for
+        # later. It uses solar first, then charges/discharges until the power
+        # limit or the relevant SoC bound is reached.
+        _add_highs_row(
+            highs,
+            0.0,
+            infinity,
+            [pv_to_load_idx[t], m_maxuse_idx[t]],
+            [1.0, -min(pv_t[t], load_t[t])],
+        )
+        surplus = pv_t[t] - load_t[t]
+        self_use_limit = min(
+            abs(surplus),
+            max_charge_kwh[t] if surplus >= 0 else max_discharge_kwh[t],
+        )
+        if self_use_limit > 0:
+            at_soc_bound = _add_highs_variable(highs, 0.0, 1.0, integer=True)
+            flow_idx = ch_pv_idx[t] if surplus >= 0 else dis_load_idx[t]
+            _add_highs_row(
+                highs,
+                0.0,
+                infinity,
+                [flow_idx, m_maxuse_idx[t], at_soc_bound],
+                [1.0, -self_use_limit, self_use_limit],
+            )
+            usable = soc_max_kwh - soc_min_kwh
+            if surplus >= 0:
+                _add_highs_row(
+                    highs,
+                    soc_max_kwh - 2 * usable,
+                    infinity,
+                    [soc_idx[t + 1], m_maxuse_idx[t], at_soc_bound],
+                    [1.0, -usable, -usable],
+                )
+            else:
+                _add_highs_row(
+                    highs,
+                    -infinity,
+                    soc_min_kwh + 2 * usable,
+                    [soc_idx[t + 1], m_maxuse_idx[t], at_soc_bound],
+                    [1.0, usable, usable],
+                )
         # A sell slot must actually export from the battery, otherwise it is
         # indistinguishable from a plain discharge slot.
         _add_highs_row(
@@ -925,7 +979,7 @@ def _solve_milp_unsafe(
             [g_exp_idx[t], d_grid_idx[t]],
             [1.0, max_export_kwh[t]],
         )
-        # Solar headroom shortfall (soft penalty, pre-solar-window slots only).
+        # Solar headroom shortfall for the economic-first tie-break.
         # headroom_t is evaluated against the end-of-slot-t SoC (soc_idx[t+1]),
         # i.e. the level reached right after this slot's charge/discharge
         # decision, which is what must leave room for the upcoming PV window.
@@ -955,7 +1009,21 @@ def _solve_milp_unsafe(
         )
         return status == highspy.HighsStatus.kOk
 
-    def _run() -> bool:
+    previous_values: np.ndarray | None = None
+
+    def _run(phase: str) -> bool:
+        nonlocal previous_values
+        # Each pinned optimum leaves the preceding solution feasible. Supply
+        # it explicitly as a MIP start after changing objectives/adding rows.
+        if previous_values is not None:
+            status = highs.setSolution(
+                num_cols, np.arange(num_cols, dtype=np.int32), previous_values
+            )
+            if status != highspy.HighsStatus.kOk:
+                _LOGGER.warning(
+                    "HiGHS rejected the MIP start during %s: %s", phase, status
+                )
+                return False
         try:
             run_status = highs.run()
         except Exception as exc:  # pragma: no cover - defensive solver guard
@@ -966,8 +1034,15 @@ def _solve_milp_unsafe(
             return False
         model_status = highs.getModelStatus()
         if model_status != highspy.HighsModelStatus.kOptimal:
-            _LOGGER.warning("HiGHS returned status %s", model_status)
+            _LOGGER.warning("HiGHS returned status %s during %s", model_status, phase)
             return False
+        solution = highs.getSolution()
+        if not solution.value_valid:
+            _LOGGER.warning(
+                "HiGHS returned an invalid primal solution during %s", phase
+            )
+            return False
+        previous_values = np.asarray(solution.col_value, dtype=float)
         return True
 
     # Pass 1: minimize the full economic objective.
@@ -980,13 +1055,11 @@ def _solve_milp_unsafe(
         costs[ch_pv_idx[t]] += degradation
         costs[dis_load_idx[t]] += degradation
         costs[dis_export_idx[t]] += degradation
-        if t in shortfall_idx:
-            costs[shortfall_idx[t]] = penalty_factor
     costs[soc_idx[total]] += -terminal_value
 
     if not _set_costs(costs):
         return None
-    if not _run():
+    if not _run("economic optimization"):
         return None
     solution = highs.getSolution()
     if not solution.value_valid:
@@ -1006,18 +1079,38 @@ def _solve_milp_unsafe(
         costs[nonzero_indices].tolist(),
     )
 
-    # Pass 2: maximize the number of maxuse slots (minimize its negative).
+    # Reserve solar headroom only among economically equivalent schedules.
+    # Charging a monetary penalty every pre-solar slot otherwise rewards
+    # dumping energy immediately, even at a loss or before a higher price.
+    if shortfall_idx:
+        headroom_costs = np.zeros(num_cols, dtype=float)
+        for index in shortfall_idx.values():
+            headroom_costs[index] = penalty_factor
+        if not _set_costs(headroom_costs) or not _run("solar headroom tie-break"):
+            return None
+        headroom_objective = float(highs.getObjectiveValue())
+        _add_highs_row(
+            highs,
+            -infinity,
+            headroom_objective + _EPSILON,
+            list(shortfall_idx.values()),
+            [penalty_factor] * len(shortfall_idx),
+        )
+
+    # Prefer automatic self-consumption among the remaining schedules.
     costs2 = np.zeros(num_cols, dtype=float)
     for t in range(total):
         costs2[m_maxuse_idx[t]] = -1.0
     if not _set_costs(costs2):
         return None
-    if not _run():
+    if not _run("maxuse tie-break"):
         return None
     solution = highs.getSolution()
     if not solution.value_valid:
         return None
-    maxuse_2 = sum(float(solution.col_value[m_maxuse_idx[t]]) for t in range(total))
+    maxuse_2 = round(
+        sum(float(solution.col_value[m_maxuse_idx[t]]) for t in range(total))
+    )
 
     _add_highs_row(
         highs,
@@ -1027,22 +1120,19 @@ def _solve_milp_unsafe(
         [1.0] * total,
     )
 
-    # Pass 3: minimize total absolute battery flow, with a subordinate
-    # preference against `sell`. Because `sell` may now also serve load, a
-    # marginal slot can be labelled either `sell` or `discharge` at an
-    # identical objective; the tiny weight resolves that ambiguity towards
-    # the simpler `discharge` label without ever overriding flow
-    # minimization or the pinned economic objective.
+    # Minimize throughput with a small preference for standby over inactive
+    # action labels. The economic objective and maxuse count remain pinned.
     costs3 = np.zeros(num_cols, dtype=float)
     for t in range(total):
         costs3[ch_grid_idx[t]] = 1.0
         costs3[ch_pv_idx[t]] = 1.0
         costs3[dis_load_idx[t]] = 1.0
         costs3[dis_export_idx[t]] = 1.0
-        costs3[m_sell_idx[t]] = _SELL_LABEL_TIE_BREAK_WEIGHT
+        for index in (m_charge_idx[t], m_discharge_idx[t], m_sell_idx[t]):
+            costs3[index] = _ACTIVE_LABEL_TIE_BREAK_WEIGHT
     if not _set_costs(costs3):
         return None
-    if not _run():
+    if not _run("flow tie-break"):
         return None
 
     solution = highs.getSolution()
@@ -1061,7 +1151,7 @@ def _solve_milp_unsafe(
         ]
         mode_indexes.append(max(range(5), key=lambda index: mode_values[index]))
 
-    # Report the true economic objective from pass 1, not the pass 3
+    # Report the true economic objective from pass 1, not the final
     # tie-break objective (which minimizes total battery flow and is not a
     # meaningful cost figure).
     objective_value = obj_1
@@ -1258,7 +1348,7 @@ def optimize_battery_schedule(
             current_target = None
 
     solar_reason = (
-        f" while reserving headroom for forecast solar" if has_headroom else ""
+        " while reserving headroom for forecast solar" if has_headroom else ""
     )
 
     return BatteryOptimizationResult(

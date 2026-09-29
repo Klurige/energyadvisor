@@ -146,8 +146,8 @@ def test_calculate_battery_mode_uses_optimizer_and_exposes_schedule() -> None:
     assert "charge_entries" not in attrs
 
 
-def test_calculate_battery_mode_respects_forecast_solar_headroom() -> None:
-    """Solar forecast should lower the charge target before the solar window."""
+def test_calculate_battery_mode_prioritizes_economics_over_solar_headroom() -> None:
+    """Headroom must not prevent profitable charging."""
     now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
     sensor = _build_sensor(now)
     solar_forecasts: list[dict[str, object]] = []
@@ -174,10 +174,32 @@ def test_calculate_battery_mode_respects_forecast_solar_headroom() -> None:
     attrs = sensor.extra_state_attributes
 
     assert sensor.state == "charge"
-    assert attrs["current_target_soc"] == 60.0
+    assert attrs["current_target_soc"] == 80.0
     assert "forecast solar" in attrs["reason"]
-    assert attrs["modes"][1]["target_soc"] == 60.0
+    assert attrs["modes"][1]["target_soc"] == 80.0
     assert all("target_soc" in entry for entry in attrs["modes"])
+
+
+def test_calculate_battery_mode_reports_degraded_household_forecast() -> None:
+    now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
+    sensor = _build_sensor(now)
+    sensor._household_coordinator = MagicMock(
+        forecast_slots=[{"from": now.isoformat(), "load": 0.6}],
+        quality_status="degraded",
+        reason="Recent meter intervals were sparse.",
+    )
+    with patch(
+        "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
+        return_value=now,
+    ):
+        sensor.calculate_battery_mode()
+    assert (
+        "Household load forecast quality: degraded"
+        in sensor.extra_state_attributes["reason"]
+    )
+    assert (
+        "Recent meter intervals were sparse." in sensor.extra_state_attributes["reason"]
+    )
 
 
 def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> None:

@@ -372,6 +372,13 @@ class BatteryChargeModeSensor(SensorEntity):
         self._current_mode = result.current_mode
         self._current_target_soc_pct = result.current_target_soc_pct
         self._reason = result.reason
+        if self._household_coordinator is not None:
+            quality = getattr(self._household_coordinator, "quality_status", None)
+            if quality in ("degraded", "stale", "fallback"):
+                self._reason += (
+                    f" Household load forecast quality: {quality}. "
+                    f"{self._household_coordinator.reason}"
+                )
         self._solver = result.solver
 
         if not self._current_mode:
