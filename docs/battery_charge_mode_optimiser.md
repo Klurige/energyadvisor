@@ -69,7 +69,7 @@ The valid modes are exactly:
 Definitions:
 - `standby`: the battery is idle; no charge or discharge flow is active.
 - `maxuse`: Prioritises solar for household use. If solar is not enough, battery will be used for household. If still not enough, energy will be imported from the grid. This is the default fallback mode and the preferred mode when the optimizer cannot confidently distinguish a profitable action.
-- `charge`: the optimizer intends to charge the battery during the slot, Primarily from solar surplus, but will top up with grid import to the set charging power. The schedule entry must include `target_soc` equal to the end-of-slot SoC target.
+- `charge`: the optimizer plans actual grid-to-battery charging, possibly alongside solar charging. Pure solar self-consumption belongs to `maxuse`, not `charge`. The schedule entry must include `target_soc` equal to the end-of-slot SoC target.
 - `discharge`: the battery discharges to serve household load. Battery discharge must never charge from PV. It may reduce grid import and may support self-consumption.
 - `sell`: the battery discharges at a favourable export price. It serves the household load from the battery first and exports the surplus; it must not import from the grid while exporting. The schedule entry must include `target_soc` equal to the end-of-slot SoC target.
 
@@ -172,9 +172,21 @@ Constraints:
 - `b_ch_pv_t <= pv_t`
 - `b_ch_pv_t <= max_charge_kwh_t * (m_charge_t + m_maxuse_t)`
 - `b_ch_grid_t <= max_charge_kwh_t * m_charge_t`
+- `b_ch_grid_t >= min_charge_action_kwh_t * m_charge_t`
+- `b_dis_load_t >= min_discharge_action_kwh_t * m_discharge_t`
 - `b_ch_grid_t + b_ch_pv_t <= max_charge_kwh_t * (m_charge_t + m_maxuse_t)`
 - `b_ch_pv_t = 0` when `m_discharge_t = 1` or `m_sell_t = 1`
 - `b_ch_grid_t = 0` and `b_dis_export_t = 0` whenever `m_maxuse_t = 1`
+
+Active `charge` and `discharge` labels require at least `1e-3` kWh in their
+respective grid-charge and household-discharge flows. The minimum is capped
+by the slot's power budget and usable battery energy (including efficiency),
+so partial slots and small batteries remain feasible. A zero power budget
+disables the corresponding action label. A weighted label tie-break alone
+is not sufficient: a global tie can otherwise leave idle slots labelled as
+active actions. Partial PV-only charging is not an independently controllable
+`charge` action; the solver must choose the actual automatic `maxuse` behavior
+or preserve the battery with `standby`.
 
 Under `maxuse`, `pv_to_load_t = min(pv_t, load_t)`. For PV surplus,
 `b_ch_pv_t = min(pv_t - load_t, max_charge_kwh_t, (soc_max - soc_t) / eta_ch)`.
@@ -200,7 +212,7 @@ The distinction between `discharge` and `sell` is preserved by `b_dis_export_t`,
 
 Because both modes may now serve load, a marginal slot can be labelled either way at an identical objective value. To keep the label meaningful and the solve deterministic:
 - a slot labelled `sell` must export a non-trivial amount from the battery, enforced by `b_dis_export_t >= min_sell_export_kwh * m_sell_t` with `min_sell_export_kwh = 1e-3` kWh
-- the final tie-break applies a small weight to active mode labels so idle actions are labelled `standby`, not `charge`, `discharge`, or `sell` (see section 4.6)
+- minimum-flow constraints prevent inactive action labels; the final tie-break additionally applies a small weight to active labels (see section 4.6)
 
 The combined discharge cap is required because the two discharge sinks share one inverter power budget within a `sell` slot.
 

@@ -225,7 +225,11 @@ solve a mixed-integer program over the configured horizon, with mutually
 exclusive battery modes per slot and explicit PV/grid/load energy-balance
 constraints. `maxuse` means automatic self-consumption: solar serves the house,
 surplus solar charges the battery, and the battery covers any deficit within
-power and SoC limits. `standby` preserves the battery instead. Solar headroom
+power and SoC limits. `charge` requires actual grid-to-battery energy;
+solar-only automatic charging is `maxuse`. `discharge` requires actual
+battery-to-household energy. `standby` preserves the battery instead and may
+export surplus solar when storing it is less valuable under the configured
+wear costs and future prices. Daytime arbitrage remains allowed. Solar headroom
 is preferred only among economically equivalent schedules; it cannot force
 low-value selling. Export must beat wear costs and the value of retaining
 energy, so a high import price does not necessarily justify selling.

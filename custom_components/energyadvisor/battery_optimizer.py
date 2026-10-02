@@ -49,6 +49,8 @@ _EPSILON = 1e-6
 #: Minimum battery export in a ``sell`` slot, in kWh. Keeps ``sell`` and
 #: ``discharge`` distinguishable: a slot labelled ``sell`` must export.
 _MIN_SELL_EXPORT_KWH = 1e-3
+#: Active action labels require measurable energy, not solver-tolerance noise.
+_MIN_ACTIVE_ENERGY_KWH = 1e-3
 #: Prefer standby over an inactive charge/discharge/sell label.
 _ACTIVE_LABEL_TIE_BREAK_WEIGHT = 1e-3
 
@@ -818,6 +820,22 @@ def _solve_milp_unsafe(
         )
         _add_highs_row(
             highs,
+            0.0,
+            infinity,
+            [ch_grid_idx[t], m_charge_idx[t]],
+            [
+                1.0,
+                -min(
+                    _MIN_ACTIVE_ENERGY_KWH,
+                    max_charge_kwh[t],
+                    (soc_max_kwh - soc_min_kwh) / eta_ch,
+                ),
+            ],
+        )
+        if max_charge_kwh[t] <= 0:
+            _add_highs_row(highs, 0.0, 0.0, [m_charge_idx[t]], [1.0])
+        _add_highs_row(
+            highs,
             -infinity,
             0.0,
             [ch_pv_idx[t], m_charge_idx[t], m_maxuse_idx[t]],
@@ -844,6 +862,22 @@ def _solve_milp_unsafe(
             [dis_load_idx[t], m_discharge_idx[t], m_sell_idx[t], m_maxuse_idx[t]],
             [1.0, -max_discharge_kwh[t], -max_discharge_kwh[t], -max_discharge_kwh[t]],
         )
+        _add_highs_row(
+            highs,
+            0.0,
+            infinity,
+            [dis_load_idx[t], m_discharge_idx[t]],
+            [
+                1.0,
+                -min(
+                    _MIN_ACTIVE_ENERGY_KWH,
+                    max_discharge_kwh[t],
+                    (soc_max_kwh - soc_min_kwh) * eta_dis,
+                ),
+            ],
+        )
+        if max_discharge_kwh[t] <= 0:
+            _add_highs_row(highs, 0.0, 0.0, [m_discharge_idx[t]], [1.0])
         _add_highs_row(
             highs,
             -infinity,

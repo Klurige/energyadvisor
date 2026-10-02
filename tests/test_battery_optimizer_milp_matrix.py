@@ -526,3 +526,51 @@ def test_two_day_schedule_remains_feasible_with_partial_first_slot() -> None:
             )
         if mode == "sell":
             assert debug.discharge_export_kwh[i] >= 1e-3 - 1e-6
+        if mode == "charge":
+            assert debug.charge_grid_kwh[i] >= 1e-3 - 1e-6
+        if mode == "discharge":
+            assert debug.discharge_load_kwh[i] >= 1e-3 - 1e-6
+
+
+@pytest.mark.parametrize("load_kw", [0, 0.001, 0.025])
+def test_solar_surplus_does_not_produce_inactive_action_labels(load_kw: float) -> None:
+    """Preserving the battery during solar production must not say charge."""
+    inputs = _base_inputs(
+        rates=_make_rates([2.2] * 4 + [4] * 4 + [2.396] * 4, [1.3] * 12),
+        load_forecasts=_make_loads([load_kw] * 12),
+        solar_forecasts=_make_pv([8] * 4 + [0] * 8),
+        current_soc_pct=70,
+        degradation_cost=0.7,
+        horizon_hours=3,
+    )
+    debug = debug_solve_battery_schedule(inputs)
+    assert debug is not None
+    assert "charge" not in debug.modes[:4]
+    for i, mode in enumerate(debug.modes):
+        if mode == "discharge":
+            assert debug.discharge_load_kwh[i] >= 1e-3 - 1e-6
+        if mode == "standby":
+            assert debug.soc_values[i + 1] == pytest.approx(
+                debug.soc_values[i], abs=1e-6
+            )
+
+
+@pytest.mark.parametrize("power_w", [0, 1])
+def test_active_label_minimum_respects_small_power_limits(power_w: float) -> None:
+    inputs = _base_inputs(
+        rates=_make_rates([0.1, 5, 0.1], [0, 0, 0], slot_hours=1),
+        load_forecasts=_make_loads([0, 1, 0], slot_hours=1),
+        max_charge_power_w=power_w,
+        max_discharge_power_w=power_w,
+        current_soc_pct=20,
+        horizon_hours=3,
+    )
+    debug = debug_solve_battery_schedule(inputs)
+    assert debug is not None
+    for i, mode in enumerate(debug.modes):
+        if mode == "charge":
+            assert debug.charge_grid_kwh[i] > 0
+        if mode == "discharge":
+            assert debug.discharge_load_kwh[i] > 0
+    if power_w == 0:
+        assert not {"charge", "discharge", "sell"}.intersection(debug.modes)
