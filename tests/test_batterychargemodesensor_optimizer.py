@@ -1,5 +1,5 @@
 import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntry
@@ -29,6 +29,7 @@ def _build_sensor(
     """Create a battery sensor backed by a lightweight price and SoC stub."""
     hass = MagicMock()
     hass.config = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=lambda func, *args: func(*args))
     hass.config.time_zone = "Europe/Stockholm"
 
     entry = MagicMock(spec=ConfigEntry)
@@ -84,7 +85,9 @@ def _build_sensor(
         return BatteryChargeModeSensor(hass, entry, device_info, price_sensor)
 
 
-def test_calculate_battery_mode_uses_optimizer_and_exposes_schedule() -> None:
+async def test_async_calculate_battery_mode_uses_optimizer_and_exposes_schedule() -> (
+    None
+):
     """The sensor should expose the optimized schedule when enabled.
 
     A third, cheap trailing rate slot is included so the profitable sell
@@ -127,7 +130,7 @@ def test_calculate_battery_mode_uses_optimizer_and_exposes_schedule() -> None:
             return_value=now,
         ),
     ):
-        sensor.calculate_battery_mode()
+        await sensor.async_calculate_battery_mode()
 
     attrs = sensor.extra_state_attributes
 
@@ -146,7 +149,9 @@ def test_calculate_battery_mode_uses_optimizer_and_exposes_schedule() -> None:
     assert "charge_entries" not in attrs
 
 
-def test_calculate_battery_mode_prioritizes_economics_over_solar_headroom() -> None:
+async def test_async_calculate_battery_mode_prioritizes_economics_over_solar_headroom() -> (
+    None
+):
     """Headroom must not prevent profitable charging."""
     now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
     sensor = _build_sensor(now)
@@ -169,7 +174,7 @@ def test_calculate_battery_mode_prioritizes_economics_over_solar_headroom() -> N
             return_value=now,
         ),
     ):
-        sensor.calculate_battery_mode()
+        await sensor.async_calculate_battery_mode()
 
     attrs = sensor.extra_state_attributes
 
@@ -180,7 +185,9 @@ def test_calculate_battery_mode_prioritizes_economics_over_solar_headroom() -> N
     assert all("target_soc" in entry for entry in attrs["modes"])
 
 
-def test_calculate_battery_mode_reports_degraded_household_forecast() -> None:
+async def test_async_calculate_battery_mode_reports_degraded_household_forecast() -> (
+    None
+):
     now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
     sensor = _build_sensor(now)
     sensor._household_coordinator = MagicMock(
@@ -192,7 +199,7 @@ def test_calculate_battery_mode_reports_degraded_household_forecast() -> None:
         "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.now",
         return_value=now,
     ):
-        sensor.calculate_battery_mode()
+        await sensor.async_calculate_battery_mode()
     assert (
         "Household load forecast quality: degraded"
         in sensor.extra_state_attributes["reason"]
@@ -202,7 +209,9 @@ def test_calculate_battery_mode_reports_degraded_household_forecast() -> None:
     )
 
 
-def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> None:
+async def test_async_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> (
+    None
+):
     """The sensor should expose one schedule entry per 15-minute slot."""
     now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
     rates: list[dict[str, object]] = []
@@ -231,7 +240,7 @@ def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> No
             return_value=now,
         ),
     ):
-        sensor.calculate_battery_mode()
+        await sensor.async_calculate_battery_mode()
 
     attrs = sensor.extra_state_attributes
 
@@ -256,7 +265,7 @@ def test_calculate_battery_mode_keeps_quarter_hour_entries_without_alias() -> No
     ]
 
 
-def test_recalculation_keeps_elapsed_modes() -> None:
+async def test_recalculation_keeps_elapsed_modes() -> None:
     """Recalculation must not replace slots that have already elapsed."""
     first_now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
     sensor = _build_sensor(first_now)
@@ -270,7 +279,7 @@ def test_recalculation_keeps_elapsed_modes() -> None:
             return_value=first_now,
         ),
     ):
-        sensor.calculate_battery_mode()
+        await sensor.async_calculate_battery_mode()
 
     elapsed_mode = dict(sensor._modes[1])
     second_now = first_now + datetime.timedelta(minutes=15)
@@ -284,18 +293,20 @@ def test_recalculation_keeps_elapsed_modes() -> None:
             return_value=second_now,
         ),
     ):
-        sensor.calculate_battery_mode()
+        await sensor.async_calculate_battery_mode()
 
     assert sensor._modes[0]["from"] == "2026-08-15T00:00"
     assert sensor._modes[1] == elapsed_mode
 
 
-def test_recalculation_replaces_current_quarter_hour_slot() -> None:
+async def test_recalculation_replaces_current_quarter_hour_slot() -> None:
     """Repeated SoC updates must not accumulate partial-slot schedule entries."""
     first_now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
     sensor = _build_sensor(first_now)
 
-    for minutes in (0, 5, 10):
+    soc_state = sensor.hass.states.get.return_value
+    for minutes, soc in ((0, "50"), (5, "60"), (10, "70")):
+        soc_state.state = soc
         now = first_now + datetime.timedelta(minutes=minutes)
         with (
             patch(
@@ -307,7 +318,7 @@ def test_recalculation_replaces_current_quarter_hour_slot() -> None:
                 return_value=now,
             ),
         ):
-            sensor.calculate_battery_mode()
+            await sensor.async_calculate_battery_mode()
 
     slot_starts = [entry["from"] for entry in sensor._modes]
 

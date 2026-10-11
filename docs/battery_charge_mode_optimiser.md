@@ -253,9 +253,35 @@ Procedure:
 5. Minimise total battery throughput plus `1e-3 * sum_t (m_charge_t + m_discharge_t + m_sell_t)`. This prefers `standby` over inactive action labels without overriding the pinned economic optimum or maxuse count.
 
 Solver feasibility and optimality tolerances must be tighter than the `1e-6`
-objective pins: use `mip_rel_gap = 0`, `mip_abs_gap = 1e-8`, and
-MIP/primal/dual feasibility tolerances of `1e-8`. Explicitly pass the previous
-feasible solution as a MIP start after adding pins and changing objectives.
+objective pins: use `mip_abs_gap = 1e-8` and MIP/primal/dual feasibility
+tolerances of `1e-8`. The economic pass (step 1) must be solved exactly, with
+`mip_rel_gap = 0`, because its optimum defines the pins. Solving it to a loose
+gap leaves a suboptimal incumbent as the pin, which widens the feasible region
+of every later pass and makes them much slower. The tie-break passes (steps 3-5)
+only choose among already-pinned schedules and use `mip_rel_gap = 1e-3`.
+Explicitly pass the previous feasible solution as a MIP start after adding pins
+and changing objectives. HiGHS runs with `threads = 1`; the MIP search is
+serial and extra worker threads only compete with Home Assistant for CPU.
+
+#### Solver time budget
+
+One solve has a wall-clock budget (`BatteryOptimizationInputs.solver_time_limit_s`,
+default `30` s) shared by all passes. HiGHS applies `time_limit` per `run()`, so
+the optimizer slices the budget itself:
+
+- the economic pass may use the whole budget;
+- each tie-break pass gets an equal share of what is left (a third, then a half,
+  then the rest, when a solar headroom pass is present);
+- no tie-break pass starts with less than `0.5` s left.
+
+When a pass stops at its limit, the best feasible solution found so far is kept
+(the previous pass's solution is always a valid MIP start, so there is always
+one after the economic pass) and the remaining tie-breaks are skipped. The
+schedule is then still economically pinned but may be less tidy in tie-break
+terms, and the reason string ends with
+`(solver time limit of <n>s reached; schedule may be slightly suboptimal)`.
+If the economic pass finds no feasible solution within the budget, the
+optimizer falls back to `maxuse` like any other solver failure.
 
 This is the required implementation of “prefer maxuse when it is difficult to make a decision.” It is valid in HiGHS and deterministic.
 
@@ -453,6 +479,28 @@ Required work:
 Home Assistant validation:
 - confirm the mode changes when SoC changes, household load forecast changes, or when the live electricity price feed changes without a restart
 - confirm the array starts at the start of the current day and that only the current and future slots change while past entries remain unchanged
+
+### Solving off the event loop
+
+The solve takes seconds on small hosts, so it must never run on the Home
+Assistant event loop:
+
+- `BatteryChargeModeSensor` runs `optimize_battery_schedule_if_changed` in the
+  executor (`hass.async_add_executor_job`). The loop only builds the inputs
+  (copying the price entries) and applies the result.
+- Price, solar, household and SoC updates only request a recalculation. A
+  single worker task serves requests, so overlapping triggers are coalesced
+  into at most one follow-up solve instead of queuing one per trigger.
+- A solve is skipped when nothing changed materially since the last *solved*
+  inputs. A new solve runs when the 15-minute slot changed, the battery
+  settings or prices changed, the SoC became available/unavailable, the SoC
+  moved by at least `5` percentage points, or any solar/load forecast slot
+  moved by more than `0.25` kW (or the forecast changed shape). SoC drift is
+  measured from the last solve, so many small steps still add up. The
+  `current_soc_pct` attribute is updated on every SoC change regardless.
+- A result computed for a slot that ended while solving is discarded and
+  solved again, rather than published with a stale current mode.
+- The worker is cancelled when the entity is removed.
 
 ### Step 7: Keep the code path deterministic and testable
 

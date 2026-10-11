@@ -81,6 +81,9 @@ RAW_REQUIRED_POLL_INTERVAL = timedelta(seconds=60)
 RAW_OPTIONAL_POLL_INTERVAL = timedelta(seconds=120)
 RAW_HEARTBEAT_SECONDS = float(MAX_INTERVAL_FOR_SPIKES_SEC)
 RAW_SAMPLE_RETENTION_DAYS = 21
+# After the first full rebuild, only this many closed slots before the last
+# finalized slot are rebuilt, so late samples are still picked up.
+INCREMENTAL_REBUILD_MARGIN_SLOTS = 8
 SLOT_ROW_RETENTION_DAYS = 180
 FORECAST_RUN_RETENTION_DAYS = 14
 _NUMERIC_STATE_PATTERN = re.compile(r"[-+]?(?:\d+(?:[.,]\d*)?|[.,]\d+)")
@@ -259,6 +262,7 @@ class HouseholdForecastCoordinator:
         self._last_raw_prune_utc: datetime | None = None
         self._last_finalized_slot_utc: datetime | None = None
         self._last_generation_utc: datetime | None = None
+        self._history_rebuilt_in_full = False
 
     # -- Config helpers --------------------------------------------------
 
@@ -1443,14 +1447,34 @@ class HouseholdForecastCoordinator:
             self._build_slot_features_json(slot_start_utc, accumulator),
         )
 
-    def _load_numeric_samples_sync(self, sensor_key: str) -> list[_RawMeterSample]:
-        """Load retained numeric samples for one configured sensor."""
+    def _load_numeric_samples_sync(
+        self, sensor_key: str, since_utc: datetime | None = None
+    ) -> list[_RawMeterSample]:
+        """Load retained numeric samples for one configured sensor.
+
+        With ``since_utc`` only samples at or after it are loaded, plus the one
+        sample just before it, so the interval spanning ``since_utc`` is kept.
+        """
         db = self._ensure_db()
-        rows = db.execute(
-            "SELECT ts_utc, value, unit, quality FROM raw_samples "
-            "WHERE sensor_key = ? ORDER BY ts_utc ASC",
-            (sensor_key,),
-        ).fetchall()
+        if since_utc is None:
+            rows = db.execute(
+                "SELECT ts_utc, value, unit, quality FROM raw_samples "
+                "WHERE sensor_key = ? ORDER BY ts_utc ASC",
+                (sensor_key,),
+            ).fetchall()
+        else:
+            since_text = self._format_utc_timestamp(since_utc)
+            rows = db.execute(
+                "SELECT ts_utc, value, unit, quality FROM raw_samples "
+                "WHERE sensor_key = ? AND ts_utc >= ? ORDER BY ts_utc ASC",
+                (sensor_key, since_text),
+            ).fetchall()
+            anchor = db.execute(
+                "SELECT ts_utc, value, unit, quality FROM raw_samples "
+                "WHERE sensor_key = ? AND ts_utc < ? ORDER BY ts_utc DESC LIMIT 1",
+                (sensor_key, since_text),
+            ).fetchall()
+            rows = [*anchor, *rows]
         return [
             _RawMeterSample(
                 ts_utc=self._parse_utc_timestamp(str(row[0])),
@@ -1461,18 +1485,39 @@ class HouseholdForecastCoordinator:
             for row in rows
         ]
 
-    def _load_meter_samples_sync(self) -> list[_RawMeterSample]:
-        """Load all retained raw meter samples ordered by timestamp."""
-        return self._load_numeric_samples_sync(CONF_POWER_METER_CONSUMPTION)
+    def _load_meter_samples_sync(
+        self, since_utc: datetime | None = None
+    ) -> list[_RawMeterSample]:
+        """Load retained raw meter samples ordered by timestamp."""
+        return self._load_numeric_samples_sync(CONF_POWER_METER_CONSUMPTION, since_utc)
 
-    def _load_event_samples_sync(self, event_key: str) -> list[_RawEventSample]:
-        """Load retained event samples for one configured binary sensor."""
+    def _load_event_samples_sync(
+        self, event_key: str, since_utc: datetime | None = None
+    ) -> list[_RawEventSample]:
+        """Load retained event samples for one configured binary sensor.
+
+        ``since_utc`` limits the load like ``_load_numeric_samples_sync``.
+        """
         db = self._ensure_db()
-        rows = db.execute(
-            "SELECT ts_utc, state_num, state_text, quality FROM raw_events "
-            "WHERE event_key = ? ORDER BY ts_utc ASC",
-            (event_key,),
-        ).fetchall()
+        if since_utc is None:
+            rows = db.execute(
+                "SELECT ts_utc, state_num, state_text, quality FROM raw_events "
+                "WHERE event_key = ? ORDER BY ts_utc ASC",
+                (event_key,),
+            ).fetchall()
+        else:
+            since_text = self._format_utc_timestamp(since_utc)
+            rows = db.execute(
+                "SELECT ts_utc, state_num, state_text, quality FROM raw_events "
+                "WHERE event_key = ? AND ts_utc >= ? ORDER BY ts_utc ASC",
+                (event_key, since_text),
+            ).fetchall()
+            anchor = db.execute(
+                "SELECT ts_utc, state_num, state_text, quality FROM raw_events "
+                "WHERE event_key = ? AND ts_utc < ? ORDER BY ts_utc DESC LIMIT 1",
+                (event_key, since_text),
+            ).fetchall()
+            rows = [*anchor, *rows]
         return [
             _RawEventSample(
                 ts_utc=self._parse_utc_timestamp(str(row[0])),
@@ -1556,25 +1601,45 @@ class HouseholdForecastCoordinator:
         *,
         active_key: str | None = None,
         fallback_kw: float | None = None,
+        since_utc: datetime | None = None,
     ) -> list[_IntervalEnergyRow]:
-        """Load interval rows for one subtractive appliance source."""
+        """Load interval rows for one subtractive appliance source.
+
+        With ``since_utc`` only the window from that time on is built. The
+        active-state fallback applies only to a power sensor that has no
+        usable history at all, not to one that is merely quiet in the window.
+        """
         if not sensor_key:
             return []
 
         interval_rows = self._build_interval_energy_rows(
-            self._load_numeric_samples_sync(sensor_key)
+            self._load_numeric_samples_sync(sensor_key, since_utc)
         )
         if interval_rows or active_key is None or fallback_kw is None:
             return interval_rows
         if fallback_kw <= 0.0:
             return interval_rows
+        if since_utc is not None and self._has_interval_history_sync(sensor_key):
+            return interval_rows
 
-        event_rows = self._load_event_samples_sync(active_key)
+        event_rows = self._load_event_samples_sync(active_key, since_utc)
         if not event_rows:
             return interval_rows
         return self._build_active_interval_energy_rows(event_rows, fallback_kw)
 
-    def _build_appliance_subtraction_rows_sync(self) -> list[_IntervalEnergyRow]:
+    def _has_interval_history_sync(self, sensor_key: str) -> bool:
+        """Return whether a sensor has at least two samples to form an interval."""
+        db = self._ensure_db()
+        row = db.execute(
+            "SELECT COUNT(*) FROM "
+            "(SELECT 1 FROM raw_samples WHERE sensor_key = ? LIMIT 2)",
+            (sensor_key,),
+        ).fetchone()
+        return bool(row and row[0] >= 2)
+
+    def _build_appliance_subtraction_rows_sync(
+        self, since_utc: datetime | None = None
+    ) -> list[_IntervalEnergyRow]:
         """Collect all known appliance interval rows to subtract from the meter."""
         rows: list[_IntervalEnergyRow] = []
         rows.extend(
@@ -1586,6 +1651,7 @@ class HouseholdForecastCoordinator:
                     if self._water_heater_power_w is not None
                     else None
                 ),
+                since_utc=since_utc,
             )
         )
         rows.extend(
@@ -1597,6 +1663,7 @@ class HouseholdForecastCoordinator:
                     if self._central_heating_power_w is not None
                     else None
                 ),
+                since_utc=since_utc,
             )
         )
         rows.extend(
@@ -1607,6 +1674,7 @@ class HouseholdForecastCoordinator:
                     if self._pool_pump_power_w is not None
                     else None
                 ),
+                since_utc=since_utc,
             )
         )
         rows.extend(
@@ -1617,6 +1685,7 @@ class HouseholdForecastCoordinator:
                     if self._dehumidifier_power_w is not None
                     else None
                 ),
+                since_utc=since_utc,
             )
         )
         return rows
@@ -2413,11 +2482,25 @@ class HouseholdForecastCoordinator:
             (key, self._format_utc_timestamp(timestamp)),
         )
 
+    def _incremental_rebuild_start_utc(self) -> datetime | None:
+        """Return where an incremental rebuild starts, or None for a full one.
+
+        The first rebuild after startup is always full, so changed settings or
+        repaired raw data reach the stored history. Later ones only redo the
+        recent slots instead of reloading every retained raw sample.
+        """
+        if not self._history_rebuilt_in_full or self._last_finalized_slot_utc is None:
+            return None
+        return self._floor_to_slot_start_utc(self._last_finalized_slot_utc) - (
+            timedelta(minutes=SLOT_MINUTES * INCREMENTAL_REBUILD_MARGIN_SLOTS)
+        )
+
     def _rebuild_history_sync(self, now_utc: datetime) -> bool:
         """Rebuild interval energy, slot rows, and forecast history."""
-        samples = self._load_meter_samples_sync()
+        since_utc = self._incremental_rebuild_start_utc()
+        samples = self._load_meter_samples_sync(since_utc)
         interval_rows = self._build_interval_energy_rows(samples)
-        appliance_rows = self._build_appliance_subtraction_rows_sync()
+        appliance_rows = self._build_appliance_subtraction_rows_sync(since_utc)
 
         db = self._ensure_db()
         updated = False
@@ -2427,17 +2510,20 @@ class HouseholdForecastCoordinator:
                 minutes=SLOT_MINUTES
             )
 
-            rebuild_start_slot_utc: datetime | None = None
-            earliest_interval_slot_utc = self._floor_to_slot_start_utc(
-                interval_rows[0].ts_from_utc
-            )
-            rebuild_start_slot_utc = earliest_interval_slot_utc
-            if self._last_finalized_slot_utc is not None:
-                rebuild_start_slot_utc = min(
-                    rebuild_start_slot_utc,
-                    self._floor_to_slot_start_utc(self._last_finalized_slot_utc)
-                    - timedelta(minutes=SLOT_MINUTES),
+            if since_utc is not None:
+                # The window's first interval may start long before it, so
+                # never derive the start from the interval rows here.
+                rebuild_start_slot_utc = since_utc
+            else:
+                rebuild_start_slot_utc = self._floor_to_slot_start_utc(
+                    interval_rows[0].ts_from_utc
                 )
+                if self._last_finalized_slot_utc is not None:
+                    rebuild_start_slot_utc = min(
+                        rebuild_start_slot_utc,
+                        self._floor_to_slot_start_utc(self._last_finalized_slot_utc)
+                        - timedelta(minutes=SLOT_MINUTES),
+                    )
 
             if rebuild_start_slot_utc <= latest_closed_slot_utc:
                 slot_accumulators = self._build_slot_accumulators(
@@ -2479,6 +2565,7 @@ class HouseholdForecastCoordinator:
 
         if updated:
             db.commit()
+        self._history_rebuilt_in_full = True
         return updated
 
     async def _async_finalize_history(self, now_utc: datetime | None = None) -> bool:

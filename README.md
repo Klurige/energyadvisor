@@ -123,7 +123,9 @@ visible in HA.
 A companion SQLite history file at
 `.storage/energyadvisor_household_forecast_<entry_id>.db` stores the raw meter
 samples, interval-energy rows, slot rows, forecast checkpoints, and quiet-night
-event rows for the rebuild.
+event rows for the rebuild. After the first full rebuild following a restart,
+each quarter-hour refresh only reloads and rebuilds the most recent slots from
+the raw samples instead of the whole retained history.
 See [docs/householdforecast.md](docs/old/householdforecast.md) for current
 attributes and status messaging.
 
@@ -234,6 +236,13 @@ is preferred only among economically equivalent schedules; it cannot force
 low-value selling. Export must beat wear costs and the value of retaining
 energy, so a high import price does not necessarily justify selling.
 Degraded household forecast quality is included in the recommendation reason.
+The solve runs in an executor thread, never on the Home Assistant event loop,
+and has a 30 second time budget; if it is reached, the best schedule found so
+far is used and the `reason` says so. To avoid solving on every update, the
+schedule is only recalculated when the 15-minute slot changes, prices change,
+the SoC moves by at least 5 percentage points, or a solar or household forecast
+slot moves by more than 0.25 kW; `current_soc_pct` still updates on every SoC
+change.
 The optimizer falls back to a
 `maxuse` schedule with an explicit reason string whenever inputs are invalid
 or the solver fails.

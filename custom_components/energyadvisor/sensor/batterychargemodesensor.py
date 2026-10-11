@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -16,8 +18,10 @@ from homeassistant.util import dt as dt_util
 
 from ..battery_optimizer import (
     BatteryOptimizationInputs,
+    BatteryOptimizationResult,
+    OptimizationSnapshot,
     household_forecast_slots_to_load_forecasts,
-    optimize_battery_schedule,
+    optimize_battery_schedule_if_changed,
 )
 from ..const import (
     CONF_BATTERY_CAPACITY_KWH,
@@ -29,6 +33,7 @@ from ..const import (
     CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
+    DOMAIN,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
 )
@@ -110,6 +115,11 @@ class BatteryChargeModeSensor(SensorEntity):
         self._household_coordinator: HouseholdForecastCoordinator | None = None
         self._modes = default_modes()
         self._current_mode = find_current_mode(self._modes).get("mode", "unknown")
+        # Solving runs off the event loop in a single worker task. Triggers only
+        # set the flag; the worker loops until no request arrived during a solve.
+        self._solve_task: asyncio.Task[None] | None = None
+        self._recalc_requested = False
+        self._last_solved_snapshot: OptimizationSnapshot | None = None
 
         description = SensorEntityDescription(
             key="batterychargemode",
@@ -177,21 +187,55 @@ class BatteryChargeModeSensor(SensorEntity):
             )
             self.async_on_remove(self._remove_soc_listener)
 
-        self.calculate_battery_mode()
-        self.async_write_ha_state()
+        self._request_recalculation()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Stop the solver worker; a solve already running is discarded."""
+        self._recalc_requested = False
+        task, self._solve_task = self._solve_task, None
+        if task is not None and not task.done():
+            task.cancel()
 
     @callback
     def _handle_soc_update(self, _event) -> None:
-        """Recompute the schedule when the battery SoC changes."""
-        self.calculate_battery_mode()
-        self.async_write_ha_state()
+        """Show the new SoC at once and request a (gated) recalculation."""
+        soc_pct = self._read_current_soc_pct()
+        if soc_pct != self._current_soc_pct:
+            self._current_soc_pct = soc_pct
+            self.async_write_ha_state()
+        self._request_recalculation()
 
+    @callback
     def _handle_source_update(self) -> None:
-        """Recompute the schedule when the price sensor changes."""
-        _LOGGER.debug("Prices coming in - updating battery charge mode")
-        self.calculate_battery_mode()
-        _LOGGER.debug("Sending out modes: %s", self._current_mode)
-        self.async_write_ha_state()
+        """Request a recalculation when prices or forecasts change."""
+        _LOGGER.debug("Prices or forecasts changed - requesting battery mode update")
+        self._request_recalculation()
+
+    @callback
+    def _request_recalculation(self) -> None:
+        """Ask the worker to recalculate, starting it if it is idle."""
+        self._recalc_requested = True
+        if self._solve_task is not None and not self._solve_task.done():
+            return
+        self._solve_task = self.hass.async_create_background_task(
+            self._async_recalculation_worker(),
+            f"{DOMAIN} battery charge mode solver",
+        )
+
+    async def _async_recalculation_worker(self) -> None:
+        """Serve recalculation requests one at a time until none are pending."""
+        while self._recalc_requested:
+            self._recalc_requested = False
+            try:
+                applied = await self.async_calculate_battery_mode()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - keep serving later requests
+                _LOGGER.exception("Battery charge mode calculation failed")
+                continue
+            if applied:
+                _LOGGER.debug("Sending out modes: %s", self._current_mode)
+                self.async_write_ha_state()
 
     @property
     def icon(self) -> str:
@@ -240,7 +284,11 @@ class BatteryChargeModeSensor(SensorEntity):
     ) -> BatteryOptimizationInputs:
         """Build the request object used by the optimizer."""
         reference_time = reference_time or dt_util.now()
-        price_rates = list(getattr(self._price_sensor, "_rates", []) or [])
+        # The optimizer runs in an executor thread, so hand it copies.
+        price_rates = [
+            dict(rate) if isinstance(rate, Mapping) else rate
+            for rate in getattr(self._price_sensor, "_rates", []) or []
+        ]
         solar_forecasts = self._read_solar_forecasts()
         current_soc_pct = self._read_current_soc_pct()
         self._current_soc_pct = current_soc_pct
@@ -356,15 +404,39 @@ class BatteryChargeModeSensor(SensorEntity):
 
         return [merged_modes[slot_from] for slot_from in sorted(merged_modes)]
 
-    def calculate_battery_mode(self) -> None:
-        """Calculate the battery schedule and current mode."""
+    async def async_calculate_battery_mode(self) -> bool:
+        """Recalculate the schedule off the event loop and apply the result.
+
+        Returns ``True`` when a new schedule was applied. Returns ``False``
+        when the inputs did not change enough to justify a solve, or when the
+        15-minute slot rolled over mid-solve; the latter schedules a fresh
+        solve rather than applying a schedule that starts in the past.
+        """
         if not self._modes:
             self._modes = default_modes()
 
         reference_time = dt_util.now()
         optimizer_inputs = self._build_optimizer_inputs(reference_time)
-        result = optimize_battery_schedule(optimizer_inputs)
+        snapshot, result = await self.hass.async_add_executor_job(
+            optimize_battery_schedule_if_changed,
+            optimizer_inputs,
+            self._last_solved_snapshot,
+        )
+        if result is None:
+            return False
+        if _slot_start(dt_util.now()) != _slot_start(reference_time):
+            _LOGGER.debug("Discarding battery schedule solved for a past slot")
+            self._recalc_requested = True
+            return False
 
+        self._apply_result(result, reference_time)
+        self._last_solved_snapshot = snapshot
+        return True
+
+    def _apply_result(
+        self, result: BatteryOptimizationResult, reference_time: datetime
+    ) -> None:
+        """Publish an optimizer result as the sensor's schedule and state."""
         self._modes = self._merge_schedule_with_elapsed_modes(
             result.schedule or default_modes(reference_time),
             reference_time,
@@ -383,3 +455,8 @@ class BatteryChargeModeSensor(SensorEntity):
 
         if not self._current_mode:
             self._current_mode = find_current_mode(self._modes).get("mode", "unknown")
+
+
+def _slot_start(value: datetime) -> datetime:
+    """Return the start of the 15-minute slot containing ``value``."""
+    return value.replace(minute=(value.minute // 15) * 15, second=0, microsecond=0)

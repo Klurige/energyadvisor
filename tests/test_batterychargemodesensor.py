@@ -1,5 +1,5 @@
 import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntry
@@ -16,6 +16,7 @@ TEST_TIMEZONE = ZoneInfo("Europe/Helsinki")
 def _build_sensor(now: datetime.datetime) -> BatteryChargeModeSensor:
     hass = MagicMock()
     hass.config = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=lambda func, *args: func(*args))
     hass.config.time_zone = "Europe/Helsinki"
 
     entry = MagicMock(spec=ConfigEntry)
@@ -50,7 +51,7 @@ def _build_sensor(now: datetime.datetime) -> BatteryChargeModeSensor:
         return BatteryChargeModeSensor(hass, entry, device_info, price_sensor)
 
 
-def test_calculate_battery_mode_formats_rate_start_in_local_time():
+async def test_async_calculate_battery_mode_formats_rate_start_in_local_time():
     now = datetime.datetime(2026, 8, 15, 12, 0, tzinfo=TEST_TIMEZONE)
     sensor = _build_sensor(now)
 
@@ -61,7 +62,7 @@ def test_calculate_battery_mode_formats_rate_start_in_local_time():
         "custom_components.energyadvisor.sensor.batterychargemodesensor.dt_util.as_local",
         side_effect=lambda dt: dt.astimezone(TEST_TIMEZONE),
     ):
-        sensor.calculate_battery_mode()
+        await sensor.async_calculate_battery_mode()
 
     assert sensor.state == "maxuse"
     assert [mode["from"] for mode in sensor._modes] == [

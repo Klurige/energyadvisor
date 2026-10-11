@@ -13,9 +13,11 @@ whenever configuration, SoC, price or solver data is invalid or unavailable.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import Any
 
 try:
@@ -45,6 +47,25 @@ def _require_highspy() -> Any:
 DEFAULT_CHARGE_EFFICIENCY = 0.95
 DEFAULT_DISCHARGE_EFFICIENCY = 0.95
 DEFAULT_DEGRADATION_COST = 0.0
+#: Wall-clock budget, in seconds, shared by every pass of one lexicographic
+#: solve. The economic pass may use all of it; tie-break passes split what is
+#: left and keep their best feasible schedule when it runs out.
+DEFAULT_SOLVER_TIME_LIMIT_S = 30.0
+#: Do not start another optional tie-break pass with less time than this left.
+_MIN_TIE_BREAK_TIME_S = 0.5
+#: The economic optimum defines the lexicographic pins, so it is solved exactly.
+_ECONOMIC_MIP_REL_GAP = 0.0
+#: Tie-break objectives only choose among already-pinned schedules, so proving
+#: them to the last digit is not worth the solve time.
+_TIE_BREAK_MIP_REL_GAP = 1e-3
+#: HiGHS ``kSolutionStatusFeasible``: the run produced a feasible incumbent.
+_SOLUTION_STATUS_FEASIBLE = 2
+#: A battery SoC move of at least this many percentage points since the last
+#: solve justifies solving again inside the same 15-minute slot.
+SOC_RESOLVE_THRESHOLD_PCT = 5.0
+#: Solar/load forecast slots must move by more than this many kW since the last
+#: solve to justify solving again inside the same 15-minute slot.
+FORECAST_RESOLVE_THRESHOLD_KW = 0.25
 _EPSILON = 1e-6
 #: Minimum battery export in a ``sell`` slot, in kWh. Keeps ``sell`` and
 #: ``discharge`` distinguishable: a slot labelled ``sell`` must export.
@@ -85,6 +106,7 @@ class BatteryOptimizationInputs:
     charge_efficiency: float = DEFAULT_CHARGE_EFFICIENCY
     discharge_efficiency: float = DEFAULT_DISCHARGE_EFFICIENCY
     degradation_cost: float = DEFAULT_DEGRADATION_COST
+    solver_time_limit_s: float = DEFAULT_SOLVER_TIME_LIMIT_S
 
 
 @dataclass(slots=True)
@@ -144,6 +166,24 @@ class _MilpResult:
     discharge_load_values: list[float]
     discharge_export_values: list[float]
     objective_value: float | None
+    time_limited: bool = False
+
+
+class _SolveFailed(Exception):
+    """Raised inside the solve to abandon it and use the fallback schedule."""
+
+
+class _PassOutcome(Enum):
+    """Result of one pass of the lexicographic solve."""
+
+    #: Solved within the budget; the solution was accepted.
+    SOLVED = "solved"
+    #: Stopped at the time limit; a feasible incumbent was accepted.
+    TIME_LIMITED = "time_limited"
+    #: No time left or no feasible incumbent; the previous solution stands.
+    OUT_OF_TIME = "out_of_time"
+    #: Solver error; the whole solve is abandoned.
+    FAILED = "failed"
 
 
 @dataclass(slots=True)
@@ -729,10 +769,14 @@ def _solve_milp_unsafe(
     if total == 0:
         return None
 
+    deadline = time.monotonic() + max(inputs.solver_time_limit_s, 0.0)
     highs = highspy.Highs()
     highs.setOptionValue("output_flag", False)
+    # The MIP search is serial; extra HiGHS worker threads only compete with
+    # Home Assistant for CPU on small hosts.
+    highs.setOptionValue("threads", 1)
     # Tighter than the lexicographic objective pins below.
-    highs.setOptionValue("mip_rel_gap", 0.0)
+    highs.setOptionValue("mip_rel_gap", _ECONOMIC_MIP_REL_GAP)
     highs.setOptionValue("mip_abs_gap", 1e-8)
     highs.setOptionValue("mip_feasibility_tolerance", 1e-8)
     highs.setOptionValue("primal_feasibility_tolerance", 1e-8)
@@ -1044,9 +1088,29 @@ def _solve_milp_unsafe(
         return status == highspy.HighsStatus.kOk
 
     previous_values: np.ndarray | None = None
+    time_limited = False
 
-    def _run(phase: str) -> bool:
-        nonlocal previous_values
+    def _run(
+        phase: str, *, passes_left: int, rel_gap: float, required: bool = False
+    ) -> _PassOutcome:
+        """Run one pass inside the shared time budget.
+
+        The required economic pass may use all remaining time. Optional
+        tie-break passes split what is left and report ``OUT_OF_TIME`` when
+        they cannot improve on the previous solution, which stays valid.
+        """
+        nonlocal previous_values, time_limited
+        remaining_s = deadline - time.monotonic()
+        if required:
+            pass_limit_s = max(remaining_s, _MIN_TIE_BREAK_TIME_S)
+        elif remaining_s < _MIN_TIE_BREAK_TIME_S:
+            time_limited = True
+            return _PassOutcome.OUT_OF_TIME
+        else:
+            pass_limit_s = remaining_s / max(passes_left, 1)
+        highs.setOptionValue("mip_rel_gap", rel_gap)
+        highs.setOptionValue("time_limit", float(pass_limit_s))
+
         # Each pinned optimum leaves the preceding solution feasible. Supply
         # it explicitly as a MIP start after changing objectives/adding rows.
         if previous_values is not None:
@@ -1057,27 +1121,50 @@ def _solve_milp_unsafe(
                 _LOGGER.warning(
                     "HiGHS rejected the MIP start during %s: %s", phase, status
                 )
-                return False
+                return _PassOutcome.FAILED
         try:
             run_status = highs.run()
         except Exception as exc:  # pragma: no cover - defensive solver guard
             _LOGGER.warning("HiGHS raised an exception while solving: %s", exc)
-            return False
-        if run_status != highspy.HighsStatus.kOk:
-            _LOGGER.warning("HiGHS returned a non-OK run status: %s", run_status)
-            return False
+            return _PassOutcome.FAILED
         model_status = highs.getModelStatus()
-        if model_status != highspy.HighsModelStatus.kOptimal:
+        timed_out = model_status == highspy.HighsModelStatus.kTimeLimit
+        # HiGHS reports a warning status when a run stops at its time limit.
+        if run_status != highspy.HighsStatus.kOk and not timed_out:
+            _LOGGER.warning("HiGHS returned a non-OK run status: %s", run_status)
+            return _PassOutcome.FAILED
+        if not timed_out and model_status != highspy.HighsModelStatus.kOptimal:
             _LOGGER.warning("HiGHS returned status %s during %s", model_status, phase)
-            return False
+            return _PassOutcome.FAILED
         solution = highs.getSolution()
+        if timed_out:
+            time_limited = True
+            if (
+                not solution.value_valid
+                or highs.getInfo().primal_solution_status != _SOLUTION_STATUS_FEASIBLE
+            ):
+                _LOGGER.warning(
+                    "HiGHS hit the %.1fs time limit during %s without a feasible "
+                    "solution",
+                    pass_limit_s,
+                    phase,
+                )
+                return _PassOutcome.OUT_OF_TIME
+            _LOGGER.info(
+                "HiGHS hit the %.1fs time limit during %s; using the best "
+                "feasible solution found",
+                pass_limit_s,
+                phase,
+            )
+            previous_values = np.asarray(solution.col_value, dtype=float)
+            return _PassOutcome.TIME_LIMITED
         if not solution.value_valid:
             _LOGGER.warning(
                 "HiGHS returned an invalid primal solution during %s", phase
             )
-            return False
+            return _PassOutcome.FAILED
         previous_values = np.asarray(solution.col_value, dtype=float)
-        return True
+        return _PassOutcome.SOLVED
 
     # Pass 1: minimize the full economic objective.
     costs = np.zeros(num_cols, dtype=float)
@@ -1093,16 +1180,20 @@ def _solve_milp_unsafe(
 
     if not _set_costs(costs):
         return None
-    if not _run("economic optimization"):
+    tie_break_passes = 2 + (1 if shortfall_idx else 0)
+    outcome = _run(
+        "economic optimization",
+        passes_left=1,
+        rel_gap=_ECONOMIC_MIP_REL_GAP,
+        required=True,
+    )
+    if outcome not in (_PassOutcome.SOLVED, _PassOutcome.TIME_LIMITED):
         return None
-    solution = highs.getSolution()
-    if not solution.value_valid:
-        _LOGGER.warning("HiGHS returned an invalid primal solution")
-        return None
-    try:
-        obj_1 = float(highs.getObjectiveValue())
-    except Exception:  # pragma: no cover - defensive solver guard
-        return None
+    # An incumbent from a timed-out economic pass is feasible but may be
+    # suboptimal; the pin below then locks in that incumbent's objective.
+    refine = outcome is _PassOutcome.SOLVED
+    assert previous_values is not None
+    obj_1 = float(np.dot(costs, previous_values))
 
     nonzero_indices = np.nonzero(costs)[0]
     _add_highs_row(
@@ -1113,75 +1204,84 @@ def _solve_milp_unsafe(
         costs[nonzero_indices].tolist(),
     )
 
-    # Reserve solar headroom only among economically equivalent schedules.
-    # Charging a monetary penalty every pre-solar slot otherwise rewards
-    # dumping energy immediately, even at a loss or before a higher price.
-    if shortfall_idx:
-        headroom_costs = np.zeros(num_cols, dtype=float)
-        for index in shortfall_idx.values():
-            headroom_costs[index] = penalty_factor
-        if not _set_costs(headroom_costs) or not _run("solar headroom tie-break"):
-            return None
-        headroom_objective = float(highs.getObjectiveValue())
-        _add_highs_row(
-            highs,
-            -infinity,
-            headroom_objective + _EPSILON,
-            list(shortfall_idx.values()),
-            [penalty_factor] * len(shortfall_idx),
-        )
+    def _tie_break(phase: str, passes_left: int) -> bool:
+        """Run an optional pass; return True when another one may follow."""
+        outcome = _run(phase, passes_left=passes_left, rel_gap=_TIE_BREAK_MIP_REL_GAP)
+        if outcome is _PassOutcome.FAILED:
+            raise _SolveFailed
+        return outcome is _PassOutcome.SOLVED
 
-    # Prefer automatic self-consumption among the remaining schedules.
-    costs2 = np.zeros(num_cols, dtype=float)
-    for t in range(total):
-        costs2[m_maxuse_idx[t]] = -1.0
-    if not _set_costs(costs2):
-        return None
-    if not _run("maxuse tie-break"):
-        return None
-    solution = highs.getSolution()
-    if not solution.value_valid:
-        return None
-    maxuse_2 = round(
-        sum(float(solution.col_value[m_maxuse_idx[t]]) for t in range(total))
-    )
+    try:
+        # Reserve solar headroom only among economically equivalent schedules.
+        # Charging a monetary penalty every pre-solar slot otherwise rewards
+        # dumping energy immediately, even at a loss or before a higher price.
+        if refine and shortfall_idx:
+            headroom_costs = np.zeros(num_cols, dtype=float)
+            for index in shortfall_idx.values():
+                headroom_costs[index] = penalty_factor
+            if not _set_costs(headroom_costs):
+                return None
+            refine = _tie_break("solar headroom tie-break", tie_break_passes)
+            tie_break_passes -= 1
+            assert previous_values is not None
+            headroom_objective = float(np.dot(headroom_costs, previous_values))
+            _add_highs_row(
+                highs,
+                -infinity,
+                headroom_objective + _EPSILON,
+                list(shortfall_idx.values()),
+                [penalty_factor] * len(shortfall_idx),
+            )
 
-    _add_highs_row(
-        highs,
-        maxuse_2 - 1e-6,
-        infinity,
-        [m_maxuse_idx[t] for t in range(total)],
-        [1.0] * total,
-    )
+        # Prefer automatic self-consumption among the remaining schedules.
+        if refine:
+            costs2 = np.zeros(num_cols, dtype=float)
+            for t in range(total):
+                costs2[m_maxuse_idx[t]] = -1.0
+            if not _set_costs(costs2):
+                return None
+            refine = _tie_break("maxuse tie-break", tie_break_passes)
+            tie_break_passes -= 1
+            assert previous_values is not None
+            maxuse_2 = round(
+                sum(float(previous_values[m_maxuse_idx[t]]) for t in range(total))
+            )
+            _add_highs_row(
+                highs,
+                maxuse_2 - 1e-6,
+                infinity,
+                [m_maxuse_idx[t] for t in range(total)],
+                [1.0] * total,
+            )
 
-    # Minimize throughput with a small preference for standby over inactive
-    # action labels. The economic objective and maxuse count remain pinned.
-    costs3 = np.zeros(num_cols, dtype=float)
-    for t in range(total):
-        costs3[ch_grid_idx[t]] = 1.0
-        costs3[ch_pv_idx[t]] = 1.0
-        costs3[dis_load_idx[t]] = 1.0
-        costs3[dis_export_idx[t]] = 1.0
-        for index in (m_charge_idx[t], m_discharge_idx[t], m_sell_idx[t]):
-            costs3[index] = _ACTIVE_LABEL_TIE_BREAK_WEIGHT
-    if not _set_costs(costs3):
-        return None
-    if not _run("flow tie-break"):
+        # Minimize throughput with a small preference for standby over inactive
+        # action labels. The economic objective and maxuse count remain pinned.
+        if refine:
+            costs3 = np.zeros(num_cols, dtype=float)
+            for t in range(total):
+                costs3[ch_grid_idx[t]] = 1.0
+                costs3[ch_pv_idx[t]] = 1.0
+                costs3[dis_load_idx[t]] = 1.0
+                costs3[dis_export_idx[t]] = 1.0
+                for index in (m_charge_idx[t], m_discharge_idx[t], m_sell_idx[t]):
+                    costs3[index] = _ACTIVE_LABEL_TIE_BREAK_WEIGHT
+            if not _set_costs(costs3):
+                return None
+            _tie_break("flow tie-break", tie_break_passes)
+    except _SolveFailed:
         return None
 
-    solution = highs.getSolution()
-    if not solution.value_valid:
-        _LOGGER.warning("HiGHS returned an invalid primal solution")
-        return None
+    assert previous_values is not None
+    values = previous_values
 
     mode_indexes: list[int] = []
     for t in range(total):
         mode_values = [
-            float(solution.col_value[m_charge_idx[t]]),
-            float(solution.col_value[m_discharge_idx[t]]),
-            float(solution.col_value[m_sell_idx[t]]),
-            float(solution.col_value[m_maxuse_idx[t]]),
-            float(solution.col_value[m_standby_idx[t]]),
+            float(values[m_charge_idx[t]]),
+            float(values[m_discharge_idx[t]]),
+            float(values[m_sell_idx[t]]),
+            float(values[m_maxuse_idx[t]]),
+            float(values[m_standby_idx[t]]),
         ]
         mode_indexes.append(max(range(5), key=lambda index: mode_values[index]))
 
@@ -1192,18 +1292,15 @@ def _solve_milp_unsafe(
 
     return _MilpResult(
         mode_indexes=mode_indexes,
-        soc_values=[float(solution.col_value[index]) for index in soc_idx],
-        grid_import_values=[float(solution.col_value[index]) for index in g_imp_idx],
-        grid_export_values=[float(solution.col_value[index]) for index in g_exp_idx],
-        charge_grid_values=[float(solution.col_value[index]) for index in ch_grid_idx],
-        charge_pv_values=[float(solution.col_value[index]) for index in ch_pv_idx],
-        discharge_load_values=[
-            float(solution.col_value[index]) for index in dis_load_idx
-        ],
-        discharge_export_values=[
-            float(solution.col_value[index]) for index in dis_export_idx
-        ],
+        soc_values=[float(values[index]) for index in soc_idx],
+        grid_import_values=[float(values[index]) for index in g_imp_idx],
+        grid_export_values=[float(values[index]) for index in g_exp_idx],
+        charge_grid_values=[float(values[index]) for index in ch_grid_idx],
+        charge_pv_values=[float(values[index]) for index in ch_pv_idx],
+        discharge_load_values=[float(values[index]) for index in dis_load_idx],
+        discharge_export_values=[float(values[index]) for index in dis_export_idx],
         objective_value=objective_value,
+        time_limited=time_limited,
     )
 
 
@@ -1384,6 +1481,12 @@ def optimize_battery_schedule(
     solar_reason = (
         " while reserving headroom for forecast solar" if has_headroom else ""
     )
+    time_limit_reason = (
+        f" (solver time limit of {inputs.solver_time_limit_s:g}s reached; "
+        "schedule may be slightly suboptimal)"
+        if milp_result.time_limited
+        else ""
+    )
 
     return BatteryOptimizationResult(
         schedule=schedule,
@@ -1392,12 +1495,128 @@ def optimize_battery_schedule(
         reason=(
             f"Optimized {horizon_hours:g}h price schedule with HiGHS "
             f"from {current_soc_pct:.1f}% SoC{solar_reason}"
-            f"{clamp_reason}{load_reason}."
+            f"{clamp_reason}{load_reason}{time_limit_reason}."
         ),
         optimized=True,
         solver="HIGHS",
         objective_value=milp_result.objective_value,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class OptimizationSnapshot:
+    """Comparable summary of the inputs a schedule was solved from.
+
+    Used to skip re-solving when nothing that matters has changed since the
+    last solve. The forecast series are per price slot, in kW.
+    """
+
+    slot_start: datetime
+    soc_pct: float | None
+    config: tuple[Any, ...]
+    prices: tuple[tuple[datetime, datetime, float, float], ...]
+    solar_kw: tuple[float, ...]
+    load_kw: tuple[float, ...]
+
+
+def _align_to_quarter_hour(value: datetime) -> datetime:
+    """Return the start of the 15-minute slot containing ``value``."""
+    return value.replace(
+        minute=value.minute - value.minute % 15, second=0, microsecond=0
+    )
+
+
+def snapshot_optimization_inputs(
+    inputs: BatteryOptimizationInputs,
+) -> OptimizationSnapshot:
+    """Summarize ``inputs`` for change detection between solves.
+
+    The price grid is built from the start of the current 15-minute slot so a
+    snapshot only changes when the data changes, not as the clock advances
+    within a slot.
+    """
+    horizon_hours = min(max(inputs.horizon_hours, 1.0), 48.0)
+    slot_start = _align_to_quarter_hour(inputs.reference_time)
+    aligned = replace(inputs, reference_time=slot_start, horizon_hours=horizon_hours)
+    slots = _normalize_slots(aligned)
+    pv_kwh = _energy_by_price_slot_from_power(slots, _normalize_solar_slots(aligned))
+    load_kwh = _energy_by_price_slot_from_energy(slots, _normalize_load_slots(aligned))
+    return OptimizationSnapshot(
+        slot_start=slot_start,
+        soc_pct=inputs.current_soc_pct,
+        config=(
+            inputs.optimization_enabled,
+            inputs.capacity_kwh,
+            inputs.max_charge_power_w,
+            inputs.max_discharge_power_w,
+            inputs.min_soc_pct,
+            inputs.max_soc_pct,
+            horizon_hours,
+            inputs.charge_efficiency,
+            inputs.discharge_efficiency,
+            inputs.degradation_cost,
+        ),
+        prices=tuple((s.start, s.end, s.cost, s.credit) for s in slots),
+        solar_kw=tuple(e / s.duration_hours for e, s in zip(pv_kwh, slots)),
+        load_kw=tuple(e / s.duration_hours for e, s in zip(load_kwh, slots)),
+    )
+
+
+def _series_changed(
+    previous: Sequence[float], current: Sequence[float], threshold: float
+) -> bool:
+    if len(previous) != len(current):
+        return True
+    return any(abs(a - b) > threshold for a, b in zip(previous, current))
+
+
+def needs_reoptimization(
+    previous: OptimizationSnapshot | None,
+    current: OptimizationSnapshot,
+    *,
+    soc_threshold_pct: float = SOC_RESOLVE_THRESHOLD_PCT,
+    forecast_threshold_kw: float = FORECAST_RESOLVE_THRESHOLD_KW,
+) -> bool:
+    """Return whether ``current`` differs enough from ``previous`` to re-solve.
+
+    A solve is always due for a new 15-minute slot, changed settings or prices,
+    or SoC becoming available/unavailable. Within a slot, SoC must move by
+    ``soc_threshold_pct`` and any forecast slot by more than
+    ``forecast_threshold_kw`` kW (or change shape) to justify another solve.
+    """
+    if previous is None:
+        return True
+    if previous.slot_start != current.slot_start or previous.config != current.config:
+        return True
+    if (previous.soc_pct is None) != (current.soc_pct is None):
+        return True
+    if (
+        previous.soc_pct is not None
+        and current.soc_pct is not None
+        and abs(current.soc_pct - previous.soc_pct) >= soc_threshold_pct
+    ):
+        return True
+    if previous.prices != current.prices:
+        return True
+    return _series_changed(
+        previous.solar_kw, current.solar_kw, forecast_threshold_kw
+    ) or _series_changed(previous.load_kw, current.load_kw, forecast_threshold_kw)
+
+
+def optimize_battery_schedule_if_changed(
+    inputs: BatteryOptimizationInputs,
+    previous: OptimizationSnapshot | None,
+) -> tuple[OptimizationSnapshot, BatteryOptimizationResult | None]:
+    """Solve only when ``inputs`` changed materially since ``previous``.
+
+    Returns the snapshot of ``inputs`` and the result, or ``None`` as the
+    result when the previous schedule is still good. Blocking: run it in an
+    executor.
+    """
+    snapshot = snapshot_optimization_inputs(inputs)
+    if not needs_reoptimization(previous, snapshot):
+        return snapshot, None
+    return snapshot, optimize_battery_schedule(inputs)
 
 
 @dataclass(slots=True)
