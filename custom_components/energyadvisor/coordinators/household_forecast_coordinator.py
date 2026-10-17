@@ -59,10 +59,34 @@ FORECAST_HOURS = 48
 FORECAST_SLOT_COUNT = int((FORECAST_HOURS * 60) / SLOT_MINUTES)
 FORECAST_COLD_START_MIN_FINALIZED_SLOTS = 24
 FORECAST_MIN_HISTORY_DAYS = 7
+SLOTS_PER_DAY = int((24 * 60) / SLOT_MINUTES)
 FORECAST_TRAINING_WINDOW_DAYS = 56
 FORECAST_HISTORY_WINDOW_DAYS = 180
 FORECAST_TREND_WINDOW_SLOTS = 8
+FORECAST_TREND_BLEND = 0.35
+FORECAST_TREND_DECAY_SLOTS = 24.0
+FORECAST_TREND_MAX_STALE_MINUTES = 60
 FORECAST_RECENCY_HALF_LIFE_DAYS = 21.0
+# Hard physical ceiling for a household meter. Anything above it is a counter
+# jump or unit glitch, never real consumption.
+MAX_PLAUSIBLE_LOAD_KW = 50.0
+# Training rows far above the bulk of the history are dropped as glitches.
+OUTLIER_PERCENTILE = 0.99
+OUTLIER_PERCENTILE_MULTIPLE = 3.0
+OUTLIER_MIN_CUTOFF_KW = 5.0
+OUTLIER_MIN_ROWS = 100
+# Share of the weight trimmed from each end of a seasonal bucket's values.
+TRIMMED_MEAN_FRACTION = 0.1
+TRIMMED_MEAN_MIN_SAMPLES = 5
+# A fully observed slot with (almost) no metered energy means the meter source
+# was not counting, not that the household used nothing.
+STALLED_SLOT_MAX_GROSS_KWH = 0.001
+STALLED_SLOT_MIN_QUALITY = 0.35
+STALLED_DAY_MAX_SHARE = 0.5
+STALLED_DAY_MIN_SLOTS = 24
+# Counter noise below this is dropped silently, larger drops are resets.
+NEGATIVE_DELTA_WARNING_KWH = 0.5
+SPARSE_SAMPLING_MIN_QUALITY = 0.9
 RESIDUAL_ALPHA = 0.35
 RESIDUAL_ACTIVATION_THRESHOLD_KW = 0.25
 RESIDUAL_MAX_CORRECTION_KW = 1.5
@@ -103,6 +127,7 @@ QUALITY_WARNING_SPARSE_SAMPLING = "sparse_sampling"
 QUALITY_WARNING_INVALID_SAMPLE_DROPPED = "invalid_sample_dropped"
 QUALITY_WARNING_WARMING_UP = "warming_up"
 QUALITY_WARNING_META_KEY = "quality_warning_state"
+METER_ENTITY_META_KEY = "meter_entity_id"
 
 
 @dataclass(slots=True)
@@ -179,25 +204,49 @@ class _SlotAccumulator:
 
 @dataclass(slots=True)
 class _WeightedStats:
-    """Track a weighted mean for the seasonal profile."""
+    """Track weighted samples for the seasonal profile."""
 
-    weighted_sum: float = 0.0
-    weight_sum: float = 0.0
-    count: int = 0
+    samples: list[tuple[float, float]] = field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        """Return the number of accumulated samples."""
+        return len(self.samples)
 
     def add(self, value: float, weight: float) -> None:
         """Accumulate one weighted sample."""
         if weight <= 0.0 or not math.isfinite(value):
             return
-        self.weighted_sum += value * weight
-        self.weight_sum += weight
-        self.count += 1
+        self.samples.append((value, weight))
 
     def mean(self) -> float | None:
-        """Return the weighted mean when at least one sample exists."""
-        if self.weight_sum <= 0.0:
+        """Return the weighted mean, trimmed at both ends once there is enough data.
+
+        Trimming removes a fixed share of the total weight from the lowest and
+        the highest values, so a single glitch cannot dominate a seasonal bucket.
+        """
+        total_weight = sum(weight for _value, weight in self.samples)
+        if total_weight <= 0.0:
             return None
-        return self.weighted_sum / self.weight_sum
+
+        ordered = sorted(self.samples)
+        values = [value for value, _weight in ordered]
+        weights = [weight for _value, weight in ordered]
+        if len(values) >= TRIMMED_MEAN_MIN_SAMPLES:
+            trim_weight = TRIMMED_MEAN_FRACTION * total_weight
+            for order in (range(len(weights)), range(len(weights) - 1, -1, -1)):
+                remaining = trim_weight
+                for index in order:
+                    cut = min(weights[index], remaining)
+                    weights[index] -= cut
+                    remaining -= cut
+                    if remaining <= 0.0:
+                        break
+
+        kept_weight = sum(weights)
+        if kept_weight <= 0.0:
+            return sum(v * w for v, w in self.samples) / total_weight
+        return sum(v * w for v, w in zip(values, weights)) / kept_weight
 
 
 @dataclass(slots=True)
@@ -211,6 +260,9 @@ class _HistoricalSlotRow:
     slot_index: int
     day_type: str
     is_holiday: bool
+    # The meter reported no energy while the slot was observed, so it was not
+    # counting and the slot says nothing about the household.
+    stalled: bool = False
 
 
 @dataclass(slots=True)
@@ -245,6 +297,9 @@ class HouseholdForecastCoordinator:
         self._status_message: str = STATIC_REASON
         self._last_forecast_generation = dt_util.now().strftime("%Y-%m-%dT%H:%M")
         self._forecast_slots: list[dict[str, object]] = []
+        # Seasonal forecast before the residual correction. Residuals are
+        # measured against it so a correction never feeds back into itself.
+        self._base_forecast_slots: list[dict[str, object]] = []
         self._forecast_summary = _ForecastSummary()
         self._store = Store(
             hass,
@@ -324,14 +379,8 @@ class HouseholdForecastCoordinator:
 
     @property
     def load_forecast_kw(self) -> float:
-        """Return the current household load forecast."""
-        if self._forecast_slots:
-            first_slot = self._forecast_slots[0]
-            try:
-                return round(float(first_slot["load"]), 3)
-            except (KeyError, TypeError, ValueError):
-                pass
-        return self._load_forecast_kw
+        """Return the household load forecast for the current slot."""
+        return self.current_load_kw
 
     @property
     def base_load_kw(self) -> float:
@@ -340,8 +389,8 @@ class HouseholdForecastCoordinator:
 
     @property
     def household_load_forecast_w(self) -> float:
-        """Return the current household load forecast in watts."""
-        return self._load_forecast_kw * 1000.0
+        """Return the current-slot household load forecast in watts."""
+        return self.current_load_kw * 1000.0
 
     @property
     def household_base_load_w(self) -> float:
@@ -363,14 +412,20 @@ class HouseholdForecastCoordinator:
         current in-progress slot is not always index 0. This looks up the
         slot that actually covers "now" rather than assuming index 0.
         """
-        slots = self.forecast_slots
+        current_load_kw = self._current_slot_load_kw(self.forecast_slots)
+        if current_load_kw is not None:
+            return current_load_kw
+        return round(self._load_forecast_kw, 3)
+
+    def _current_slot_load_kw(self, slots: list[dict[str, object]]) -> float | None:
+        """Return the load of the slot covering the current local time."""
         index = self._current_slot_index_local()
         if slots and 0 <= index < len(slots):
             try:
                 return round(float(slots[index]["load"]), 3)
             except (KeyError, TypeError, ValueError):
                 pass
-        return round(self._load_forecast_kw, 3)
+        return None
 
     def _current_slot_index_local(self, now: datetime | None = None) -> int:
         """Return the index of the slot covering the current local time."""
@@ -930,14 +985,65 @@ class HouseholdForecastCoordinator:
         )
         db.commit()
 
+    def _reset_history_if_meter_changed_sync(self) -> None:
+        """Drop meter-derived history when the configured meter entity changed.
+
+        A new meter entity has its own counter, so mixing its samples with the
+        old ones creates jumps and rows that belong to a different source.
+        Appliance samples and events are independent of the meter and are kept.
+        """
+        db = self._ensure_db()
+        current_entity = self._meter_entity
+        row = db.execute(
+            "SELECT value FROM meta WHERE key = ?", (METER_ENTITY_META_KEY,)
+        ).fetchone()
+        stored_entity = str(row[0]) if row and row[0] else None
+        if stored_entity == current_entity:
+            return
+
+        if stored_entity is not None:
+            _LOGGER.warning(
+                "Household meter changed from %s to %s; discarding meter history",
+                stored_entity,
+                current_entity,
+            )
+            db.execute(
+                "DELETE FROM raw_samples WHERE sensor_key = ?",
+                (CONF_POWER_METER_CONSUMPTION,),
+            )
+            db.execute(
+                "DELETE FROM interval_energy WHERE sensor_key = ?",
+                (CONF_POWER_METER_CONSUMPTION,),
+            )
+            db.execute("DELETE FROM slot_rows")
+            db.execute("DELETE FROM forecast_runs")
+            db.execute(
+                "DELETE FROM meta WHERE key IN (?, ?, ?)",
+                (
+                    "last_finalized_slot_utc",
+                    "last_generation_utc",
+                    QUALITY_WARNING_META_KEY,
+                ),
+            )
+            self._last_finalized_slot_utc = None
+            self._last_generation_utc = None
+            self._history_rebuilt_in_full = False
+        db.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (METER_ENTITY_META_KEY, current_entity),
+        )
+        db.commit()
+
     def _load_capture_cache_sync(self) -> None:
         """Load the most recent persisted raw rows into memory."""
+        self._reset_history_if_meter_changed_sync()
         db = self._ensure_db()
         self._latest_numeric_samples.clear()
         self._latest_event_samples.clear()
         self._quality_warning_state.clear()
         self._last_polled_utc_by_key.clear()
         self._forecast_slots = []
+        self._base_forecast_slots = []
         self._forecast_summary = _ForecastSummary()
 
         for target in self._capture_targets.values():
@@ -1021,10 +1127,10 @@ class HouseholdForecastCoordinator:
                 for row in forecast_rows
             ]
             if self._forecast_slots:
-                try:
-                    self._load_forecast_kw = float(self._forecast_slots[0]["load"])
-                except (TypeError, ValueError, KeyError):
-                    self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
+                current_load_kw = self._current_slot_load_kw(self._forecast_slots)
+                if current_load_kw is None:
+                    current_load_kw = STATIC_LOAD_FORECAST_KW
+                self._load_forecast_kw = current_load_kw
 
         history_rows = self._load_historical_slot_rows_sync()
         if history_rows:
@@ -1245,7 +1351,11 @@ class HouseholdForecastCoordinator:
         """Return the scale needed to convert a unit to kW or kWh."""
         if unit is None:
             return None
-        normalized = unit.strip().lower()
+        stripped = unit.strip()
+        # Unit symbols are case sensitive: "mW" is milliwatt, "MW" megawatt.
+        if stripped in {"mW", "mWh"}:
+            return 1e-6
+        normalized = stripped.lower()
         return {
             "w": 0.001,
             "kw": 1.0,
@@ -1349,19 +1459,24 @@ class HouseholdForecastCoordinator:
                 return None
             delta_kwh = current_kwh - previous_kwh
             if delta_kwh < 0:
-                self._record_quality_warning_sync(
-                    QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
-                )
+                # Meters report slightly decreasing values now and then. Only a
+                # real drop, like a counter reset, is worth a quality warning.
+                if delta_kwh <= -NEGATIVE_DELTA_WARNING_KWH:
+                    self._record_quality_warning_sync(
+                        QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
+                    )
                 return None
 
         interval_hours = interval_sec / 3600.0
         interval_kw = delta_kwh / interval_hours if interval_hours > 0 else 0.0
-        if not math.isfinite(delta_kwh) or not math.isfinite(interval_kw):
-            self._record_quality_warning_sync(
-                QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
-            )
-            return None
-        if delta_kwh < 0:
+        if (
+            not math.isfinite(delta_kwh)
+            or not math.isfinite(interval_kw)
+            or delta_kwh < 0
+            or interval_kw > MAX_PLAUSIBLE_LOAD_KW
+        ):
+            # Includes counter jumps, for example after the meter entity was
+            # swapped for one with a different counter.
             self._record_quality_warning_sync(
                 QUALITY_WARNING_INVALID_SAMPLE_DROPPED, current.ts_utc
             )
@@ -1415,18 +1530,27 @@ class HouseholdForecastCoordinator:
         slot_start_utc: datetime,
         accumulator: _SlotAccumulator,
     ) -> tuple[str, float, float, int, float, str]:
-        """Convert one slot accumulator into a database row."""
-        slot_duration_hours = SLOT_MINUTES / 60.0
+        """Convert one slot accumulator into a database row.
+
+        The load is the average power over the time the slot was actually
+        observed, so a partly observed slot is not biased towards zero.
+        ``slot_energy_kwh`` stays the measured net energy.
+        """
+        slot_duration_seconds = SLOT_MINUTES * 60
         gross_slot_energy_kwh = accumulator.slot_energy_kwh
         net_slot_energy_kwh = max(
             0.0, gross_slot_energy_kwh - accumulator.subtracted_energy_kwh
         )
-        load_kw = (
-            net_slot_energy_kwh / slot_duration_hours
-            if slot_duration_hours > 0
-            else 0.0
-        )
-        slot_duration_seconds = SLOT_MINUTES * 60
+        load_kw = 0.0
+        if accumulator.observed_seconds > 0:
+            # Extrapolate the measured gross energy to the whole slot before the
+            # known appliance energy, which is tracked per slot, is removed.
+            full_slot_gross_kwh = gross_slot_energy_kwh * (
+                slot_duration_seconds / accumulator.observed_seconds
+            )
+            load_kw = max(
+                0.0, full_slot_gross_kwh - accumulator.subtracted_energy_kwh
+            ) / (SLOT_MINUTES / 60.0)
         coverage_fraction = min(
             1.0, accumulator.observed_seconds / slot_duration_seconds
         )
@@ -1718,10 +1842,81 @@ class HouseholdForecastCoordinator:
             for index in range(FORECAST_SLOT_COUNT)
         ]
 
+    def _parse_slot_row(self, row: Any) -> _HistoricalSlotRow:
+        """Convert one slot_rows record into a historical row.
+
+        Rows that cannot describe real consumption get a quality score of zero:
+        a non-finite or implausible load, or a slot where the meter was observed
+        but reported no energy at all. Legacy rows are judged here too, so the
+        gate also covers data stored before these checks existed.
+        """
+        slot_start_utc = self._parse_utc_timestamp(str(row[0]))
+        features: Mapping[str, Any] = {}
+        features_json = row[4]
+        if isinstance(features_json, str) and features_json:
+            try:
+                parsed_features = json.loads(features_json)
+            except json.JSONDecodeError:
+                parsed_features = {}
+            if isinstance(parsed_features, Mapping):
+                features = parsed_features
+        slot_index_value = features.get("slot_index")
+        try:
+            slot_index = int(slot_index_value)
+        except (TypeError, ValueError):
+            slot_index = self._slot_index(slot_start_utc)
+        day_type_value = features.get("day_type")
+        day_type = (
+            str(day_type_value)
+            if isinstance(day_type_value, str) and day_type_value
+            else self._slot_day_type(slot_start_utc)
+        )
+        is_holiday = bool(features.get("is_holiday", False))
+
+        try:
+            load_kw = float(row[1])
+        except (TypeError, ValueError):
+            load_kw = math.nan
+        quality_score = float(row[3] or 0.0)
+        sample_count = int(row[2] or 0)
+
+        gross_value = features.get("gross_load_kwh")
+        stalled = (
+            sample_count > 0
+            and quality_score >= STALLED_SLOT_MIN_QUALITY
+            and isinstance(gross_value, (int, float))
+            and gross_value <= STALLED_SLOT_MAX_GROSS_KWH
+        )
+        implausible = (
+            not math.isfinite(load_kw)
+            or load_kw < 0.0
+            or load_kw > MAX_PLAUSIBLE_LOAD_KW
+        )
+        if stalled or implausible:
+            quality_score = 0.0
+        if not math.isfinite(load_kw):
+            load_kw = 0.0
+
+        return _HistoricalSlotRow(
+            slot_start_utc=slot_start_utc,
+            load_kw=load_kw,
+            quality_score=quality_score,
+            sample_count=sample_count,
+            slot_index=slot_index,
+            day_type=day_type,
+            is_holiday=is_holiday,
+            stalled=stalled,
+        )
+
     def _load_historical_slot_rows_sync(
         self, now_utc: datetime | None = None
     ) -> list[_HistoricalSlotRow]:
-        """Load retained slot rows used to fit the learned baseline model."""
+        """Load the usable retained slot rows used to fit the learned baseline.
+
+        Slots that could not have been measured correctly are left out, and so
+        are whole local days where the meter source was mostly not counting,
+        such as a backlog of zero slots before a meter entity was swapped.
+        """
         db = self._ensure_db()
         cutoff_utc = self._format_utc_timestamp(
             self._normalize_utc_timestamp(now_utc)
@@ -1732,42 +1927,28 @@ class HouseholdForecastCoordinator:
             "FROM slot_rows WHERE slot_start_utc >= ? ORDER BY slot_start_utc ASC",
             (cutoff_utc,),
         ).fetchall()
-        history_rows: list[_HistoricalSlotRow] = []
-        for row in rows:
-            slot_start_utc = self._parse_utc_timestamp(str(row[0]))
-            features: Mapping[str, Any] = {}
-            features_json = row[4]
-            if isinstance(features_json, str) and features_json:
-                try:
-                    parsed_features = json.loads(features_json)
-                except json.JSONDecodeError:
-                    parsed_features = {}
-                if isinstance(parsed_features, Mapping):
-                    features = parsed_features
-            slot_index_value = features.get("slot_index")
-            try:
-                slot_index = int(slot_index_value)
-            except (TypeError, ValueError):
-                slot_index = self._slot_index(slot_start_utc)
-            day_type_value = features.get("day_type")
-            day_type = (
-                str(day_type_value)
-                if isinstance(day_type_value, str) and day_type_value
-                else self._slot_day_type(slot_start_utc)
-            )
-            is_holiday = bool(features.get("is_holiday", False))
-            history_rows.append(
-                _HistoricalSlotRow(
-                    slot_start_utc=slot_start_utc,
-                    load_kw=float(row[1]),
-                    quality_score=float(row[3] or 0.0),
-                    sample_count=int(row[2] or 0),
-                    slot_index=slot_index,
-                    day_type=day_type,
-                    is_holiday=is_holiday,
-                )
-            )
-        return history_rows
+        parsed_rows = [self._parse_slot_row(row) for row in rows]
+
+        slots_per_date: dict[Any, int] = {}
+        stalled_per_date: dict[Any, int] = {}
+        for history_row in parsed_rows:
+            local_date = dt_util.as_local(history_row.slot_start_utc).date()
+            slots_per_date[local_date] = slots_per_date.get(local_date, 0) + 1
+            if history_row.stalled:
+                stalled_per_date[local_date] = stalled_per_date.get(local_date, 0) + 1
+        stalled_dates = {
+            local_date
+            for local_date, stalled_count in stalled_per_date.items()
+            if slots_per_date[local_date] >= STALLED_DAY_MIN_SLOTS
+            and stalled_count / slots_per_date[local_date] >= STALLED_DAY_MAX_SHARE
+        }
+
+        return [
+            history_row
+            for history_row in parsed_rows
+            if history_row.quality_score > 0.0
+            and dt_util.as_local(history_row.slot_start_utc).date() not in stalled_dates
+        ]
 
     def _build_forecast_summary(
         self,
@@ -1812,7 +1993,10 @@ class HouseholdForecastCoordinator:
             quality_warnings = set()
 
         recent_rows = self._load_recent_closed_slot_rows_sync(normalized_now_utc)
-        if any(row.sample_count <= 0 or row.quality_score < 1.0 for row in recent_rows):
+        if any(
+            row.sample_count <= 0 or row.quality_score < SPARSE_SAMPLING_MIN_QUALITY
+            for row in recent_rows
+        ):
             quality_warnings.add(QUALITY_WARNING_SPARSE_SAMPLING)
             if quality_status == QUALITY_STATUS_OK:
                 quality_status = QUALITY_STATUS_DEGRADED
@@ -1922,43 +2106,7 @@ class HouseholdForecastCoordinator:
             ),
         ).fetchall()
 
-        recent_rows: list[_HistoricalSlotRow] = []
-        for row in rows:
-            slot_start_utc = self._parse_utc_timestamp(str(row[0]))
-            features: Mapping[str, Any] = {}
-            features_json = row[4]
-            if isinstance(features_json, str) and features_json:
-                try:
-                    parsed_features = json.loads(features_json)
-                except json.JSONDecodeError:
-                    parsed_features = {}
-                if isinstance(parsed_features, Mapping):
-                    features = parsed_features
-
-            slot_index_value = features.get("slot_index")
-            try:
-                slot_index = int(slot_index_value)
-            except (TypeError, ValueError):
-                slot_index = self._slot_index(slot_start_utc)
-
-            day_type_value = features.get("day_type")
-            day_type = (
-                str(day_type_value)
-                if isinstance(day_type_value, str) and day_type_value
-                else self._slot_day_type(slot_start_utc)
-            )
-            is_holiday = bool(features.get("is_holiday", False))
-            recent_rows.append(
-                _HistoricalSlotRow(
-                    slot_start_utc=slot_start_utc,
-                    load_kw=float(row[1]),
-                    quality_score=float(row[3] or 0.0),
-                    sample_count=int(row[2] or 0),
-                    slot_index=slot_index,
-                    day_type=day_type,
-                    is_holiday=is_holiday,
-                )
-            )
+        recent_rows = [self._parse_slot_row(row) for row in rows]
         return recent_rows[-RESIDUAL_APPLY_HORIZON_SLOTS:]
 
     def _compute_residual_correction_kw_sync(
@@ -1986,7 +2134,7 @@ class HouseholdForecastCoordinator:
             return 0.0
 
         if previous_forecast_slots is None:
-            previous_forecast_slots = self._forecast_slots
+            previous_forecast_slots = self._base_forecast_slots
         if not previous_forecast_slots:
             return 0.0
 
@@ -2093,10 +2241,11 @@ class HouseholdForecastCoordinator:
         self, now_utc: datetime
     ) -> tuple[list[dict[str, object]], _ForecastSummary]:
         """Build the current 192-slot forecast from retained slot history."""
-        previous_forecast_slots = [dict(slot) for slot in self._forecast_slots]
         history_rows = self._load_historical_slot_rows_sync(now_utc)
         summary = self._build_forecast_summary(history_rows, now_utc)
+        forecast_slot_starts_utc = self._forecast_slot_starts_utc(now_utc)
         if len(history_rows) < FORECAST_COLD_START_MIN_FINALIZED_SLOTS:
+            self._base_forecast_slots = []
             forecast_slots = self._build_constant_forecast_slots(
                 STATIC_LOAD_FORECAST_KW,
                 now_utc,
@@ -2104,27 +2253,41 @@ class HouseholdForecastCoordinator:
             return (
                 self._preserve_historical_forecast_slots(
                     forecast_slots,
-                    self._forecast_slot_starts_utc(now_utc),
+                    forecast_slot_starts_utc,
                     now_utc,
                 ),
                 summary,
             )
 
-        model_rows = history_rows
-        max_model_rows = FORECAST_TRAINING_WINDOW_DAYS * FORECAST_SLOT_COUNT
-        if len(model_rows) > max_model_rows:
-            model_rows = model_rows[-max_model_rows:]
+        training_start_utc = now_utc - timedelta(days=FORECAST_TRAINING_WINDOW_DAYS)
+        model_rows = [
+            row for row in history_rows if row.slot_start_utc >= training_start_utc
+        ]
+        if not model_rows:
+            # Long outage: fall back to the most recent rows that exist.
+            model_rows = history_rows[-FORECAST_TRAINING_WINDOW_DAYS * SLOTS_PER_DAY :]
 
-        row_count = len(model_rows)
-        if row_count == 0:
+        if len(model_rows) >= OUTLIER_MIN_ROWS:
+            sorted_loads = sorted(row.load_kw for row in model_rows)
+            percentile_index = min(
+                len(sorted_loads) - 1, int(OUTLIER_PERCENTILE * len(sorted_loads))
+            )
+            outlier_cutoff_kw = max(
+                OUTLIER_MIN_CUTOFF_KW,
+                OUTLIER_PERCENTILE_MULTIPLE * sorted_loads[percentile_index],
+            )
+            model_rows = [row for row in model_rows if row.load_kw <= outlier_cutoff_kw]
+
+        if not model_rows:
+            self._base_forecast_slots = []
             forecast_slots = self._build_constant_forecast_slots(
-                self._load_forecast_kw,
+                STATIC_LOAD_FORECAST_KW,
                 now_utc,
             )
             return (
                 self._preserve_historical_forecast_slots(
                     forecast_slots,
-                    self._forecast_slot_starts_utc(now_utc),
+                    forecast_slot_starts_utc,
                     now_utc,
                 ),
                 summary,
@@ -2140,7 +2303,7 @@ class HouseholdForecastCoordinator:
                 0.0,
                 (now_utc - row.slot_start_utc).total_seconds() / 86400.0,
             )
-            recency_weight = math.exp(-age_days / FORECAST_RECENCY_HALF_LIFE_DAYS)
+            recency_weight = 0.5 ** (age_days / FORECAST_RECENCY_HALF_LIFE_DAYS)
             weight = max(0.0, row.quality_score) * recency_weight
             if weight <= 0.0:
                 continue
@@ -2162,69 +2325,86 @@ class HouseholdForecastCoordinator:
 
         global_mean = global_stats.mean()
         if global_mean is None:
-            global_mean = self._load_forecast_kw
+            global_mean = STATIC_LOAD_FORECAST_KW
 
-        recent_rows = [row for row in model_rows if row.quality_score > 0.0]
-        if len(recent_rows) >= FORECAST_TREND_WINDOW_SLOTS * 2:
-            recent_window = recent_rows[-FORECAST_TREND_WINDOW_SLOTS:]
-            previous_window = recent_rows[
-                -FORECAST_TREND_WINDOW_SLOTS * 2 : -FORECAST_TREND_WINDOW_SLOTS
-            ]
-            recent_mean = sum(row.load_kw for row in recent_window) / len(recent_window)
-            previous_mean = sum(row.load_kw for row in previous_window) / len(
-                previous_window
+        learned = summary.learning_nights >= FORECAST_MIN_HISTORY_DAYS
+
+        def baseline_for(day_type: str, slot_index: int) -> float:
+            """Return the seasonal baseline, falling back to coarser buckets."""
+            exact_stats = weighted_stats.get((day_type, slot_index))
+            if learned and exact_stats is not None and exact_stats.count >= 2:
+                exact_mean = exact_stats.mean()
+                if exact_mean is not None:
+                    return exact_mean
+            for stats in (slot_stats.get(slot_index), day_type_stats.get(day_type)):
+                if stats is not None:
+                    fallback_mean = stats.mean()
+                    if fallback_mean is not None:
+                        return fallback_mean
+            return global_mean
+
+        current_slot_start_utc = self._floor_to_slot_start_utc(now_utc)
+        trend_delta = 0.0
+        recent_rows = model_rows[-FORECAST_TREND_WINDOW_SLOTS:]
+        if learned and len(recent_rows) >= FORECAST_TREND_WINDOW_SLOTS:
+            latest_end_utc = recent_rows[-1].slot_start_utc + timedelta(
+                minutes=SLOT_MINUTES
             )
-            trend_delta = recent_mean - previous_mean
-        else:
-            trend_delta = 0.0
+            if (
+                now_utc - latest_end_utc
+            ).total_seconds() <= FORECAST_TREND_MAX_STALE_MINUTES * 60:
+                # How far the latest slots sit above or below their own seasonal
+                # baseline; the offset fades out over the following hours.
+                trend_delta = sum(
+                    row.load_kw - baseline_for(row.day_type, row.slot_index)
+                    for row in recent_rows
+                ) / len(recent_rows)
+                trend_delta = max(
+                    -RESIDUAL_MAX_CORRECTION_KW,
+                    min(RESIDUAL_MAX_CORRECTION_KW, trend_delta),
+                )
 
         local_now = dt_util.as_local(now_utc)
         start_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        learned = summary.learning_nights >= FORECAST_MIN_HISTORY_DAYS
         forecast_slots: list[dict[str, object]] = []
-        forecast_slot_starts_utc: list[datetime] = []
 
-        for index in range(FORECAST_SLOT_COUNT):
+        for index, slot_start_utc in enumerate(forecast_slot_starts_utc):
             slot_start_local = start_local + timedelta(minutes=SLOT_MINUTES * index)
-            slot_start_utc = dt_util.as_utc(slot_start_local)
-            forecast_slot_starts_utc.append(slot_start_utc)
-            day_type = self._slot_day_type(slot_start_utc)
-            slot_index = self._slot_index(slot_start_utc)
+            base_load_kw = baseline_for(
+                self._slot_day_type(slot_start_utc), self._slot_index(slot_start_utc)
+            )
 
-            exact_mean = weighted_stats.get((day_type, slot_index))
-            slot_mean = slot_stats.get(slot_index)
-            day_mean = day_type_stats.get(day_type)
-            if learned and exact_mean is not None and exact_mean.count >= 2:
-                base_load_kw = exact_mean.mean()
-            elif slot_mean is not None and slot_mean.mean() is not None:
-                base_load_kw = slot_mean.mean()
-            elif day_mean is not None and day_mean.mean() is not None:
-                base_load_kw = day_mean.mean()
-            else:
-                base_load_kw = global_mean
-
-            if base_load_kw is None:
-                base_load_kw = self._load_forecast_kw
-
-            if learned:
-                trend_decay = math.exp(-index / 24.0)
-                base_load_kw = max(
-                    0.0,
-                    base_load_kw + (trend_delta * 0.35 * trend_decay),
+            if trend_delta != 0.0 and slot_start_utc >= current_slot_start_utc:
+                slots_ahead = (
+                    slot_start_utc - current_slot_start_utc
+                ).total_seconds() / (SLOT_MINUTES * 60)
+                base_load_kw += (
+                    trend_delta
+                    * FORECAST_TREND_BLEND
+                    * math.exp(-slots_ahead / FORECAST_TREND_DECAY_SLOTS)
                 )
 
             forecast_slots.append(
                 {
                     "from": slot_start_local.strftime("%Y-%m-%dT%H:%M"),
-                    "load": round(base_load_kw, 3),
+                    "load": round(max(0.0, base_load_kw), 3),
                 }
             )
 
+        # The residual correction compares measurements with this uncorrected
+        # forecast, so keep it (with its past slots frozen) before correcting.
+        base_forecast_slots = self._preserve_historical_forecast_slots(
+            forecast_slots,
+            forecast_slot_starts_utc,
+            now_utc,
+            previous_slots=self._base_forecast_slots,
+        )
         residual_correction_kw = self._compute_residual_correction_kw_sync(
             now_utc,
-            previous_forecast_slots=previous_forecast_slots,
+            previous_forecast_slots=self._base_forecast_slots,
             learning_nights=summary.learning_nights,
         )
+        self._base_forecast_slots = base_forecast_slots
         if residual_correction_kw != 0.0:
             forecast_slots = self._apply_residual_correction_to_forecast_slots(
                 forecast_slots,
@@ -2250,26 +2430,27 @@ class HouseholdForecastCoordinator:
         """Store the latest forecast and visible learning summary."""
         self._forecast_slots = [dict(slot) for slot in forecast_slots]
         self._forecast_summary = summary
-        if forecast_slots:
-            try:
-                self._load_forecast_kw = float(forecast_slots[0]["load"])
-            except (TypeError, ValueError, KeyError):
-                self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
-        else:
-            self._load_forecast_kw = STATIC_LOAD_FORECAST_KW
+        current_load_kw = self._current_slot_load_kw(self._forecast_slots)
+        self._load_forecast_kw = (
+            current_load_kw if current_load_kw is not None else STATIC_LOAD_FORECAST_KW
+        )
 
     def _preserve_historical_forecast_slots(
         self,
         forecast_slots: list[dict[str, object]],
         slot_starts_utc: list[datetime],
         now_utc: datetime,
+        *,
+        previous_slots: list[dict[str, object]] | None = None,
     ) -> list[dict[str, object]]:
         """Keep already-published historical slots stable across refreshes."""
+        if previous_slots is None:
+            previous_slots = self._forecast_slots
         if not forecast_slots:
             return []
         if len(forecast_slots) != len(slot_starts_utc):
             return [dict(slot) for slot in forecast_slots]
-        if not self._forecast_slots or len(self._forecast_slots) != len(forecast_slots):
+        if not previous_slots or len(previous_slots) != len(forecast_slots):
             return [dict(slot) for slot in forecast_slots]
 
         current_anchor_text = (
@@ -2277,7 +2458,7 @@ class HouseholdForecastCoordinator:
             .replace(hour=0, minute=0, second=0, microsecond=0)
             .strftime("%Y-%m-%dT%H:%M")
         )
-        first_existing = self._forecast_slots[0]
+        first_existing = previous_slots[0]
         previous_anchor = (
             str(first_existing.get("from", ""))
             if isinstance(first_existing, Mapping)
@@ -2292,7 +2473,7 @@ class HouseholdForecastCoordinator:
             zip(forecast_slots, slot_starts_utc)
         ):
             if slot_start_utc < current_slot_start_utc:
-                previous_slot = self._forecast_slots[index]
+                previous_slot = previous_slots[index]
                 if isinstance(previous_slot, Mapping):
                     merged_slots.append(dict(previous_slot))
                     continue

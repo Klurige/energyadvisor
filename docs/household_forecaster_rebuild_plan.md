@@ -29,7 +29,7 @@ Architecture constraint for this plan: **one coordinator + one sensor**.
 ### Output unit
 
 - `load` is **kW average over each 15-minute slot** (not kWh/Wh).
-- Sensor `state` is the current slot's `load` in kW.
+- Sensor `state` is the current slot's `load` in kW. The `load_forecast_kw` and `household_load_forecast_w` values follow the same current slot (not `forecasts[0]`, which is local midnight).
 
 ### Input-to-target normalization (energy-delta first)
 
@@ -41,13 +41,27 @@ Architecture constraint for this plan: **one coordinator + one sensor**.
 1. Power sensor (`W` or `kW`): for consecutive samples `(t0, p0)` and `(t1, p1)`, compute interval energy by trapezoidal integration:  
    `delta_kwh = ((p0_kw + p1_kw) / 2) * ((t1 - t0)_seconds / 3600)`.
 2. Energy counter (`Wh` or `kWh`, monotonic): for consecutive samples `(t0, e0)` and `(t1, e1)`, compute:  
-   `delta_kwh = max(0, e1_kwh - e0_kwh)`; negative delta is treated as counter reset and dropped.
+   `delta_kwh = e1_kwh - e0_kwh`; a negative delta is treated as a counter reset and dropped. Decreases smaller than `NEGATIVE_DELTA_WARNING_KWH = 0.5` kWh are meter jitter and are dropped silently; larger decreases also raise `invalid_sample_dropped`.
 3. Allocate each interval `delta_kwh` proportionally into all overlapping 15-minute slots.
-4. Compute slot output as: `slot_load_kw = slot_energy_kwh / 0.25`.
+4. Compute slot output from the observed part of the slot, not from the whole slot:  
+   `slot_load_kw = max(0, gross_kwh * 900 / observed_seconds - subtracted_appliance_kwh) / 0.25`.  
+   A slot that was only partly covered by samples therefore keeps its true average power instead of being diluted. The stored `slot_energy_kwh` stays the measured net energy.
 5. Derive helper power per interval for event logic:  
    `interval_kw = delta_kwh / interval_hours`.
 
 Short spikes then only affect the slot by their true delivered energy, reducing sensitivity to brief peaks. Any edge threshold below is only for parallax matching and must never be used to discard real appliance load.
+
+Unit symbols are case sensitive: `mW`/`mWh` are milli-units (x1e-6 kW/kWh) while `MW`/`MWh` are mega-units.
+
+### Data hygiene (implausible and stalled meter data)
+
+The meter is the only required input, so the forecaster defends against sources that stop counting or change identity:
+
+- **Plausibility cap:** `MAX_PLAUSIBLE_LOAD_KW = 50`. An interval whose derived power exceeds the cap (for example a counter jumping from one meter to another) is dropped and raises `invalid_sample_dropped`. Slot rows above the cap are never used for training.
+- **Stalled slots:** a slot with samples, quality >= `STALLED_SLOT_MIN_QUALITY = 0.35` and gross energy <= 0.001 kWh is a stalled-meter slot. It is not a real zero and is excluded from training.
+- **Stalled days:** a local day with at least `STALLED_DAY_MIN_SLOTS = 24` stored slot rows of which at least `STALLED_DAY_MAX_SHARE = 50%` are stalled is excluded entirely, because the catch-up burst that follows a stall is not representative either.
+- **Outlier cutoff:** with at least `OUTLIER_MIN_ROWS = 100` training rows, rows above `max(5 kW, 3 x P99)` are ignored.
+- **Meter entity change:** the configured meter entity id is stored in `meta` (`meter_entity_id`). If it differs on startup, the meter `raw_samples`, `interval_energy`, `slot_rows`, `forecast_runs` and the finalize/generation markers are purged because the new entity has an unrelated counter. Appliance samples and events are kept. A database without the key only records the current id and keeps its history.
 
 If the configured sensor does not represent gross household demand, user must provide a derived/template sensor that does.
 
@@ -245,8 +259,16 @@ On startup:
 
 - Statistical model only (no heavy external ML dependency required):
   - seasonal profile by slot-of-day and day-type,
-  - recency weighting (exponential decay),
+  - recency weighting (exponential decay with a 21-day half-life: `weight = 0.5 ** (age_days / 21)`),
+  - weighted trimmed mean per bucket (10% of the total weight trimmed from each tail once a bucket has at least 5 samples),
   - short-term trend blend from recent slots.
+
+Bucket fallback order: `(day_type, slot_index)` with at least 2 samples, then slot-of-day, then day-type, then the global mean, then the constant 0.60 kW.
+
+### Short-term trend
+
+- The trend delta is the mean of `(actual - baseline)` over the last 8 closed model rows, clamped to +/-1.5 kW. It is zero when the model is not learned, when fewer than 8 rows exist, or when the newest row ended more than 60 minutes ago.
+- It is applied as `delta * 0.35 * exp(-slots_ahead / 24)` and only to the current slot and later. `slots_ahead` counts from the current slot, so the trend fades from "now", not from midnight. Past slots keep their published values.
 
 ### Day-type and holiday handling
 
@@ -261,8 +283,8 @@ On startup:
 ### Training windows
 
 - minimum history to enable learned profile: 7 days
-- preferred training window: last 56 days
-- hard maximum history used for fitting: 180 days
+- preferred training window: last 56 days, measured in time (`slot_start >= now - 56 days`), not in a row count. If no rows fall inside the window, the newest `56 x 96` rows are used instead.
+- hard maximum history retained: 180 days
 
 ### Retrain cadence
 
@@ -304,6 +326,8 @@ If the configured inputs are already energy counters and you do not need lagged 
 - Max correction clamp: +/-1.5 kW
 - Apply horizon: next 8 slots with per-slot decay factor 0.82
 
+Residuals are measured against the **uncorrected** forecast (the learned baseline plus trend, kept in memory between refreshes). Comparing against the published, already-corrected forecast would let the correction cancel its own error signal. With no uncorrected reference available the correction is 0.
+
 Correction is always on after warm-up and quality checks; if checks fail, correction contribution is set to 0.
 
 ## 7) Fallback behavior
@@ -314,7 +338,8 @@ Correction is always on after warm-up and quality checks; if checks fail, correc
 | Warm-up (24 slots to <7 days) | Use simple recency profile, no advanced context | 192 slots + valid state |
 | Required sensor outage <30 min | Keep latest forecast, mark stale | 192 slots + valid state + reason |
 | Required sensor outage >=30 min | Disable short-term correction, use seasonal baseline from stored history | 192 slots + valid state + reason |
-| Sparse sampling (intervals >300 s) | Keep energy aggregation, disable spike-sensitive logic on sparse intervals, quality-flag affected slots | 192 slots + valid state + reason |
+| Sparse sampling (intervals >300 s) | Keep energy aggregation, disable spike-sensitive logic on sparse intervals, quality-flag affected slots; the `sparse_sampling` warning needs a recent closed slot with no samples or quality < 0.9 | 192 slots + valid state + reason |
+| Stalled or swapped meter (zero-energy slots, implausible jumps) | Exclude stalled slots/days and rows above the plausibility cap from training; purge meter history when the meter entity changes | 192 slots + valid state |
 | Optional sensor outage | Disable only affected feature | 192 slots + valid state |
 | Invalid sample (NaN/unit mismatch/reset delta) | Drop sample, increment quality warning | 192 slots + valid state |
 | No usable history + missing live data | Constant 0.60 kW hard fallback | 192 slots + valid state + reason |

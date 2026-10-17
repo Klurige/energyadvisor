@@ -30,9 +30,11 @@ from custom_components.energyadvisor.const import (
 from custom_components.energyadvisor.coordinators.household_forecast_coordinator import (
     DB_SCHEMA_VERSION,
     FORECAST_SLOT_COUNT,
+    METER_ENTITY_META_KEY,
     STATIC_LOAD_FORECAST_KW,
     STATIC_REASON,
     HouseholdForecastCoordinator,
+    _WeightedStats,
 )
 
 UTC = timezone.utc
@@ -65,6 +67,92 @@ def _make_coordinator(
     if extra_options:
         entry.options.update(extra_options)
     return HouseholdForecastCoordinator(hass, entry), hass
+
+
+_COORDINATOR_MODULE = (
+    "custom_components.energyadvisor.coordinators.household_forecast_coordinator"
+)
+
+
+async def _setup_coordinator(coordinator: HouseholdForecastCoordinator) -> None:
+    """Run async_setup with storage and listeners stubbed out."""
+    store = MagicMock()
+    store.async_load = AsyncMock(return_value=None)
+    store.async_save = AsyncMock()
+    with (
+        patch(f"{_COORDINATOR_MODULE}.Store", return_value=store),
+        patch(
+            f"{_COORDINATOR_MODULE}.async_track_state_change_event",
+            return_value=lambda: None,
+        ),
+        patch(
+            f"{_COORDINATOR_MODULE}.async_track_time_change",
+            return_value=lambda: None,
+        ),
+        patch(
+            f"{_COORDINATOR_MODULE}.async_track_time_interval",
+            return_value=lambda: None,
+        ),
+    ):
+        coordinator._store = store
+        await coordinator.async_setup()
+
+
+async def _capture_meter(
+    coordinator: HouseholdForecastCoordinator,
+    state: str,
+    unit: str,
+    moment: datetime,
+) -> None:
+    meter_target = coordinator._capture_targets["sensor.household_meter"]
+    await coordinator._async_capture_target(
+        meter_target,
+        SimpleNamespace(
+            entity_id=meter_target.entity_id,
+            state=state,
+            attributes={"unit_of_measurement": unit},
+            last_updated=moment,
+        ),
+        source="event",
+    )
+
+
+def _insert_slot_row(
+    db: sqlite3.Connection,
+    slot_start: datetime,
+    load_kw: float,
+    *,
+    quality: float = 1.0,
+    gross_kwh: float | None = None,
+) -> None:
+    """Insert one slot row; ``gross_kwh`` mimics the stored gross energy feature."""
+    local_start = dt_util.as_local(slot_start)
+    features: dict[str, object] = {
+        "slot_index": (local_start.hour * 60 + local_start.minute) // 15,
+        "day_type": "workday",
+        "is_holiday": False,
+    }
+    if gross_kwh is not None:
+        features["gross_load_kwh"] = gross_kwh
+    db.execute(
+        "INSERT OR REPLACE INTO slot_rows "
+        "(slot_start_utc, slot_energy_kwh, load_kw, sample_count, "
+        "quality_score, features_json) VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            slot_start.isoformat(timespec="seconds"),
+            load_kw * 0.25,
+            load_kw,
+            1,
+            quality,
+            json.dumps(features, separators=(",", ":"), sort_keys=True),
+        ),
+    )
+
+
+def _local_midnight_utc(moment: datetime) -> datetime:
+    """Return the UTC time of local midnight on the local day of ``moment``."""
+    local = dt_util.as_local(moment)
+    return dt_util.as_utc(local.replace(hour=0, minute=0, second=0, microsecond=0))
 
 
 @pytest.mark.asyncio
@@ -471,12 +559,13 @@ async def test_coordinator_finalizes_interval_energy_and_slot_rows(
             "2026-09-05T12:15:00+00:00",
         ]
         assert slot_rows[0][1] == pytest.approx(0.1875)
-        assert slot_rows[0][2] == pytest.approx(0.75)
+        # Load is the average over the observed part of the slot, not the slot.
+        assert slot_rows[0][2] == pytest.approx(1.5)
         assert slot_rows[0][3] == 1
         assert slot_rows[0][4] == pytest.approx(0.25)
         assert json.loads(slot_rows[0][5])["required_missing"] is True
         assert slot_rows[1][1] == pytest.approx(0.0625)
-        assert slot_rows[1][2] == pytest.approx(0.25)
+        assert slot_rows[1][2] == pytest.approx(1.5)
         assert slot_rows[1][3] == 1
         assert slot_rows[1][4] == pytest.approx(1 / 12)
         assert json.loads(slot_rows[1][5])["required_missing"] is True
@@ -732,7 +821,7 @@ async def test_coordinator_marks_sparse_interval_quality(tmp_path: Path) -> None
             "features_json FROM slot_rows ORDER BY slot_start_utc"
         ).fetchone()
         assert slot_row[0] == pytest.approx(1.0)
-        assert slot_row[1] == pytest.approx(4.0)
+        assert slot_row[1] == pytest.approx(7.5)
         assert slot_row[2] == 1
         assert 0.0 < slot_row[3] < 0.5
         features = json.loads(slot_row[4])
@@ -850,8 +939,18 @@ async def test_coordinator_builds_learned_forecast_from_slot_history(
             == FORECAST_SLOT_COUNT
         )
 
-    assert coordinator.load_forecast_kw == pytest.approx(0.72)
-    assert coordinator.household_load_forecast_w == pytest.approx(720.0)
+    # The state follows the slot covering "now" (00:20 is the second slot), not
+    # the midnight-anchored first slot of the forecast.
+    second_slot_time = dt_util.as_local(
+        datetime(2026, 9, 9, 12, 0, tzinfo=UTC)
+    ).replace(hour=0, minute=20, second=0, microsecond=0)
+    with patch(
+        "custom_components.energyadvisor.coordinators.household_forecast_coordinator.dt_util.now",
+        return_value=second_slot_time,
+    ):
+        assert coordinator.load_forecast_kw == pytest.approx(1.28)
+        assert coordinator.household_load_forecast_w == pytest.approx(1280.0)
+        assert coordinator.current_load_kw == pytest.approx(1.28)
     assert coordinator.learning_nights == 8
     assert coordinator.data_since == dt_util.as_local(base_day).date().isoformat()
     assert (
@@ -1256,9 +1355,14 @@ def test_coordinator_current_load_kw_uses_current_slot_not_first_slot(
     ):
         current_index = coordinator._current_slot_index_local()
         current_value = coordinator.current_load_kw
+        legacy_value = coordinator.load_forecast_kw
+        legacy_watts = coordinator.household_load_forecast_w
 
     assert current_index != 0
     assert current_value == pytest.approx(float(current_index))
+    # The attribute aliases follow the current slot too, not forecasts[0].
+    assert legacy_value == pytest.approx(current_value)
+    assert legacy_watts == pytest.approx(current_value * 1000.0)
     # forecasts[0] still reflects the frozen midnight slot, distinct from state.
     assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.0)
     assert current_value != coordinator.forecast_slots[0]["load"]
@@ -1422,3 +1526,367 @@ async def test_coordinator_prunes_aged_rows(tmp_path: Path) -> None:
             "SELECT value FROM meta WHERE key = ?",
             ("last_raw_prune_utc",),
         ).fetchone()[0] == now_utc.isoformat(timespec="seconds")
+
+
+def test_weighted_stats_trims_extremes_only_with_enough_samples() -> None:
+    """A single glitch must not drag a bucket, but tiny buckets stay untrimmed."""
+    stats = _WeightedStats()
+    for value in [1.0] * 9 + [100.0]:
+        stats.add(value, 1.0)
+    assert stats.count == 10
+    assert stats.mean() == pytest.approx(1.0)
+
+    small = _WeightedStats()
+    small.add(1.0, 1.0)
+    small.add(100.0, 1.0)
+    assert small.mean() == pytest.approx(50.5)
+
+    empty = _WeightedStats()
+    empty.add(float("nan"), 1.0)
+    empty.add(5.0, 0.0)
+    assert empty.count == 0
+    assert empty.mean() is None
+
+
+def test_unit_scale_distinguishes_milli_and_mega_units(tmp_path: Path) -> None:
+    """Unit symbols are case sensitive: mW is a milliwatt, MW a megawatt."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+
+    assert coordinator._unit_scale("mW") == pytest.approx(1e-6)
+    assert coordinator._unit_scale("mWh") == pytest.approx(1e-6)
+    assert coordinator._unit_scale("MW") == pytest.approx(1000.0)
+    assert coordinator._unit_scale("MWh") == pytest.approx(1000.0)
+    assert coordinator._unit_scale("W") == pytest.approx(0.001)
+    assert coordinator._unit_scale("kWh") == pytest.approx(1.0)
+    assert coordinator._value_to_kw(1_000_000.0, "mW") == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_coordinator_drops_implausible_counter_jump(tmp_path: Path) -> None:
+    """A counter jump from swapping the meter source is not household energy."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(coordinator)
+
+    first = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
+    await _capture_meter(coordinator, "16242.9", "kWh", first)
+    await _capture_meter(coordinator, "24146.2", "kWh", first + timedelta(minutes=5))
+    now = first + timedelta(minutes=15)
+
+    assert await coordinator._async_finalize_history(now)
+
+    with sqlite3.connect(coordinator._db_path()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM interval_energy").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM slot_rows").fetchone()[0] == 0
+    assert "invalid_sample_dropped" in coordinator._active_quality_warning_codes(now)
+
+
+@pytest.mark.asyncio
+async def test_coordinator_ignores_counter_jitter_but_flags_resets(
+    tmp_path: Path,
+) -> None:
+    """Tiny counter decreases are noise; a large drop is a reset worth reporting."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(coordinator)
+
+    first = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
+    now = first + timedelta(minutes=15)
+    await _capture_meter(coordinator, "100.000", "kWh", first)
+    await _capture_meter(coordinator, "99.990", "kWh", first + timedelta(minutes=5))
+
+    assert await coordinator._async_finalize_history(now)
+    assert "invalid_sample_dropped" not in coordinator._active_quality_warning_codes(
+        now
+    )
+
+    await _capture_meter(coordinator, "2.000", "kWh", first + timedelta(minutes=10))
+
+    assert await coordinator._async_finalize_history(now)
+    assert "invalid_sample_dropped" in coordinator._active_quality_warning_codes(now)
+
+
+@pytest.mark.asyncio
+async def test_history_excludes_stalled_and_implausible_slots(tmp_path: Path) -> None:
+    """Slots from a meter that was not counting must not train the forecast."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(coordinator)
+    db = coordinator._ensure_db()
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    healthy_day = _local_midnight_utc(now - timedelta(days=5))
+    catch_up_day = _local_midnight_utc(now - timedelta(days=4))
+    mixed_day = _local_midnight_utc(now - timedelta(days=3))
+    step = timedelta(minutes=15)
+
+    for index in range(96):
+        _insert_slot_row(db, healthy_day + step * index, 0.5, gross_kwh=0.125)
+        # A stuck counter followed by a catch-up burst: mostly zero slots.
+        if index < 80:
+            _insert_slot_row(db, catch_up_day + step * index, 0.0, gross_kwh=0.0)
+        else:
+            _insert_slot_row(db, catch_up_day + step * index, 6.0, gross_kwh=1.5)
+        if index < 4:
+            _insert_slot_row(db, mixed_day + step * index, 0.0, gross_kwh=0.0)
+        elif index == 4:
+            _insert_slot_row(db, mixed_day + step * index, 31613.5, gross_kwh=7903.4)
+        else:
+            _insert_slot_row(db, mixed_day + step * index, 0.5, gross_kwh=0.125)
+    db.commit()
+
+    rows = coordinator._load_historical_slot_rows_sync(now)
+
+    local_dates = {dt_util.as_local(row.slot_start_utc).date() for row in rows}
+    assert local_dates == {
+        dt_util.as_local(healthy_day).date(),
+        dt_util.as_local(mixed_day).date(),
+    }
+    # Healthy day, plus the mixed day minus 4 stalled and 1 implausible slot.
+    assert len(rows) == 96 + 91
+    assert all(0.0 < row.load_kw <= 50.0 and not row.stalled for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_forecast_ignores_counter_glitch_and_outlier_slots(
+    tmp_path: Path,
+) -> None:
+    """A poisoned slot row must not leak into the published forecast."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(coordinator)
+    db = coordinator._ensure_db()
+    now = datetime(2026, 9, 9, 12, 0, tzinfo=UTC)
+    first_day = _local_midnight_utc(now) - timedelta(days=8)
+    step = timedelta(minutes=15)
+
+    for day in range(8):
+        for index in range(16):
+            _insert_slot_row(db, first_day + timedelta(days=day) + step * index, 0.5)
+    # A counter jump, and a spike that passes the hard cap but towers over history.
+    _insert_slot_row(db, first_day + timedelta(days=2) + step, 31613.5)
+    _insert_slot_row(db, first_day + timedelta(days=3) + step * 2, 20.0)
+    db.commit()
+
+    assert await coordinator._async_finalize_history(now)
+
+    loads = [float(slot["load"]) for slot in coordinator.forecast_slots]
+    assert max(loads) == pytest.approx(0.5, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_forecast_trains_on_the_last_56_days_only(tmp_path: Path) -> None:
+    """The training window is measured in days, not in rows."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(coordinator)
+    db = coordinator._ensure_db()
+    now = datetime(2026, 9, 9, 12, 0, tzinfo=UTC)
+    midnight = _local_midnight_utc(now)
+    step = timedelta(minutes=15)
+
+    for day in range(1, 9):
+        for index in range(4):
+            _insert_slot_row(db, midnight - timedelta(days=day) + step * index, 1.0)
+    for day in range(70, 100):
+        for index in range(4):
+            _insert_slot_row(db, midnight - timedelta(days=day) + step * index, 5.0)
+    db.commit()
+
+    assert await coordinator._async_finalize_history(now)
+
+    assert float(coordinator.forecast_slots[0]["load"]) == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_forecast_trend_is_anchored_at_now_and_fades(tmp_path: Path) -> None:
+    """A recent step should lift the current slot and fade over the next hours."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(coordinator)
+    db = coordinator._ensure_db()
+    now = datetime(2026, 9, 9, 12, 0, tzinfo=UTC)
+    midnight = _local_midnight_utc(now)
+    local_now = dt_util.as_local(now)
+    current_index = (local_now.hour * 60 + local_now.minute) // 15
+    step = timedelta(minutes=15)
+
+    for day in range(1, 9):
+        for index in range(96):
+            _insert_slot_row(db, midnight - timedelta(days=day) + step * index, 0.5)
+    for index in range(current_index):
+        load_kw = 1.5 if index >= current_index - 8 else 0.5
+        _insert_slot_row(db, midnight + step * index, load_kw)
+    db.commit()
+
+    assert await coordinator._async_finalize_history(now)
+
+    slots = [float(slot["load"]) for slot in coordinator.forecast_slots]
+    # The same slot tomorrow is far enough ahead to show the plain baseline.
+    lift_now = slots[current_index] - slots[current_index + 96]
+    assert 0.25 < lift_now < 0.4
+    assert slots[current_index + 1] < slots[current_index]
+    assert slots[current_index + 24] < slots[current_index + 1]
+    assert slots[current_index - 1] == pytest.approx(
+        slots[current_index + 95], abs=0.02
+    )
+
+
+def test_residual_correction_compares_against_uncorrected_forecast(
+    tmp_path: Path,
+) -> None:
+    """Residuals use the uncorrected forecast so a correction cannot cancel itself."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    db = coordinator._ensure_db()
+    now = datetime(2026, 9, 9, 18, 0, tzinfo=UTC)
+    current_slot = coordinator._floor_to_slot_start_utc(now)
+    closed_slots = [current_slot - timedelta(minutes=15 * k) for k in (4, 3, 2, 1)]
+    for slot_start in closed_slots:
+        _insert_slot_row(db, slot_start, 2.6)
+    db.commit()
+    keys = [
+        dt_util.as_local(slot_start).strftime("%Y-%m-%dT%H:%M")
+        for slot_start in closed_slots
+    ]
+    coordinator._base_forecast_slots = [{"from": key, "load": 0.6} for key in keys]
+    # The published forecast already contains the correction and nearly matches.
+    coordinator._forecast_slots = [{"from": key, "load": 2.1} for key in keys]
+
+    correction_kw = coordinator._compute_residual_correction_kw_sync(
+        now, learning_nights=8
+    )
+
+    assert correction_kw == pytest.approx(1.5)
+
+    coordinator._base_forecast_slots = []
+    assert (
+        coordinator._compute_residual_correction_kw_sync(now, learning_nights=8) == 0.0
+    )
+
+
+def test_sparse_sampling_warning_needs_clearly_low_quality(tmp_path: Path) -> None:
+    """Slightly short coverage is normal; only clearly low quality warns."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    db = coordinator._ensure_db()
+    now = datetime(2026, 9, 9, 18, 0, tzinfo=UTC)
+    midnight = _local_midnight_utc(now)
+    current_slot = coordinator._floor_to_slot_start_utc(now)
+    step = timedelta(minutes=15)
+
+    for day in range(1, 9):
+        for index in range(4):
+            _insert_slot_row(db, midnight - timedelta(days=day) + step * index, 0.5)
+    for k in (4, 3, 2, 1):
+        _insert_slot_row(db, current_slot - step * k, 0.5, quality=0.97)
+    db.commit()
+
+    summary = coordinator._build_forecast_summary(
+        coordinator._load_historical_slot_rows_sync(now), now
+    )
+    assert "sparse_sampling" not in summary.quality_warnings
+
+    _insert_slot_row(db, current_slot - step, 0.5, quality=0.5)
+    db.commit()
+    summary = coordinator._build_forecast_summary(
+        coordinator._load_historical_slot_rows_sync(now), now
+    )
+    assert "sparse_sampling" in summary.quality_warnings
+
+
+@pytest.mark.asyncio
+async def test_coordinator_discards_meter_history_when_meter_entity_changes(
+    tmp_path: Path,
+) -> None:
+    """A different meter entity has its own counter, so old meter data is dropped."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(coordinator)
+    db = coordinator._ensure_db()
+    assert (
+        db.execute(
+            "SELECT value FROM meta WHERE key = ?", (METER_ENTITY_META_KEY,)
+        ).fetchone()[0]
+        == "sensor.household_meter"
+    )
+
+    moment = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
+    ts = moment.isoformat(timespec="seconds")
+    ts_end = (moment + timedelta(minutes=10)).isoformat(timespec="seconds")
+    db.executemany(
+        "INSERT OR REPLACE INTO raw_samples "
+        "(ts_utc, sensor_key, value, unit, quality) VALUES (?, ?, ?, ?, ?)",
+        [
+            (ts, CONF_POWER_METER_CONSUMPTION, 100.0, "kWh", "ok"),
+            (ts, CONF_WATER_HEATER_POWER_ENTITY, 500.0, "W", "ok"),
+        ],
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO raw_events "
+        "(ts_utc, event_key, state_num, state_text, quality) VALUES (?, ?, ?, ?, ?)",
+        (ts, CONF_WATER_HEATER_ACTIVE_ENTITY, 1.0, "on", "ok"),
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO interval_energy "
+        "(ts_from_utc, ts_to_utc, sensor_key, delta_kwh, interval_sec, "
+        "interval_kw, quality) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (ts, ts_end, CONF_POWER_METER_CONSUMPTION, 1.0, 600, 6.0, "ok"),
+    )
+    _insert_slot_row(db, moment, 1.0)
+    db.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+        ("last_finalized_slot_utc", ts),
+    )
+    db.commit()
+    await coordinator.async_shutdown()
+
+    same_meter, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(same_meter)
+    assert (
+        same_meter._ensure_db().execute("SELECT COUNT(*) FROM slot_rows").fetchone()[0]
+        == 1
+    )
+    await same_meter.async_shutdown()
+
+    swapped, _hass = _make_coordinator(
+        tmp_path, extra_options={CONF_POWER_METER_CONSUMPTION: "sensor.other_meter"}
+    )
+    await _setup_coordinator(swapped)
+
+    with sqlite3.connect(swapped._db_path()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM slot_rows").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM interval_energy").fetchone()[0] == 0
+        assert [
+            row[0] for row in conn.execute("SELECT sensor_key FROM raw_samples")
+        ] == [CONF_WATER_HEATER_POWER_ENTITY]
+        assert conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0] == 1
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM meta WHERE key = ?",
+                ("last_finalized_slot_utc",),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT value FROM meta WHERE key = ?", (METER_ENTITY_META_KEY,)
+            ).fetchone()[0]
+            == "sensor.other_meter"
+        )
+
+
+@pytest.mark.asyncio
+async def test_coordinator_keeps_history_when_meter_entity_was_never_recorded(
+    tmp_path: Path,
+) -> None:
+    """History stored before the meter entity was tracked is kept, not purged."""
+    coordinator, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(coordinator)
+    db = coordinator._ensure_db()
+    _insert_slot_row(db, datetime(2026, 9, 5, 12, 0, tzinfo=UTC), 1.0)
+    db.execute("DELETE FROM meta WHERE key = ?", (METER_ENTITY_META_KEY,))
+    db.commit()
+    await coordinator.async_shutdown()
+
+    restarted, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(restarted)
+
+    db = restarted._ensure_db()
+    assert db.execute("SELECT COUNT(*) FROM slot_rows").fetchone()[0] == 1
+    assert (
+        db.execute(
+            "SELECT value FROM meta WHERE key = ?", (METER_ENTITY_META_KEY,)
+        ).fetchone()[0]
+        == "sensor.household_meter"
+    )
