@@ -4,8 +4,11 @@
 
 Calculates the total electricity purchase cost and sell credit per kWh, classifies
 the current price as **Low / Medium / High**, and ranks prices across each day.
-Produces two sensor entities consumed by automations, dashboards, and the
+Produces the price sensor and the compact levels sensor, plus the
+`energyadvisor.get_levels` service, for use in automations, dashboards, and the
 [LevelIndicatorClock](https://github.com/Klurige/LevelIndicatorClock).
+The [battery charge mode sensor](../README.md#sensorenergy_advisor_battery_charge_mode)
+reads the same price data.
 
 ---
 
@@ -34,19 +37,21 @@ an additional ÷100 is applied (handled by `price_divisor`).
 | Key | Type | Description |
 |-----|------|-------------|
 | `nordpool_prices_sensor` | entity_id | Nordpool sensor to read prices from |
-| `low_threshold` | float | Max cost for "Low" level |
-| `high_threshold` | float | Min cost for "High" level |
+| `low_threshold` | float | Prices below this cost are "Low" |
+| `high_threshold` | float | Prices above this cost are "High" |
+| `supplier_note` | text | Free-text note only; not used in any calculation |
 | `supplier_fixed_fee` | float | Fixed fee from electricity supplier (currency/kWh) |
 | `supplier_variable_fee` | float | Variable fee from supplier (%) |
 | `supplier_fixed_credit` | float | Fixed credit when selling (currency/kWh) |
 | `supplier_variable_credit` | float | Variable credit when selling (%) |
+| `grid_note` | text | Free-text note only; not used in any calculation |
 | `grid_fixed_fee` | float | Fixed grid fee (currency/kWh) |
 | `grid_variable_fee` | float | Variable grid fee (%) |
 | `grid_fixed_credit` | float | Fixed grid credit when selling (currency/kWh) |
 | `grid_variable_credit` | float | Variable grid credit when selling (%) |
 | `grid_energy_tax` | float | Energy tax added by the grid (currency/kWh) |
 | `electricity_vat` | float | VAT on electricity (%) |
-| `exclude_from_recording` | bool | Exclude sensors from HA recorder (default: true) |
+| `exclude_from_recording` | bool | Currently not in use. Stored (default `true`, not shown in the config UI) and copied to `_attr_exclude_from_recording`, which Home Assistant does not read, so sensor states are still recorded. To keep a sensor out of history, use the HA `recorder` `exclude` configuration |
 
 ---
 
@@ -129,33 +134,45 @@ should turn it on if rank is below 240 and off if rank is 240 or higher.
 
 - `from` — slot start in **local time**, no timezone suffix, ISO 8601
 - `cost` / `credit` — 3 decimal places
-- `level` — single character: `L` (Low), `M` (Medium), `H` (High), `?` (unknown)
-- `rank` — minute-scaled slot rank
-- Old rates (before today) are purged each time the sensor state is updated
+- `level` — single character: `L` (Low), `M` (Medium), `H` (High), `U` (unknown)
+- `rank` — minute-scaled slot rank (`"N/A"` if it could not be determined)
+- The attribute is excluded from recorder attribute storage
+- Old rates (before today) are purged each time the sensor state is refreshed
 - Tomorrow's rates appear when Nordpool publishes them (~14:00 CET)
 
 ---
 
 ### `sensor.energy_advisor_compact_levels`
 
-Hidden diagnostic sensor (disabled in entity registry by default).
-Consumed by LevelIndicatorClock and the `energyadvisor.get_levels` service.
+Diagnostic sensor, disabled in the entity registry by default.
+Consumed by LevelIndicatorClock.
 
 | Property | Value |
 |----------|-------|
-| State | Integer — minutes since midnight |
+| State | Integer — minutes since midnight (`Unknown` until the first rates arrive) |
 | Attribute `compact` | `{minutes}:{level_length}:{past_1h_levels}:{future_12h_levels}` |
 
 Reads the main sensor's internal rate data directly to build level strings.
-Updates automatically at the end of each price slot. Level characters: `L`, `M`, `H`, `U` (unknown).
+The history part holds up to one hour of levels and the future part twelve hours,
+padded with `U` where no price is known. Updates at the end of each price slot
+and whenever the price sensor receives new rates. Level characters: `L`, `M`, `H`,
+`U` (unknown).
 
 ---
 
 ### Service: `energyadvisor.get_levels`
 
-Returns a dict with level string and slot length, used by LevelIndicatorClock.
-When multiple Energy Advisor entries are loaded, pass the desired
-`entity_id`.
+Returns a response with `level_length` (minutes per character), `levels` (one
+character per slot, today and tomorrow from midnight, trailing `U` removed),
+`low_threshold` and `high_threshold`.
+
+| Field | Description |
+|-------|-------------|
+| `entity_id` | Optional. Energy Advisor price sensor entity id. Required when several entries are loaded |
+| `level_length` | Optional. Minutes per level; `0` (default) uses the native Nord Pool slot length. When longer than a slot, a level is `U` if any part is unknown, `L` only if all parts are `L`, `M` if all are `L` or `M`, otherwise `H` |
+
+The service is registered once when the first entry loads and removed when the
+last entry is unloaded.
 
 ---
 
@@ -166,39 +183,52 @@ NordpoolDataCoordinator  ←──  nordpool.get_prices_for_date (HA service cal
         │
         │  async_update_data(raw_prices)
         ▼
-PriceSensor
+PriceSensor  (also refreshed when the Nord Pool sensor changes state)
   • parse entries: spot price → cost/credit via calculate_cost_and_credit()
   • classify: calculate_level(cost)
   • rank: sort each day's entries by price, assign minute-scaled rank
   • store in self._rates (internal dicts with datetime objects)
   • expose via _format_rates_compact() → attributes.rates (serialisable)
         │
-        │  direct in-memory callback when rate data changes
-        ▼
-CompactLevelsSensor
-  • reads the main sensor's internal rates, builds level string
-  • schedules periodic update at slot boundaries
+        │  in-memory update listeners, notified when rate data changes
+        ├──────────────────────────────┐
+        ▼                              ▼
+CompactLevelsSensor            BatteryChargeModeSensor
+  • reads the main sensor's      • builds one `modes` entry per
+    internal rates, builds         price slot from the same rates
+    the level string
+  • schedules periodic update
+    at slot boundaries
 ```
+
+The `get_levels` service calls the price sensor's `build_levels_payload()`
+directly. The optional solar and household forecast sensors have their own
+coordinators; see [solarforecast.md](solarforecast.md) and
+[householdforecast.md](householdforecast.md).
 
 **Key files:**
 
 | File | Role |
 |------|------|
-| `sensor/__init__.py` | Wires up coordinator + sensors, registers entities |
-| `sensor/energyadvisor.py` | Core sensor: price calc, level, rank, rates |
+| `sensor/__init__.py` | Wires up coordinators + sensors, registers entities |
+| `sensor/price.py` | Core sensor: price calc, level, rank, rates |
 | `sensor/compactlevels.py` | Compact level string sensor |
+| `sensor/batterychargemodesensor.py` | Battery charge mode sensor (placeholder) |
+| `sensor/solarforecastsensor.py`, `sensor/householdforecastsensor.py` | Optional forecast sensors |
 | `coordinators/nordpool_coordinator.py` | Calls Nordpool service, feeds data to sensor |
-| `coordinator.py` | (Does not exist — see `sensor/__init__.py`) |
-| `config_flow.py` | Multi-step UI setup wizard |
+| `coordinators/solar_forecast_coordinator.py`, `coordinators/household_forecast_coordinator.py` | Data collection and learning for the forecast sensors |
+| `services.py`, `services.yaml` | The `energyadvisor.get_levels` service |
+| `util.py` | Compact level helpers shared by the sensors and the service |
+| `config_flow.py`, `config_flow_helpers.py` | Multi-step UI setup wizard and options flow |
 | `const.py` | All `CONF_*` constants and dev-config import |
 
 ---
 
 ## Development setup
 
-### `../../custom_components/energyadvisor/dev_config.py` (gitignored)
+### `custom_components/energyadvisor/dev_config.py` (gitignored)
 
-Create `../../custom_components/energyadvisor/dev_config.py` to pre-fill the config-flow
+Create `custom_components/energyadvisor/dev_config.py` to pre-fill the config-flow
 wizard with real values during development. When `DEV_DEFAULTS_ENABLED = True`,
 `config_flow.py` pre-populates every form field from `DEV_DEFAULTS`.
 
@@ -219,11 +249,11 @@ HA_TOKEN = "<long_lived_access_token>"
 a `try/except ImportError` fallback so the integration works normally when the file
 is absent.
 
-### `../../scripts/fetch_ha_history.py`
+### `scripts/fetch_ha_history.py`
 
-Fetches historical sensor data from a live HA instance over the REST API.
-Used to seed solar/price history for solar forecast calibration.
-Requires `HA_URL` and `HA_TOKEN` in `../../custom_components/energyadvisor/dev_config.py`.
+Fetches historical sensor data from a live HA instance over the REST API
+(`--entity`, `--days` and `--output` options).
+Requires `HA_URL` and `HA_TOKEN` in `custom_components/energyadvisor/dev_config.py`.
 
 ### Tests
 
@@ -232,8 +262,8 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/mypycache \
   .venv/bin/python -m pytest tests/ -q
 ```
 
-All tests live in `../../tests`. The compact levels sensor has dedicated tests in
-`tests/test_compact_levels_sensor.py`. Pass the new compact `rates` format
+All tests live in `tests/`. The compact levels sensor has dedicated tests in
+`tests/test_compact_levels_sensor.py`. Pass the compact `rates` format
 (`{ "from": ..., "cost": ..., "level": "L/M/H" }`) when mocking state attributes.
 
 ---

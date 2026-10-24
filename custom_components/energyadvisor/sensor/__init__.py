@@ -1,9 +1,9 @@
 """Sensor platform wiring for Energy Advisor.
 
-This package assembles the price sensor, compact level sensor, battery planner,
-household Load forecast sensor, and solar forecast sensor. The battery planner uses
-the price and solar sensors internally, the other sensors are dependent on
-external data only.
+This package assembles the price sensor, compact level sensor, battery charge
+mode sensor, household Load forecast sensor, and solar forecast sensor. The
+compact level and battery charge mode sensors read the price sensor's rate data
+in memory; the other sensors depend on external data only.
 """
 
 from __future__ import annotations

@@ -43,7 +43,7 @@ class SolarForecastSensor(SensorEntity):
     Outputs:
         - State: corrected kW estimate for the current 15-minute slot.
         - Attributes: the full 48-hour forecast and the summary statistics
-          consumed by the dashboard and battery planner.
+          consumed by the dashboard.
     """
 
     _attr_has_entity_name = True

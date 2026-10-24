@@ -58,7 +58,7 @@ class PriceSensor(SensorEntity):
     Outputs:
         - State: the current all-in electricity cost.
         - Attributes: spot price, currency, unit, price level, rank, and rate
-          history used by the compact level and battery planner sensors.
+          history used by the compact level and battery charge mode sensors.
     """
 
     entity_description: SensorEntityDescription
