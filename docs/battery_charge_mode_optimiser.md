@@ -1,5 +1,7 @@
 # Battery Charge Mode Optimiser Plan
 
+> **Status: not implemented.** The optimiser described here has been removed. `sensor.energy_advisor_battery_charge_mode` is currently a placeholder that uses only the price as input and reports `standby` for every price slot (see the README). This document is kept as reference for the rebuild and does not describe the current code.
+
 This document is the implementation-ready specification for the Home Assistant battery charge mode optimiser. It supersedes any legacy notes in `docs/old`; those files are deprecated and must not be used as implementation guidance.
 
 This plan is intentionally greenfield and explicit about the optimisation behaviour, control semantics, and deterministic validation requirements.
