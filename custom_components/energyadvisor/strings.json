@@ -95,7 +95,7 @@
           "battery_optimization_horizon_hours": "Optimization horizon",
           "battery_min_soc_pct": "Minimum SoC",
           "battery_max_soc_pct": "Maximum SoC",
-          "battery_degradation_cost": "Battery degradation cost margin",
+          "battery_degradation_cost": "Battery wear cost",
           "battery_soc_entity": "Battery state of charge sensor",
           "battery_charge_power_entity": "Battery charge power sensor"
         },
@@ -106,7 +106,7 @@
           "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
-          "battery_degradation_cost": "Minimum price spread required before the battery is cycled.",
+          "battery_degradation_cost": "Wear cost per kWh delivered by the battery. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0.",
           "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
           "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
         }
@@ -267,14 +267,14 @@
         "data": {
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
-          "battery_degradation_cost": "Battery degradation cost margin",
+          "battery_degradation_cost": "Battery wear cost",
           "battery_soc_entity": "Battery state of charge sensor",
           "battery_charge_power_entity": "Battery charge power sensor"
         },
         "data_description": {
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
           "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
-          "battery_degradation_cost": "Minimum price spread required before the battery is cycled.",
+          "battery_degradation_cost": "Wear cost per kWh delivered by the battery. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0.",
           "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
           "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
         }

@@ -110,13 +110,13 @@
           "battery_optimization_horizon_hours": "Optimization horizon",
           "battery_min_soc_pct": "Minimum SoC",
           "battery_max_soc_pct": "Maximum SoC",
-          "battery_degradation_cost": "Battery degradation cost margin"
+          "battery_degradation_cost": "Battery wear cost"
         },
         "data_description": {
           "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
-          "battery_degradation_cost": "Minimum price spread required before the battery is cycled."
+          "battery_degradation_cost": "Wear cost per kWh delivered by the battery. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0."
         }
       },
       "grid_metering": {
@@ -306,13 +306,13 @@
           "battery_optimization_horizon_hours": "Optimization horizon",
           "battery_min_soc_pct": "Minimum SoC",
           "battery_max_soc_pct": "Maximum SoC",
-          "battery_degradation_cost": "Battery degradation cost margin"
+          "battery_degradation_cost": "Battery wear cost"
         },
         "data_description": {
           "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
-          "battery_degradation_cost": "Minimum price spread required before the battery is cycled."
+          "battery_degradation_cost": "Wear cost per kWh delivered by the battery. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0."
         }
       },
       "grid_metering": {

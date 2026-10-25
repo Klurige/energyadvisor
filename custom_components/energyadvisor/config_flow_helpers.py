@@ -293,7 +293,7 @@ def _build_battery_optimization_schema(
         vol.Optional(
             CONF_BATTERY_MAX_SOC_PCT,
             default=_schema_default(
-                battery_max_soc_pct if battery_max_soc_pct is not None else 95.0
+                battery_max_soc_pct if battery_max_soc_pct is not None else 100.0
             ),
             description={"suffix": "%"},
         ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),

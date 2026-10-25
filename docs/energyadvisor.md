@@ -218,11 +218,12 @@ PriceSensor  (also refreshed when the Nord Pool sensor changes state)
         ▼                              ▼
 CompactLevelsSensor            BatteryChargeModeSensor
   • reads the main sensor's      • builds one `modes` entry per
-    internal rates, builds         price slot from the same rates,
-    the level string               alternating peaks (`discharge`) and
-                                   valleys (`charge`), at most one
-                                   peak before and one after noon
-                                   per day
+    internal rates, builds         price slot from the same rates;
+    the level string               plans charge / discharge / standby
+                                   in an executor job with the DP in
+                                   battery_planner.py (also triggered
+                                   by the household forecast, the
+                                   battery SoC and every quarter hour)
   • schedules periodic update
     at slot boundaries
 ```
@@ -239,7 +240,8 @@ coordinators; see [solarforecast.md](solarforecast.md) and
 | `sensor/__init__.py` | Wires up coordinators + sensors, registers entities |
 | `sensor/price.py` | Core sensor: price calc, level, rank, rates |
 | `sensor/compactlevels.py` | Compact level string sensor |
-| `sensor/batterychargemodesensor.py` | Battery charge mode sensor (peak and valley planner) |
+| `sensor/batterychargemodesensor.py` | Battery charge mode sensor (schedule, triggers and worker around the planner) |
+| `battery_planner.py` | Pure-Python dynamic programme that plans the battery (no Home Assistant imports) |
 | `sensor/solarforecastsensor.py`, `sensor/householdforecastsensor.py` | Optional forecast sensors |
 | `coordinators/nordpool_coordinator.py` | Calls Nordpool service, feeds data to sensor |
 | `coordinators/elpris_debug_coordinator.py` | Debug mode only: fetches one chosen date from elprisetjustnu.se instead of Nordpool |

@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,7 +17,10 @@ from custom_components.energyadvisor import (
     async_unload_entry,
 )
 from custom_components.energyadvisor.const import (
+    CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_DEGRADATION_COST,
+    CONF_BATTERY_MAX_CHARGE_POWER_W,
+    CONF_BATTERY_MIN_SOC_PCT,
     CONF_DEBUG,
     CONF_EXCLUDE_FROM_RECORDING,
     CONF_NORDPOOL_PRICES_SENSOR,
@@ -165,24 +169,45 @@ async def test_debug_price_sensor_ignores_nord_pool_units_and_divisor() -> None:
 @pytest.mark.asyncio
 async def test_debug_date_flows_to_battery_modes_and_compact_levels() -> None:
     hass = _hass()
-    entry = _entry(**{CONF_DEBUG: True})
+    hass.async_create_background_task = lambda coro, name, **kwargs: (
+        asyncio.ensure_future(coro)
+    )
+    hass.async_add_executor_job = AsyncMock(side_effect=lambda func, *args: func(*args))
+    entry = _entry(
+        **{
+            CONF_DEBUG: True,
+            CONF_BATTERY_CAPACITY_KWH: 15.0,
+            CONF_BATTERY_MAX_CHARGE_POWER_W: 5000,
+            CONF_BATTERY_MIN_SOC_PCT: 0,
+        }
+    )
     price_sensor = _price_sensor(hass, entry)
     battery_sensor = BatteryChargeModeSensor(
         hass, entry, MagicMock(spec=DeviceInfo), price_sensor
     )
     battery_sensor.async_write_ha_state = MagicMock()
+    battery_sensor._now = lambda: datetime.datetime.combine(
+        _today(), datetime.time(0, 0), tzinfo=TZ
+    )
     price_sensor.async_add_update_listener(battery_sensor._handle_price_update)
     coordinator = _debug_coordinator(hass, price_sensor)
 
     await _select(coordinator, PAST_DAY)
+    await battery_sensor._plan_task
 
     modes = battery_sensor.extra_state_attributes["modes"]
     assert len(modes) == 96
     by_mode: dict[str, list[str]] = {}
     for slot in modes:
         by_mode.setdefault(slot["mode"], []).append(slot["from"])
-    assert [t[11:13] for t in by_mode["charge"]] == ["03", "13"]
-    assert [t[11:13] for t in by_mode["discharge"]] == ["08", "19"]
+    # The planner charges in the cheap hours (03:00 and 13:00) and discharges
+    # over the expensive ones (08:00 and 19:00), never the other way round.
+    charge_hours = {t[11:13] for t in by_mode["charge"]}
+    discharge_hours = {t[11:13] for t in by_mode["discharge"]}
+    assert {"03", "13"} <= charge_hours
+    assert {"08", "19"} <= discharge_hours
+    assert not charge_hours & {"08", "19"}
+    assert not discharge_hours & {"03", "13"}
     assert {m["from"][:10] for m in modes} == {_today().isoformat()}
 
     compact_sensor = CompactLevelsSensor(

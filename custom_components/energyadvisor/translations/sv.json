@@ -110,13 +110,13 @@
           "battery_optimization_horizon_hours": "Optimeringshorisont",
           "battery_min_soc_pct": "Minsta SoC",
           "battery_max_soc_pct": "Högsta SoC",
-          "battery_degradation_cost": "Marginal för batterislitage"
+          "battery_degradation_cost": "Slitagekostnad för batteriet"
         },
         "data_description": {
           "battery_optimization_horizon_hours": "Optimeringshorisont i timmar som används av optimeraren.",
           "battery_min_soc_pct": "Nedre SoC-gräns som används av optimeraren.",
           "battery_max_soc_pct": "Övre SoC-gräns som används av optimeraren.",
-          "battery_degradation_cost": "Minsta prisskillnad som krävs innan batteriet cyklas."
+          "battery_degradation_cost": "Slitagekostnad per kWh som batteriet levererar. Planeraren cyklar bara batteriet när prisskillnaden också täcker denna kostnad och förlusterna vid laddning och urladdning. Lämna tomt för 0."
         }
       },
       "grid_metering": {
@@ -306,13 +306,13 @@
           "battery_optimization_horizon_hours": "Optimeringshorisont",
           "battery_min_soc_pct": "Minsta SoC",
           "battery_max_soc_pct": "Högsta SoC",
-          "battery_degradation_cost": "Marginal för batterislitage"
+          "battery_degradation_cost": "Slitagekostnad för batteriet"
         },
         "data_description": {
           "battery_optimization_horizon_hours": "Optimeringshorisont i timmar som används av optimeraren.",
           "battery_min_soc_pct": "Nedre SoC-gräns som används av optimeraren.",
           "battery_max_soc_pct": "Övre SoC-gräns som används av optimeraren.",
-          "battery_degradation_cost": "Minsta prisskillnad som krävs innan batteriet cyklas."
+          "battery_degradation_cost": "Slitagekostnad per kWh som batteriet levererar. Planeraren cyklar bara batteriet när prisskillnaden också täcker denna kostnad och förlusterna vid laddning och urladdning. Lämna tomt för 0."
         }
       },
       "grid_metering": {

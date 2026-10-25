@@ -73,7 +73,7 @@ sensor attribute value.
 | Water heater worst-case refill hours | `water_heater_max_hours` | Water heater | `4` | currently not in use (not read by the household forecast) |
 | Bathroom humidity sensor | `bathroom_humidity_entity` | Water heater | `sensor.bathroom_humidity` | currently not in use (history is recorded but not used) |
 | Outdoor temperature sensor | `outdoor_temperature_entity` | Household load | `sensor.outdoor_temperature` | currently not in use (history is recorded but not used; the slot feature `outdoor_temp_c` is always `null`) |
-| Battery state of charge sensor | `battery_soc_entity` | Battery hardware | `sensor.battery_soc` | currently not in use (history is recorded but not used) |
+| Battery state of charge sensor | `battery_soc_entity` | Battery hardware | `sensor.battery_soc` | Used by the battery charge mode sensor as the start of each plan (history is also recorded) |
 | Battery charge power sensor | `battery_charge_power_entity` | Battery hardware | `sensor.battery_charge_power` | currently not in use (history is recorded but not used) |
 | Grid import power sensor | `grid_import_entity` | Grid metering | `sensor.grid_import_power` | currently not in use (history is recorded but not used) |
 | Grid export power sensor | `grid_export_entity` | Grid metering | `sensor.grid_export_power` | currently not in use (history is recorded but not used) |

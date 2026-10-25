@@ -634,7 +634,7 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
     }
     assert validated[CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 48
     assert validated[CONF_BATTERY_MIN_SOC_PCT] == 5.0
-    assert validated[CONF_BATTERY_MAX_SOC_PCT] == 95.0
+    assert validated[CONF_BATTERY_MAX_SOC_PCT] == 100.0
     assert any(field["name"] == CONF_BATTERY_DEGRADATION_COST for field in serialized)
     assert not any(field["type"] == "boolean" for field in serialized)
 
