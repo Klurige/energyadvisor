@@ -40,6 +40,7 @@ CONF_GRID_VARIABLE_CREDIT = "grid_variable_credit"
 CONF_GRID_ENERGY_TAX = "grid_energy_tax"
 CONF_ELECTRICITY_VAT = "electricity_vat"
 CONF_EXCLUDE_FROM_RECORDING = "exclude_from_recording"
+CONF_DEBUG = "debug"
 
 # Solar forecast configuration
 CONF_FORECAST_ENTITY = "forecast_entity"

@@ -174,12 +174,35 @@ character per slot, today and tomorrow from midnight, trailing `U` removed),
 The service is registered once when the first entry loads and removed when the
 last entry is unloaded.
 
+### Service: `energyadvisor.debug_select_date` (debug mode only)
+
+Registered only while an entry has the `debug` option on, and removed when the
+last such entry is unloaded. In debug mode `ElprisDebugCoordinator` replaces
+`NordpoolDataCoordinator`: it fetches today's prices from elprisetjustnu.se at
+start-up and the prices of the chosen date whenever the action runs, then calls
+the price sensor's `async_update_data()` with the same payload shape (prices in
+currency/MWh, plus `price_divisor: 1`). The chosen day's slots are moved to the
+current local day with the same local clock times (a repeated hour on a 25 hour
+day is kept once), so the price sensor, which only treats the current day as
+live, uses them as today's prices. The coordinator keeps the fetched day and
+publishes it again after local midnight, so the data stays current without
+another fetch. The price sensor also ignores the Nord Pool sensor's units and
+divisor in this mode. The Nord Pool config entry is not needed; the area comes
+from the Nord Pool sensor's entity id or the action's `area` field.
+
+| Field | Description |
+|-------|-------------|
+| `date` | Required. The date whose prices are collected and shown as today's |
+| `area` | Optional. `SE1` to `SE4`; defaults to the area in the Nord Pool sensor's entity id and is remembered |
+| `entity_id` | Optional. Energy Advisor price sensor entity id. Required when several entries are in debug mode |
+
 ---
 
 ## Architecture & data flow
 
 ```
 NordpoolDataCoordinator  ←──  nordpool.get_prices_for_date (HA service call)
+(in debug mode ElprisDebugCoordinator ←── elprisetjustnu.se, one chosen date)
         │
         │  async_update_data(raw_prices)
         ▼
@@ -195,8 +218,11 @@ PriceSensor  (also refreshed when the Nord Pool sensor changes state)
         ▼                              ▼
 CompactLevelsSensor            BatteryChargeModeSensor
   • reads the main sensor's      • builds one `modes` entry per
-    internal rates, builds         price slot from the same rates
-    the level string
+    internal rates, builds         price slot from the same rates,
+    the level string               alternating peaks (`discharge`) and
+                                   valleys (`charge`), at most one
+                                   peak before and one after noon
+                                   per day
   • schedules periodic update
     at slot boundaries
 ```
@@ -213,11 +239,12 @@ coordinators; see [solarforecast.md](solarforecast.md) and
 | `sensor/__init__.py` | Wires up coordinators + sensors, registers entities |
 | `sensor/price.py` | Core sensor: price calc, level, rank, rates |
 | `sensor/compactlevels.py` | Compact level string sensor |
-| `sensor/batterychargemodesensor.py` | Battery charge mode sensor (placeholder) |
+| `sensor/batterychargemodesensor.py` | Battery charge mode sensor (peak and valley planner) |
 | `sensor/solarforecastsensor.py`, `sensor/householdforecastsensor.py` | Optional forecast sensors |
 | `coordinators/nordpool_coordinator.py` | Calls Nordpool service, feeds data to sensor |
+| `coordinators/elpris_debug_coordinator.py` | Debug mode only: fetches one chosen date from elprisetjustnu.se instead of Nordpool |
 | `coordinators/solar_forecast_coordinator.py`, `coordinators/household_forecast_coordinator.py` | Data collection and learning for the forecast sensors |
-| `services.py`, `services.yaml` | The `energyadvisor.get_levels` service |
+| `services.py`, `services.yaml` | The `energyadvisor.get_levels` service and, in debug mode, `energyadvisor.debug_select_date` |
 | `util.py` | Compact level helpers shared by the sensors and the service |
 | `config_flow.py`, `config_flow_helpers.py` | Multi-step UI setup wizard and options flow |
 | `const.py` | All `CONF_*` constants and dev-config import |

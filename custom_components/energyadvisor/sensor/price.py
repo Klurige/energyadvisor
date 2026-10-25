@@ -39,6 +39,7 @@ from ..const import (
     CONF_GRID_ENERGY_TAX,
     CONF_ELECTRICITY_VAT,
     CONF_EXCLUDE_FROM_RECORDING,
+    CONF_DEBUG,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
     parse_unit_of_measurement,
@@ -81,6 +82,12 @@ class PriceSensor(SensorEntity):
         self._unit_of_measurement = entry.options.get("unit_of_measurement", "") or None
         price_divisor = entry.options.get("price_divisor")
         self._price_divisor = price_divisor if price_divisor is not None else 1
+
+        # Debug mode feeds prices from elprisetjustnu.se: they are always
+        # currency/MWh and must not be re-scaled from the Nord Pool sensor.
+        self._debug = bool(entry.options.get(CONF_DEBUG, False))
+        if self._debug:
+            self._price_divisor = 1
 
         high_threshold = entry.options.get(CONF_HIGH_THRESHOLD)
         self._high_threshold = (
@@ -202,6 +209,8 @@ class PriceSensor(SensorEntity):
 
     def _update_units_from_nordpool_sensor(self, state=None):
         """Read unit_of_measurement from the Nord Pool sensor and update currency/unit."""
+        if self._debug:
+            return
         if state is None and self.hass:
             state = self.hass.states.get(self._nordpool_prices_sensor)
         if not state or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):

@@ -9,7 +9,11 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN, LOGGER, PREFERRED_SENSOR_ENTITY_IDS, build_sensor_unique_id
 from .models import EnergyAdvisorRuntimeData
-from .services import async_setup_services
+from .services import (
+    async_remove_debug_services,
+    async_setup_debug_services,
+    async_setup_services,
+)
 
 PLATFORMS = [Platform.SENSOR]
 
@@ -133,6 +137,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime_data = getattr(entry, "runtime_data", None)
     if isinstance(runtime_data, EnergyAdvisorRuntimeData):
         hass.data[DOMAIN][entry.entry_id] = runtime_data
+        if runtime_data.debug_coordinator is not None:
+            async_setup_debug_services(hass)
 
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 
@@ -145,9 +151,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Remove services when last entry is unloaded
     if result:
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-        if not hass.data.get(DOMAIN):
+        runtime_data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        remaining = hass.data.get(DOMAIN, {})
+        if not remaining:
             hass.services.async_remove(DOMAIN, "get_levels")
+        if getattr(runtime_data, "debug_coordinator", None) is not None and not any(
+            getattr(data, "debug_coordinator", None) is not None
+            for data in remaining.values()
+        ):
+            async_remove_debug_services(hass)
 
     return result
 

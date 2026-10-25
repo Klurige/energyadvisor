@@ -47,6 +47,7 @@ from .const import (
     CONF_GRID_ENERGY_TAX,
     CONF_ELECTRICITY_VAT,
     CONF_EXCLUDE_FROM_RECORDING,
+    CONF_DEBUG,
     CONF_FORECAST_ENTITY,
     CONF_POWER_ENTITY,
     CONF_FORECAST_TOMORROW_ENTITY,
@@ -853,6 +854,9 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
 
                 if not errors:
                     self.current_options.update(user_input)
+                    self.current_options[CONF_DEBUG] = bool(
+                        user_input.get(CONF_DEBUG, False)
+                    )
                     self._update_price_sensor_attributes(sensor_attributes)
                     return await self.async_step_supplier_fees_and_credits()
 
@@ -886,6 +890,10 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
                         },
                         default=self.current_options.get(CONF_HIGH_THRESHOLD),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_DEBUG,
+                        default=bool(self.current_options.get(CONF_DEBUG, False)),
+                    ): bool,
                 }
             ),
             errors=errors,

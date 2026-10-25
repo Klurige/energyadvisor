@@ -15,3 +15,26 @@ get_levels:
                     mode: box
                     unit_of_measurement: minutes
             description: Length in minutes for each level. 0 means same as NordPool.
+debug_select_date:
+    description: Debug mode only. Collect the prices of a chosen date from elprisetjustnu.se and use them as today's prices instead of the live Nord Pool prices.
+    fields:
+        date:
+            required: true
+            example: "2026-10-24"
+            selector:
+                date:
+            description: The date whose prices are collected. They are used as today's prices, with the same time of day.
+        area:
+            selector:
+                select:
+                    options:
+                        - SE1
+                        - SE2
+                        - SE3
+                        - SE4
+            description: Price area. Defaults to the area in the configured Nord Pool price sensor entity id.
+        entity_id:
+            selector:
+                entity:
+                    domain: sensor
+            description: Energy Advisor price sensor entity id. Required when multiple entries are in debug mode.

@@ -29,6 +29,7 @@ from custom_components.energyadvisor.const import (
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
     CONF_CENTRAL_HEATING_POWER_ENTITY,
     CONF_CENTRAL_HEATING_POWER_W,
+    CONF_DEBUG,
     CONF_DEHUMIDIFIER_POWER_ENTITY,
     CONF_DEHUMIDIFIER_POWER_W,
     CONF_ELECTRICITY_VAT,
@@ -188,6 +189,7 @@ def test_config_and_options_flow_fields_have_translations(language: str) -> None
                 CONF_NORDPOOL_PRICES_SENSOR,
                 CONF_LOW_THRESHOLD,
                 CONF_HIGH_THRESHOLD,
+                CONF_DEBUG,
             ],
             **COMMON_TRANSLATED_STEPS,
         },
@@ -341,6 +343,59 @@ async def test_options_flow_household_steps_contain_new_load_fields() -> None:
     assert CONF_CENTRAL_HEATING_POWER_ENTITY in schema_keys
     assert CONF_CENTRAL_HEATING_POWER_W in schema_keys
     assert CONF_POWER_METER_CONSUMPTION not in schema_keys
+
+
+@pytest.mark.asyncio
+async def test_options_flow_init_step_offers_debug_flag_defaulting_to_off() -> None:
+    """Test the debug flag is offered and defaults to the stored value."""
+    for stored, expected in ((None, False), (True, True)):
+        config_entry = MagicMock()
+        config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
+        if stored is not None:
+            config_entry.options[CONF_DEBUG] = stored
+
+        handler = EnergyAdvisorOptionFlowHandler()
+        handler._config_entry = config_entry
+        hass = MagicMock()
+        hass.states.get.return_value = None
+        handler.hass = hass
+
+        result = await handler.async_step_init()
+        debug_key = next(
+            key
+            for key in result["data_schema"].schema
+            if getattr(key, "schema", key) == CONF_DEBUG
+        )
+
+        assert debug_key.default() is expected
+
+
+@pytest.mark.asyncio
+async def test_options_flow_init_step_clears_debug_flag_when_omitted() -> None:
+    """Test an unchecked debug box (omitted from the input) turns the flag off."""
+    config_entry = MagicMock()
+    config_entry.options = {
+        CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
+        CONF_DEBUG: True,
+    }
+    handler = EnergyAdvisorOptionFlowHandler()
+    handler._config_entry = config_entry
+    state = MagicMock()
+    state.state = "1.23"
+    state.attributes = {"unit_of_measurement": "EUR/kWh", "currency": "EUR"}
+    hass = MagicMock()
+    hass.states.get.return_value = state
+    handler.hass = hass
+
+    await handler.async_step_init(
+        {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
+    )
+    assert handler.current_options[CONF_DEBUG] is False
+
+    await handler.async_step_init(
+        {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices", CONF_DEBUG: True}
+    )
+    assert handler.current_options[CONF_DEBUG] is True
 
 
 @pytest.mark.asyncio

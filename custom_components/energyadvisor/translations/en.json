@@ -209,12 +209,14 @@
         "data": {
           "nordpool_prices_sensor": "Nord Pool current price",
           "low_threshold": "Lower threshold.",
-          "high_threshold": "Upper threshold."
+          "high_threshold": "Upper threshold.",
+          "debug": "Debug mode"
         },
         "data_description": {
           "nordpool_prices_sensor": "Choose the Nord Pool current-price entity. If several Nord Pool sensors exist, pick the one ending in `current_price`.",
           "low_threshold": "Prices below this total import cost are classified as Low.",
-          "high_threshold": "Prices above this total import cost are classified as High."
+          "high_threshold": "Prices above this total import cost are classified as High.",
+          "debug": "Take prices from elprisetjustnu.se instead of Nord Pool and enable the energyadvisor.debug_select_date action. For development only; other sensors may misbehave."
         }
       },
       "supplier_fees_and_credits": {

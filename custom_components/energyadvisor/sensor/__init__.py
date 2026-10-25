@@ -18,6 +18,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.loader import async_get_integration
 
 from ..const import (
+    CONF_DEBUG,
     CONF_FORECAST_ENTITY,
     CONF_NORDPOOL_PRICES_SENSOR,
     CONF_POWER_ENTITY,
@@ -33,6 +34,10 @@ from .compactlevels import CompactLevelsSensor
 from .householdforecastsensor import HouseholdForecastSensor
 from .price import PriceSensor
 from ..coordinators.nordpool_coordinator import NordpoolDataCoordinator
+from ..coordinators.elpris_debug_coordinator import (
+    ElprisDebugCoordinator,
+    area_from_entity_id,
+)
 from .solarforecastsensor import SolarForecastSensor
 
 _LOGGER = logging.getLogger(__name__)
@@ -77,7 +82,9 @@ async def async_setup_entry(
         - An entity-registration callback for the sensor platform.
     Outputs:
         - Registered sensor entities plus runtime data on the config entry.
-        - A started Nord Pool coordinator and optional solar coordinator.
+        - A started Nord Pool coordinator (or the elprisetjustnu.se debug
+          coordinator when the debug option is set) and optional solar
+          coordinator.
     """
     integration = await async_get_integration(hass, DOMAIN)
 
@@ -127,23 +134,35 @@ async def async_setup_entry(
         entities.append(solar_sensor)
 
     prices_sensor_entity_id = entry.options.get(CONF_NORDPOOL_PRICES_SENSOR, "")
-    nordpool_config_entry_id_to_use = _resolve_nordpool_config_entry_id(
-        hass, prices_sensor_entity_id
-    )
-    if nordpool_config_entry_id_to_use is None:
-        if household_coordinator is not None:
-            await household_coordinator.async_shutdown()
-        if solar_coordinator is not None:
-            await solar_coordinator.async_shutdown()
-        return
-
     currency_from_config = entry.options.get("currency", "") or None
-    coordinator = NordpoolDataCoordinator(
-        hass,
-        nordpool_config_entry_id_to_use,
-        levels_sensor.async_update_data,
-        currency_from_config,
-    )
+    coordinator: NordpoolDataCoordinator | ElprisDebugCoordinator
+    debug_coordinator: ElprisDebugCoordinator | None = None
+
+    if entry.options.get(CONF_DEBUG, False):
+        debug_coordinator = ElprisDebugCoordinator(
+            hass,
+            levels_sensor.async_update_data,
+            area_from_entity_id(prices_sensor_entity_id),
+            currency_from_config,
+        )
+        coordinator = debug_coordinator
+    else:
+        nordpool_config_entry_id_to_use = _resolve_nordpool_config_entry_id(
+            hass, prices_sensor_entity_id
+        )
+        if nordpool_config_entry_id_to_use is None:
+            if household_coordinator is not None:
+                await household_coordinator.async_shutdown()
+            if solar_coordinator is not None:
+                await solar_coordinator.async_shutdown()
+            return
+
+        coordinator = NordpoolDataCoordinator(
+            hass,
+            nordpool_config_entry_id_to_use,
+            levels_sensor.async_update_data,
+            currency_from_config,
+        )
 
     runtime_data = EnergyAdvisorRuntimeData(
         levels_sensor=levels_sensor,
@@ -153,6 +172,7 @@ async def async_setup_entry(
         household_coordinator=household_coordinator,
         solar_sensor=solar_sensor,
         solar_coordinator=solar_coordinator,
+        debug_coordinator=debug_coordinator,
     )
     entry.runtime_data = runtime_data
 

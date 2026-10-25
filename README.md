@@ -11,7 +11,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 ## Features
 - Uses electricity prices provided by the Home Assistant NordPool integration.
 - Categorizes prices into levels (e.g., low, medium, high).
-- Provides two price sensors plus a placeholder battery charge mode sensor, an optional household Load forecast sensor, and an optional refined solar forecast sensor.
+- Provides two price sensors plus a battery charge mode sensor with a first, price-only schedule, an optional household Load forecast sensor, and an optional refined solar forecast sensor.
 - Supports multiple languages (English, Swedish).
 - Easy configuration via the Home Assistant UI.
   - Adds support for extra fees and taxes from your grid and supplier.
@@ -21,7 +21,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 - Exposes a household Load forecast that falls back to a cold-start shell and
   learns a seasonal baseline from retained slot history.
 - Can refine a solar production forecast using your solar's measured output.
-- Provides a placeholder battery schedule (one `standby` slot per price slot); the mode logic is not implemented yet.
+- Provides a first battery schedule: `discharge` on price peaks, `charge` on the valleys before them and `standby` elsewhere.
 
 ## Prerequisites
 - Home Assistant (2025.0 or newer recommended)
@@ -85,6 +85,7 @@ All amounts are in the currency of the Nord Pool sensor, per kWh. Percentages ar
 | `grid_energy_tax`          | Energy tax added per imported kWh | 0.45 | In use |
 | `electricity_vat`          | VAT in % applied to the import cost after fees and taxes | 25 | In use |
 | `exclude_from_recording`   | Not shown in the UI; defaults to `true`. See [Recorder and history](#recorder-and-history) | `true` | currently not in use |
+| `debug`                    | Only on the options page (default off). Takes prices from elprisetjustnu.se instead of Nord Pool and enables `energyadvisor.debug_select_date`. See [Debug mode](#debug-mode) | `false` | In use |
 
 #### Solar forecast
 
@@ -98,7 +99,7 @@ See [docs/solarforecast.md](docs/solarforecast.md) for details.
 
 #### Battery
 
-Battery capacity and max charge power must be set together. Min SoC must be lower than max SoC. None of the battery options is used yet: the battery charge mode sensor only reads the price schedule.
+Battery capacity and max charge power must be set together. Min SoC must be lower than max SoC. Only `battery_degradation_cost` is used so far (as the cost margin of the battery charge mode sensor); the other battery options are not used yet.
 
 | Key                        | Description                  | Example Value | Status |
 |----------------------------|------------------------------|---------------|--------|
@@ -108,7 +109,7 @@ Battery capacity and max charge power must be set together. Min SoC must be lowe
 | `battery_optimization_horizon_hours` | Look-ahead horizon in hours (1-48, form default 48) | `48` | currently not in use |
 | `battery_min_soc_pct`      | Lower SoC bound in % (form default 5) | `5` | currently not in use |
 | `battery_max_soc_pct`      | Upper SoC bound in % (form default 95) | `95` | currently not in use |
-| `battery_degradation_cost` | Minimum price spread required before the battery is cycled; no default | `0.7` | currently not in use |
+| `battery_degradation_cost` | Cost margin: minimum price spread (cost per kWh) a peak must have over the valley before it; no default (unset counts as `0`) | `0.7` | In use (battery charge mode sensor) |
 | `battery_soc_entity`       | Battery state-of-charge sensor | `sensor.home_battery_soc` | currently not in use (history is recorded but not used) |
 | `battery_charge_power_entity` | Battery charge power sensor | `sensor.home_battery_charge_power` | currently not in use (history is recorded but not used) |
 
@@ -158,7 +159,7 @@ Large attributes are always kept out of the recorder, regardless of any option:
 - The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_load_forecast` when the household meter is configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
-  - `sensor.energy_advisor_battery_charge_mode` provides a placeholder battery schedule: one `standby` entry per price slot, with the slot's `cost` and `credit` and a fixed `target_soc` of 50 %.
+  - `sensor.energy_advisor_battery_charge_mode` provides a battery schedule with one entry per price slot: `discharge` on price peaks, `charge` on the valleys before them, `standby` elsewhere, with the slot's `cost` and `credit` and a fixed `target_soc` of 50 %.
   - `sensor.energy_advisor_load_forecast` provides a learned household load forecast in 15-minute slots for today and tomorrow. It publishes a fixed `0.60 kW` profile until enough meter history has been collected.
   - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors. The forecast inputs must be the raw 15-minute forecast sensors with `watts`, `wh_period`, or `forecasts` data; when a tomorrow forecast sensor is configured, updates from either forecast sensor rebuild the solar forecast.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
@@ -236,21 +237,47 @@ See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast d
 See [docs/householdforecast.md](docs/householdforecast.md) for the model, quality warnings and database tables.
 
 ### `sensor.energy_advisor_battery_charge_mode`
-- **Description:** Placeholder battery schedule built from the linked `sensor.energy_advisor_price` entry. The planner is being rebuilt from scratch; price is its only input and no optimization is done yet.
+- **Description:** Battery schedule built from the linked `sensor.energy_advisor_price` entry. The planner is being rebuilt step by step; price and the cost margin are its only inputs so far, and it only finds peaks and valleys (see [Peaks and valleys](#peaks-and-valleys)).
 - **Default Entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
-- **State:** `standby`.
+- **State:** `standby`. It does not follow the current slot yet; read the schedule from `modes`.
 - **Attributes:**
-  - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; always `standby` for now), `target_soc` (target battery state of charge in percent; fixed at `50` for now), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
+  - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; so far `discharge`, `charge` or `standby`), `target_soc` (target battery state of charge in percent; fixed at `50` for now), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
 
 The battery options in the configuration (capacity, power limits, SoC bounds,
-SoC sensor and so on) are kept, but this sensor does not use them yet; see the
+SoC sensor and so on) are kept, but this sensor does not use them yet, except
+for the cost margin `battery_degradation_cost`; see the
 [Battery](#battery) configuration table.
+
+#### Peaks and valleys
+
+The schedule is calculated from the price slots alone. It ignores the current
+time, the battery state, solar and household load, and is rebuilt whenever the
+price sensor gets new rates.
+
+Peaks and valleys alternate: valley, peak, valley, peak, and so on.
+
+- A **peak** is the single highest slot after a valley. It gets `discharge`.
+- A **valley** is the single lowest slot between two peaks (the latest one if
+  several cost the same). It gets `charge`. For the first peak there is no peak
+  before it, so its valley is the lowest slot since midnight of the peak's day.
+- Slots are tried as peaks from the highest `rank` downwards (ties: highest
+  cost first, then earliest). A slot is kept as a peak only while every peak is
+  at least the **cost margin** (`battery_degradation_cost`) more expensive than
+  its valley (strictly more expensive when the margin is `0`). Two peaks need at
+  least one slot between them, so a peak next to a higher peak is dropped, and
+  so is a peak whose valley is too shallow.
+- There is at most one peak from midnight to noon and at most one from noon to
+  midnight, on each local day. A slot starting at 12:00 or later counts as
+  afternoon. When the highest slot of a half day cannot be a peak (for example
+  it has no valley before it), the next highest slot of that half day is tried.
+- Slots without a numeric `rank` are never peaks but can be valleys. Every other
+  slot, including the slots after the last peak, stays `standby`.
 
 #### Battery charge modes
 
 Each slot in `modes` has exactly one of these six modes. They are mutually
-exclusive within a slot. The mode logic is not implemented yet: until it is,
-every slot is `standby`.
+exclusive within a slot. Only `discharge`, `charge` and `standby` are assigned so
+far; every slot that is neither a peak nor a valley is `standby`.
 
 | Mode | Meaning |
 |------|---------|
@@ -281,6 +308,14 @@ for now.
  - `high_threshold`: The threshold cost for high prices.
 
 The service and the compact sensor use the main sensor's internal rate data directly, so they follow the same threshold decisions as `sensor.energy_advisor_price` without recomputing from rounded state attributes.
+
+### `energyadvisor.debug_select_date`
+- **Description:** Only available while the `debug` option is on (see [Debug mode](#debug-mode)). Fetches the prices of one date from elprisetjustnu.se and makes `sensor.energy_advisor_price` and the battery charge mode schedule use them as today's prices.
+- **Input parameters:**
+ - `date`: The date to show, for example `2026-10-24`. Required.
+ - `area`: Optional price area, `SE1` to `SE4`. Defaults to the area found in the Nord Pool prices sensor entity id (for example `sensor.nord_pool_se4_current_price` is `SE4`). It is remembered for later calls.
+ - `entity_id`: Optional `sensor.energy_advisor_price` entity id. Required when several entries are in debug mode.
+- **Output:** None. The action fails with an error when the area is unknown, the date has no published prices, or elprisetjustnu.se cannot be reached.
 
 ## Ranking
 The `sensor.energy_advisor_price` sensor provides a `rank` attribute that indicates the current price's rank compared to other prices for the current day. The rank is expressed on a minute scale across a 1440-minute day.
@@ -432,6 +467,37 @@ card:
 - Ensure the NordPool integration is working and provides price data.
 - Restart Home Assistant after installation or configuration changes.
 - Check logs for errors related to `energyadvisor`.
+
+### Debug mode
+For development only. Turn on `Debug mode` on the first options page (`Settings` -> `Devices & Services` -> `Energy Advisor` -> `Configure`). Saving reloads the integration, and then:
+
+- The prices come from `https://www.elprisetjustnu.se/api/v1/prices/<year>/<MM-DD>_<area>.json` instead of the Nord Pool integration, one date at a time. The Nord Pool sensor is only used to find the area (`SE1` to `SE4`) in its entity id. At start-up today's prices are fetched. The currency is the configured one when it is `SEK` or `EUR`, otherwise `SEK`.
+- The `energyadvisor.debug_select_date` action exists. The prices are collected for the chosen date (any date with published prices, past or future), but they are moved to **today** with the same time of day: 19:00 on the chosen date becomes 19:00 today. So everything that only looks at the current time, such as the current price, level and rank of `sensor.energy_advisor_price`, the compact levels and the dashboard graphs, uses them as today's prices. `sensor.energy_advisor_battery_charge_mode` (its `modes` attribute) follows immediately. The chosen date stays active, and when the local day changes at midnight it is moved to the new day.
+- The Nord Pool sensor's units and `price_divisor` are ignored. Other sensors may show odd values, but the integration keeps running. Fetch errors are logged or returned by the action; they never stop the integration.
+
+Example button card for a dev dashboard:
+
+```yaml
+type: button
+name: Show 2026-10-24
+tap_action:
+  action: perform-action
+  perform_action: energyadvisor.debug_select_date
+  data:
+    date: "2026-10-24"
+```
+
+To pick the date from a date helper (`input_datetime` with only the date enabled), call the action from a script and let the button run the script:
+
+```yaml
+script:
+  energyadvisor_show_date:
+    alias: Show the selected date
+    sequence:
+      - action: energyadvisor.debug_select_date
+        data:
+          date: "{{ states('input_datetime.energyadvisor_debug_date') }}"
+```
 
 ### Debug logging
 Add this to your `configuration.yaml` and restart Home Assistant to debug the component.

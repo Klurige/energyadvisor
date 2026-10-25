@@ -17,18 +17,32 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
+from .coordinators.elpris_debug_coordinator import (
+    ElprisDebugCoordinator,
+    VALID_AREAS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 ATTR_ENTITY_ID = "entity_id"
 ATTR_LEVEL_LENGTH = "level_length"
+ATTR_DATE = "date"
+ATTR_AREA = "area"
 SERVICE_GET_LEVELS = "get_levels"
+SERVICE_DEBUG_SELECT_DATE = "debug_select_date"
 SERVICE_GET_LEVELS_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_ENTITY_ID): cv.entity_id,
         vol.Optional(ATTR_LEVEL_LENGTH, default=0): vol.All(
             cv.positive_int, vol.Coerce(int)
         ),
+    }
+)
+SERVICE_DEBUG_SELECT_DATE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_DATE): cv.date,
+        vol.Optional(ATTR_AREA): vol.All(cv.string, vol.Upper, vol.In(VALID_AREAS)),
+        vol.Optional(ATTR_ENTITY_ID): cv.entity_id,
     }
 )
 
@@ -60,6 +74,59 @@ def _resolve_levels_sensor(hass: HomeAssistant, entity_id: str | None) -> object
 
     raise ServiceValidationError(
         "Multiple energyadvisor sensors are loaded. "
+        "Specify entity_id in the service call."
+    )
+
+
+@callback
+def async_setup_debug_services(hass: HomeAssistant) -> None:
+    """Register the debug date action once; only used in debug mode."""
+    if hass.services.has_service(DOMAIN, SERVICE_DEBUG_SELECT_DATE):
+        return
+
+    async def debug_select_date(call: ServiceCall) -> None:
+        coordinator = _resolve_debug_coordinator(hass, call.data.get(ATTR_ENTITY_ID))
+        await coordinator.async_select_date(
+            call.data[ATTR_DATE], call.data.get(ATTR_AREA)
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DEBUG_SELECT_DATE,
+        debug_select_date,
+        schema=SERVICE_DEBUG_SELECT_DATE_SCHEMA,
+    )
+
+
+@callback
+def async_remove_debug_services(hass: HomeAssistant) -> None:
+    """Remove the debug date action."""
+    hass.services.async_remove(DOMAIN, SERVICE_DEBUG_SELECT_DATE)
+
+
+def _resolve_debug_coordinator(
+    hass: HomeAssistant, entity_id: str | None
+) -> ElprisDebugCoordinator:
+    """Resolve the debug coordinator of the (optionally given) price sensor."""
+    matches = []
+    for runtime_data in hass.data.get(DOMAIN, {}).values():
+        debug_coordinator = getattr(runtime_data, "debug_coordinator", None)
+        if debug_coordinator is None:
+            continue
+        levels_sensor = getattr(runtime_data, "levels_sensor", None)
+        if entity_id is None or getattr(levels_sensor, "entity_id", None) == entity_id:
+            matches.append(debug_coordinator)
+
+    if len(matches) == 1 or (entity_id is not None and matches):
+        return matches[0]
+    if not matches:
+        raise ServiceValidationError(
+            "No energyadvisor entry has the debug option set."
+            if entity_id is None
+            else f"Unknown energyadvisor sensor entity_id: {entity_id}"
+        )
+    raise ServiceValidationError(
+        "Multiple energyadvisor entries are in debug mode. "
         "Specify entity_id in the service call."
     )
 

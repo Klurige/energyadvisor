@@ -209,12 +209,14 @@
         "data": {
           "nordpool_prices_sensor": "Nord Pool aktuellt pris",
           "low_threshold": "Nedre gränsvärde.",
-          "high_threshold": "Övre gränsvärde."
+          "high_threshold": "Övre gränsvärde.",
+          "debug": "Felsökningsläge"
         },
         "data_description": {
           "nordpool_prices_sensor": "Välj Nord Pool-enheten för aktuellt pris. Om flera Nord Pool-sensorer finns ska du välja den som slutar med `current_price`.",
           "low_threshold": "Priser under denna totala importkostnad klassas som Low.",
-          "high_threshold": "Priser över denna totala importkostnad klassas som High."
+          "high_threshold": "Priser över denna totala importkostnad klassas som High.",
+          "debug": "Hämta priser från elprisetjustnu.se i stället för Nord Pool och aktivera åtgärden energyadvisor.debug_select_date. Endast för utveckling; andra sensorer kan fungera sämre."
         }
       },
       "supplier_fees_and_credits": {
