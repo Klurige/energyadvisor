@@ -113,10 +113,10 @@
           "battery_degradation_cost": "Battery wear cost"
         },
         "data_description": {
-          "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
+          "battery_optimization_horizon_hours": "Currently not in use: the optimizer plans over all known price slots.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
-          "battery_degradation_cost": "Wear cost per kWh delivered by the battery. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0."
+          "battery_degradation_cost": "Wear cost per kWh delivered by the battery, in the same unit as the price sensor's cost (fees, taxes and VAT included), not the raw spot price. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0."
         }
       },
       "grid_metering": {
@@ -309,10 +309,10 @@
           "battery_degradation_cost": "Battery wear cost"
         },
         "data_description": {
-          "battery_optimization_horizon_hours": "Look-ahead horizon in hours used by the optimizer.",
+          "battery_optimization_horizon_hours": "Currently not in use: the optimizer plans over all known price slots.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
-          "battery_degradation_cost": "Wear cost per kWh delivered by the battery. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0."
+          "battery_degradation_cost": "Wear cost per kWh delivered by the battery, in the same unit as the price sensor's cost (fees, taxes and VAT included), not the raw spot price. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0."
         }
       },
       "grid_metering": {

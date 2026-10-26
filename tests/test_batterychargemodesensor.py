@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime
+import json
+import random
 import threading
+import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.restore_state import RestoredExtraData
+from homeassistant.helpers.sun import get_astral_event_date
 
 from custom_components.energyadvisor.battery_planner import BatteryParams
 from custom_components.energyadvisor.const import (
@@ -29,8 +35,11 @@ from custom_components.energyadvisor.sensor import batterychargemodesensor
 from custom_components.energyadvisor.sensor.batterychargemodesensor import (
     DEFAULT_LOAD_KW,
     BatteryChargeModeSensor,
+    Schedule,
     ScheduleInputs,
     ScheduleSlot,
+    SlotRecord,
+    _parse_history,
     build_schedule,
 )
 
@@ -44,6 +53,9 @@ BATTERY_OPTIONS = {
     CONF_BATTERY_MAX_SOC_PCT: 95,
 }
 PARAMS = BatteryParams(15.0, 0.0, 95.0, 5.0, 5.0)
+SOC_OPTIONS = {**BATTERY_OPTIONS, CONF_BATTERY_SOC_ENTITY: SOC_ENTITY}
+# Three cheap hours followed by three expensive ones, in 15-minute slots.
+_VALLEY_THEN_PEAK = [1.0] * 12 + [3.0] * 12
 
 
 def _slot(
@@ -70,7 +82,11 @@ def _rates(costs: list[float], minutes: int = 15, start=BASE) -> list[dict]:
 
 def _valley_peak_rates() -> list[dict]:
     """Twelve cheap quarters followed by twelve expensive ones."""
-    return _rates([1.0] * 12 + [3.0] * 12)
+    return _rates(_VALLEY_THEN_PEAK)
+
+
+def _plan_modes(inputs: ScheduleInputs) -> list[str]:
+    return [m["mode"] for m in build_schedule(inputs).modes]
 
 
 def _quarter_hour_rates() -> list[dict]:
@@ -116,9 +132,8 @@ def _inputs(
     params: BatteryParams | None = PARAMS,
     soc: float = 0.0,
     now: datetime.datetime = BASE,
-    horizon: float = 48.0,
 ) -> ScheduleInputs:
-    return ScheduleInputs(_schedule_slots(rates), params, soc, now, horizon)
+    return ScheduleInputs(_schedule_slots(rates), params, soc, now)
 
 
 def _make_sensor(
@@ -145,6 +160,31 @@ def _make_sensor(
     sensor.async_on_remove = MagicMock()
     sensor._now = lambda: now
     return sensor
+
+
+@pytest.fixture(autouse=True)
+def sun():
+    """No sunrise or sunset (polar night) unless a test sets ``side_effect``.
+
+    The test installation is in San Diego, so real sun times would make
+    "daytime" depend on the clock times the tests happen to use.
+    """
+    with patch.object(
+        batterychargemodesensor, "get_astral_event_date", return_value=None
+    ) as mock:
+        yield mock
+
+
+def _all_day(_hass, event: str, day: datetime.date) -> datetime.datetime:
+    """Sunrise at midnight and sunset at the end of the day (local time)."""
+    hour, minute = (0, 0) if event == "sunrise" else (23, 59)
+    return datetime.datetime(
+        day.year, day.month, day.day, hour, minute, tzinfo=TEST_TIMEZONE
+    ).astimezone(datetime.timezone.utc)
+
+
+def _ts(rates: list[dict], index: int) -> float:
+    return rates[index]["start"].timestamp()
 
 
 def _remove(sensor: BatteryChargeModeSensor) -> None:
@@ -298,55 +338,219 @@ def test_slots_that_ended_are_standby_with_the_start_soc_as_target() -> None:
     assert {m["cost"] for m in ended} == {0.1}
 
 
-def test_current_slot_is_planned_for_its_remaining_time() -> None:
-    rates = _rates([0.1, 5.0, 5.0], minutes=15)
+@pytest.mark.parametrize("seconds_in", [0, 300, 450, 600, 840, 870, 890, 899])
+@pytest.mark.parametrize(
+    ("costs", "soc", "mode"),
+    [
+        ([0.1, 5.0, 5.0], 0.0, "charge"),
+        ([5.0, 5.0] + [1.0] * 10, 50.0, "discharge"),
+    ],
+)
+def test_the_current_slot_keeps_its_mode_until_it_ends(
+    costs: list[float], soc: float, mode: str, seconds_in: int
+) -> None:
+    now = BASE + datetime.timedelta(seconds=seconds_in)
 
-    full = build_schedule(_inputs(rates, soc=0.0, now=BASE))
-    one_minute_left = build_schedule(
-        _inputs(rates, soc=0.0, now=BASE + datetime.timedelta(minutes=14))
+    schedule = build_schedule(_inputs(_rates(costs), soc=soc, now=now))
+
+    # A step of the planner's SoC grid (0.125 kWh) is more than the battery can
+    # move in the last minutes of a slot; it must not turn them into standby.
+    assert schedule.modes[0]["mode"] == mode
+    assert schedule.current_mode == mode
+
+
+def test_the_current_slots_target_covers_only_the_time_that_is_left() -> None:
+    rates = _rates([5.0, 5.0] + [1.0] * 10)
+    at = lambda seconds: build_schedule(  # noqa: E731
+        _inputs(rates, soc=50.0, now=BASE + datetime.timedelta(seconds=seconds))
     )
-    last_seconds = build_schedule(
-        _inputs(rates, soc=0.0, now=BASE + datetime.timedelta(minutes=14, seconds=50))
+
+    start, half, last = at(0), at(450), at(899)
+
+    targets = lambda schedule: [
+        m["target_soc"] for m in schedule.modes[:3]
+    ]  # noqa: E731
+    assert targets(start) == pytest.approx([46.7, 43.3, 40.0], abs=0.1)
+    # The load of half a slot (1.67 %) is drawn from here; later slots follow.
+    assert targets(half) == pytest.approx([48.3, 45.0, 41.7], abs=0.1)
+    assert targets(last) == pytest.approx([50.0, 46.7, 43.3], abs=0.1)
+
+
+def test_the_schedule_reports_the_record_of_the_current_slot() -> None:
+    rates = _valley_peak_rates()
+    now = BASE + datetime.timedelta(minutes=20)  # slot 1
+
+    schedule = build_schedule(_inputs(rates, soc=10.0, now=now))
+
+    assert schedule.current == SlotRecord(
+        _ts(rates, 1), schedule.current_mode, schedule.soc_trace[1][1]
+    )
+    assert build_schedule(_inputs(rates, params=None, now=now)).current is None
+    outside = BASE + datetime.timedelta(days=2)
+    assert build_schedule(_inputs(rates, now=outside)).current is None
+
+
+def test_slots_that_ended_keep_the_mode_and_target_they_ran_with() -> None:
+    rates = _rates([0.1] * 4 + [1.0] * 8 + [3.0] * 12)
+    now = BASE + datetime.timedelta(hours=1)  # slots 0-3 have ended
+    history = (
+        SlotRecord(_ts(rates, 1), "charge", 12.5),
+        SlotRecord(_ts(rates, 2), "maxuse", 9.0),
     )
 
-    assert full.modes[0]["mode"] == "charge" and full.current_mode == "charge"
-    # 5 kW for the remaining minute is 0.083 kWh, below the 0.125 kWh step.
-    assert one_minute_left.modes[0]["mode"] == "standby"
-    assert one_minute_left.current_mode == "standby"
-    assert last_seconds.modes[0]["mode"] == "standby"
+    schedule = build_schedule(
+        dataclasses.replace(_inputs(rates, soc=40.0, now=now), history=history)
+    )
+
+    assert [m["mode"] for m in schedule.modes[:4]] == [
+        "standby",
+        "charge",
+        "maxuse",
+        "standby",
+    ]
+    # A slot without a record carries the SoC on from the one before it.
+    assert [m["target_soc"] for m in schedule.modes[:4]] == [40.0, 12.5, 9.0, 9.0]
+    assert [target for _, target in schedule.soc_trace[:4]] == [40.0, 12.5, 9.0, 9.0]
 
 
-def test_slots_after_the_horizon_are_standby_and_not_planned() -> None:
-    rates = _rates([1.0] * 12 + [3.0] * 12)  # peak starts three hours out
-    now = BASE
+def test_history_never_overrides_a_slot_that_is_still_planned() -> None:
+    rates = _valley_peak_rates()
+    now = BASE + datetime.timedelta(minutes=20)  # slots 1 and later are planned
+    plain = _inputs(rates, soc=10.0, now=now)
+    bogus = tuple(SlotRecord(_ts(rates, i), "discharge", 99.0) for i in range(1, 24))
 
-    short = build_schedule(_inputs(rates, now=now, horizon=2.0))
-    long = build_schedule(_inputs(rates, now=now, horizon=6.0))
+    with_history = build_schedule(dataclasses.replace(plain, history=bogus))
 
-    assert {m["mode"] for m in short.modes} == {"standby"}
-    assert "discharge" in [m["mode"] for m in long.modes]
-
-
-def test_slot_starting_exactly_at_the_horizon_is_not_planned() -> None:
-    rates = _rates([1.0, 1.0, 1.0, 9.0])
-
-    # The expensive slot starts 45 minutes out: with a 0.75 h horizon it is
-    # outside, so charging for it would be pointless.
-    outside = build_schedule(_inputs(rates, horizon=0.75, soc=0.0))
-    inside = build_schedule(_inputs(rates, horizon=0.76, soc=0.0))
-
-    assert {m["mode"] for m in outside.modes} == {"standby"}
-    assert "discharge" in [m["mode"] for m in inside.modes]
+    assert with_history.modes[1:] == build_schedule(plain).modes[1:]
 
 
-def test_unplanned_slots_after_the_horizon_hold_the_last_planned_soc() -> None:
-    rates = _rates([1.0] * 4 + [3.0] * 4 + [1.0] * 8)
+# Daytime: sunrise to sunset, judged at the middle of the slot.
 
-    schedule = build_schedule(_inputs(rates, horizon=2.0, soc=0.0))
 
-    tail = [m["target_soc"] for m in schedule.modes[8:]]
-    assert len(set(tail)) == 1
-    assert tail[0] == schedule.modes[7]["target_soc"]
+def _peak_slot_index() -> int:
+    return _plan_modes(_inputs(_valley_peak_rates(), soc=50.0)).index("discharge")
+
+
+def test_a_planned_discharge_in_daylight_is_maxuse_and_others_are_unchanged() -> None:
+    rates = _valley_peak_rates()
+    base = dataclasses.replace(_inputs(rates, soc=0.0), daylight=())
+    night = build_schedule(base)
+    day = build_schedule(
+        dataclasses.replace(
+            base,
+            daylight=(
+                (BASE.timestamp(), (BASE + datetime.timedelta(days=1)).timestamp()),
+            ),
+        )
+    )
+
+    night_modes = [m["mode"] for m in night.modes]
+    assert "charge" in night_modes and "discharge" in night_modes
+    expected = ["maxuse" if mode == "discharge" else mode for mode in night_modes]
+    assert [m["mode"] for m in day.modes] == expected
+    # Maxuse draws the battery down like discharge, so the plan is the same.
+    assert day.soc_trace == night.soc_trace
+    assert [m["target_soc"] for m in day.modes] == [
+        m["target_soc"] for m in night.modes
+    ]
+
+
+def test_the_current_mode_is_maxuse_when_the_current_slot_discharges_by_day() -> None:
+    now = BASE + datetime.timedelta(hours=3, minutes=1)  # first peak slot
+    inputs = _inputs(_valley_peak_rates(), soc=50.0, now=now)
+    daylight = ((BASE.timestamp(), (BASE + datetime.timedelta(days=1)).timestamp()),)
+
+    night = build_schedule(inputs)
+    day = build_schedule(dataclasses.replace(inputs, daylight=daylight))
+
+    assert night.current_mode == "discharge"
+    assert day.current_mode == "maxuse"
+    assert day.current is not None and day.current.mode == "maxuse"
+
+
+def test_daylight_is_judged_at_the_middle_of_the_slot() -> None:
+    rates = _valley_peak_rates()
+    index = _peak_slot_index()
+    start = rates[index]["start"].timestamp()
+    end = rates[index]["end"].timestamp()
+    middle = (start + end) / 2
+
+    def mode_with(daylight: tuple[tuple[float, float], ...]) -> str:
+        inputs = dataclasses.replace(_inputs(rates, soc=50.0), daylight=daylight)
+        return build_schedule(inputs).modes[index]["mode"]
+
+    assert mode_with(((middle - 60, middle + 60),)) == "maxuse"
+    assert mode_with(((middle - 60, middle),)) == "discharge"  # sunset at the middle
+    assert mode_with(((middle + 1, end + 3600),)) == "discharge"  # sunrise after it
+    assert mode_with(((start - 3600, middle + 1),)) == "maxuse"
+    assert mode_with(((start - 7200, start - 3600), (middle - 1, end))) == "maxuse"
+
+
+def test_charge_and_standby_are_not_changed_by_daylight() -> None:
+    rates = _valley_peak_rates()
+    inputs = dataclasses.replace(
+        _inputs(rates, soc=0.0),
+        daylight=((BASE.timestamp(), (BASE + datetime.timedelta(days=1)).timestamp()),),
+    )
+
+    modes = [m["mode"] for m in build_schedule(inputs).modes]
+
+    assert "charge" in modes[:12] and "maxuse" not in modes[:12]
+    assert "charge" not in modes[12:] and "maxuse" in modes[12:]
+
+
+def _long_rates(slot_count: int) -> list[dict]:
+    """Flat prices, then three cheap hours and three expensive ones at the end."""
+    return _rates([2.0] * (slot_count - 24) + _VALLEY_THEN_PEAK)
+
+
+@pytest.mark.parametrize("slot_count", [96, 192, 288])
+def test_every_slot_of_a_one_two_or_three_day_array_is_planned(
+    slot_count: int,
+) -> None:
+    modes = _plan_modes(_inputs(_long_rates(slot_count)))
+
+    # With 288 slots the valley and the peak are more than 48 hours out, where
+    # the old look-ahead cap left every slot on standby.
+    assert len(modes) == slot_count
+    assert "charge" in modes[-24:-12]
+    assert "discharge" in modes[-12:]
+    assert set(modes[:-24]) == {"standby"}
+
+
+def test_a_plan_made_part_way_through_a_long_array_reaches_its_last_slot() -> None:
+    now = BASE + datetime.timedelta(hours=12)  # the peak is 60 hours out
+
+    modes = _plan_modes(_inputs(_long_rates(288), now=now))
+
+    assert set(modes[:48]) == {"standby"}
+    assert "charge" in modes[-24:-12]
+    assert "discharge" in modes[-12:]
+
+
+def test_the_last_slot_of_the_known_prices_is_planned() -> None:
+    rates = _rates([2.0] * 300 + [1.0] * 4 + [3.0] * 4)
+
+    schedule = build_schedule(_inputs(rates))
+
+    assert "charge" in [m["mode"] for m in schedule.modes[300:304]]
+    assert schedule.modes[-1]["mode"] == "discharge"
+    assert schedule.modes[-1]["target_soc"] < schedule.modes[303]["target_soc"]
+
+
+def test_planned_inputs_do_not_have_a_horizon() -> None:
+    assert {f.name for f in dataclasses.fields(ScheduleInputs)} == {
+        "slots",
+        "params",
+        "start_soc_pct",
+        "now",
+        "history",
+        "daylight",
+    }
+    assert not hasattr(batterychargemodesensor, "DEFAULT_HORIZON_HOURS")
+    assert not hasattr(
+        batterychargemodesensor, "CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS"
+    )
 
 
 def test_all_slots_in_the_past_stay_standby() -> None:
@@ -367,7 +571,7 @@ def test_repeated_hour_when_the_clocks_go_back_is_handled_by_timestamps() -> Non
     now = datetime.datetime(2026, 10, 25, 1, 30, tzinfo=datetime.timezone.utc)
     now = now.astimezone(TEST_TIMEZONE)  # 02:30 CET, the second time
 
-    schedule = build_schedule(ScheduleInputs(slots, PARAMS, 0.0, now, 48.0))
+    schedule = build_schedule(ScheduleInputs(slots, PARAMS, 0.0, now))
 
     # The cheap first 02:00-03:00 hour is over, even though 02:30 has the same
     # wall-clock time as one of its slots.
@@ -385,20 +589,33 @@ def test_slot_that_ends_at_the_clock_change_keeps_its_real_length() -> None:
     assert slots[7].end.strftime("%H:%M") == "02:00"
     now = datetime.datetime(2026, 10, 25, 0, 45, tzinfo=datetime.timezone.utc)
 
-    schedule = build_schedule(ScheduleInputs(slots, PARAMS, 0.0, now, 48.0))
+    schedule = build_schedule(ScheduleInputs(slots, PARAMS, 0.0, now))
 
     assert schedule.modes[7]["mode"] == "charge"
     assert schedule.current_mode == "charge"
 
 
-def test_100_slot_day_is_planned_without_error() -> None:
-    start_utc = datetime.datetime(2026, 10, 24, 22, 0, tzinfo=datetime.timezone.utc)
-    costs = [1.0 + (i % 24) / 10 for i in range(100)]
+@pytest.mark.parametrize(
+    ("start_utc", "slot_count"),
+    [
+        # Local midnight of the day the clocks go forward (23 h) and back (25 h).
+        (datetime.datetime(2026, 3, 28, 23, 0, tzinfo=datetime.timezone.utc), 92),
+        (datetime.datetime(2026, 10, 24, 22, 0, tzinfo=datetime.timezone.utc), 100),
+    ],
+)
+def test_clock_change_days_are_planned_up_to_their_last_slot(
+    start_utc: datetime.datetime, slot_count: int
+) -> None:
+    costs = [2.0] * (slot_count - 24) + _VALLEY_THEN_PEAK
     slots = _utc_slots(start_utc, costs)
 
-    schedule = build_schedule(ScheduleInputs(slots, PARAMS, 20.0, slots[0].start, 48.0))
+    schedule = build_schedule(ScheduleInputs(slots, PARAMS, 0.0, slots[0].start))
 
-    assert len(schedule.modes) == 100
+    modes = [m["mode"] for m in schedule.modes]
+    assert len(modes) == slot_count
+    assert "charge" in modes[-24:-12]
+    assert "discharge" in modes[-12:]
+    assert set(modes[:-24]) == {"standby"}
 
 
 # -- sensor: defaults, attributes, wiring ------------------------------------
@@ -409,7 +626,64 @@ def test_sensor_is_standby_with_empty_modes_before_any_plan(hass) -> None:
 
     assert sensor.state == "standby"
     assert sensor.icon == "mdi:battery-off"
-    assert sensor.extra_state_attributes == {"modes": [], "current_soc_pct": None}
+    assert sensor.extra_state_attributes == {"modes": [], "target_soc": None}
+
+
+def test_the_current_slots_target_soc_is_published_as_target_soc() -> None:
+    now = BASE + datetime.timedelta(hours=1, minutes=5)
+
+    schedule = build_schedule(_inputs(_valley_peak_rates(), soc=20.0, now=now))
+
+    assert schedule.modes[4]["target_soc"] == schedule.current_target_soc
+    assert schedule.current is not None
+    assert schedule.current_target_soc == round(schedule.current.target_soc, 1)
+
+
+def test_target_soc_is_the_fixed_default_without_a_battery() -> None:
+    now = BASE + datetime.timedelta(minutes=20)
+
+    schedule = build_schedule(_inputs(_valley_peak_rates(), params=None, now=now))
+
+    assert schedule.current is None
+    assert schedule.current_target_soc == 50
+
+
+def test_target_soc_is_none_when_no_slot_contains_now() -> None:
+    after = BASE + datetime.timedelta(days=1)
+
+    assert (
+        build_schedule(_inputs(_valley_peak_rates(), now=after)).current_target_soc
+        is None
+    )
+    assert build_schedule(_inputs([], now=BASE)).current_target_soc is None
+
+
+async def test_target_soc_follows_the_plan_and_defaults_before_it(
+    make_sensor, hass
+) -> None:
+    hass.states.async_set(SOC_ENTITY, "0")
+    sensor = make_sensor(_valley_peak_rates(), options=SOC_OPTIONS)
+    sensor._now = lambda: BASE + datetime.timedelta(minutes=15 * 3 + 1)
+
+    await sensor.async_added_to_hass()
+    assert sensor.extra_state_attributes["target_soc"] == 50
+    await _settle(sensor)
+
+    attributes = sensor.extra_state_attributes
+    assert attributes["target_soc"] == attributes["modes"][3]["target_soc"]
+    assert attributes["target_soc"] != 50
+    assert "current_soc_pct" not in attributes
+    _remove(sensor)
+    await _settle(sensor)
+
+
+async def test_target_soc_is_published_without_a_battery(make_sensor) -> None:
+    sensor = make_sensor(_valley_peak_rates(), options={})
+
+    await sensor.async_added_to_hass()
+    await _settle(sensor)
+
+    assert sensor.extra_state_attributes["target_soc"] == 50
 
 
 def test_modes_attribute_is_unrecorded(hass) -> None:
@@ -557,6 +831,7 @@ async def test_state_and_icon_follow_the_current_slot(make_sensor, hass) -> None
         # The battery has been charged by the time the peak starts.
         ("discharge", "95", discharge_index, "mdi:battery-arrow-down"),
     ]
+    ran: dict[int, str] = {}
 
     for mode, soc, index, icon in cases:
         hass.states.async_set(SOC_ENTITY, soc)
@@ -567,8 +842,14 @@ async def test_state_and_icon_follow_the_current_slot(make_sensor, hass) -> None
         assert _modes(sensor)[index] == mode
         assert sensor.state == mode
         assert sensor.icon == icon
-        # Nothing before the current slot is planned.
-        assert set(_modes(sensor)[:index]) <= {"standby"}
+        # Slots before the current one are not planned: they keep the mode they
+        # ran with, or are standby when they never ran.
+        for earlier, ran_mode in ran.items():
+            assert _modes(sensor)[earlier] == ran_mode
+        assert {m for i, m in enumerate(_modes(sensor)[:index]) if i not in ran} <= {
+            "standby"
+        }
+        ran[index] = mode
 
 
 async def test_state_is_standby_when_no_slot_contains_now(make_sensor, hass) -> None:
@@ -600,27 +881,60 @@ async def test_plan_uses_the_wear_cost_as_a_margin_of_loss(make_sensor, hass) ->
     assert set(_modes(worn)) == {"standby"}
 
 
-async def test_horizon_option_truncates_the_plan(make_sensor, hass) -> None:
+@pytest.mark.parametrize("horizon", [1, 24, 48, 96, 0, -3, "x"])
+async def test_horizon_option_has_no_effect_on_the_modes(
+    make_sensor, hass, horizon
+) -> None:
     hass.states.async_set(SOC_ENTITY, "0")
-    options = {
-        **BATTERY_OPTIONS,
-        CONF_BATTERY_SOC_ENTITY: SOC_ENTITY,
-        CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: 2,
-    }
-    sensor = make_sensor(_valley_peak_rates(), options=options)
+    options = {**BATTERY_OPTIONS, CONF_BATTERY_SOC_ENTITY: SOC_ENTITY}
+    rates = _long_rates(288)
+    unset = make_sensor(rates, options=options)
+    configured = make_sensor(
+        rates, options={**options, CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: horizon}
+    )
+
+    for sensor in (unset, configured):
+        await sensor.async_added_to_hass()
+        await _settle(sensor)
+
+    modes = _modes(unset)
+    # The valley and the peak are 66 hours out: no horizon option may cut them.
+    assert "charge" in modes[-24:-12] and "discharge" in modes[-12:]
+    assert _modes(configured) == modes
+    assert configured.extra_state_attributes == unset.extra_state_attributes
+
+
+async def test_a_sensor_plans_all_slots_of_a_three_day_array(make_sensor, hass) -> None:
+    hass.states.async_set(SOC_ENTITY, "0")
+    options = {**BATTERY_OPTIONS, CONF_BATTERY_SOC_ENTITY: SOC_ENTITY}
+    sensor = make_sensor(_long_rates(288), options=options)
 
     await sensor.async_added_to_hass()
     await _settle(sensor)
 
-    assert set(_modes(sensor)) == {"standby"}
+    modes = _modes(sensor)
+    assert len(modes) == 288
+    assert "charge" in modes[192:] and "discharge" in modes[192:]
+    assert len(sensor._soc_trace) == 288
 
 
-def test_horizon_defaults_to_48_hours(hass) -> None:
-    for value in (None, 0, -3, "x"):
-        options = {**BATTERY_OPTIONS, CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS: value}
-        sensor = _make_sensor(hass, [], options=options)
+def test_solving_a_three_day_array_is_fast() -> None:
+    rng = random.Random(7)
+    rates = _rates([rng.uniform(0.5, 3.0) for _ in range(288)])
+    inputs = ScheduleInputs(
+        _schedule_slots(rates),
+        BatteryParams(15.0, 5.0, 95.0, 5.0, 5.0, 0.9, 0.2),
+        50.0,
+        BASE,
+    )
 
-        assert sensor._build_inputs(BASE).horizon_hours == 48.0
+    started = time.perf_counter()
+    schedule = build_schedule(inputs)
+    elapsed = time.perf_counter() - started
+
+    assert len(schedule.modes) == 288
+    assert {m["mode"] for m in schedule.modes} == {"standby", "charge", "discharge"}
+    assert elapsed < 3.0
 
 
 # -- sensor: start SoC ---------------------------------------------------------
@@ -639,7 +953,6 @@ def test_start_soc_comes_from_the_soc_entity(hass) -> None:
     inputs = sensor._build_inputs(BASE)
 
     assert inputs.start_soc_pct == 42.5
-    assert sensor.extra_state_attributes["current_soc_pct"] == 42.5
 
 
 def test_soc_entity_accepts_percent_signs_and_decimal_commas(hass) -> None:
@@ -655,7 +968,6 @@ def test_unusable_soc_falls_back_to_min_soc_without_a_previous_plan(
     inputs = sensor._build_inputs(BASE)
 
     assert inputs.start_soc_pct == 7
-    assert sensor.extra_state_attributes["current_soc_pct"] is None
 
 
 def test_start_soc_is_not_clamped_by_the_sensor_but_by_the_plan(hass) -> None:
@@ -663,7 +975,7 @@ def test_start_soc_is_not_clamped_by_the_sensor_but_by_the_plan(hass) -> None:
 
     inputs = sensor._build_inputs(BASE)
     schedule = build_schedule(
-        ScheduleInputs(inputs.slots, inputs.params, inputs.start_soc_pct, BASE, 48.0)
+        ScheduleInputs(inputs.slots, inputs.params, inputs.start_soc_pct, BASE)
     )
 
     assert inputs.start_soc_pct == 99
@@ -696,7 +1008,7 @@ async def test_unavailable_soc_uses_the_end_soc_of_the_previous_plan(
 
 async def test_dead_reckoning_ignores_the_default_fixed_modes(hass) -> None:
     sensor = _soc_sensor(hass, "unavailable", options={CONF_BATTERY_MIN_SOC_PCT: 3})
-    sensor._modes = sensor._default_modes()
+    sensor._modes = sensor._default_schedule().modes
 
     assert sensor._build_inputs(BASE + datetime.timedelta(hours=1)).start_soc_pct == 3
 
@@ -808,9 +1120,7 @@ async def test_household_updates_replan_and_the_callback_is_removed(
 # -- sensor: SoC gating ----------------------------------------------------------
 
 
-async def test_soc_changes_below_two_points_are_stored_but_do_not_replan(
-    make_sensor, hass
-) -> None:
+async def test_soc_changes_below_two_points_do_not_replan(make_sensor, hass) -> None:
     sensor = _soc_sensor(hass, "50")
     sensor.async_on_remove = MagicMock()
     await sensor.async_added_to_hass()
@@ -823,20 +1133,17 @@ async def test_soc_changes_below_two_points_are_stored_but_do_not_replan(
     await hass.async_block_till_done()
 
     spy.assert_not_called()
-    assert sensor.extra_state_attributes["current_soc_pct"] == 51
 
     hass.states.async_set(SOC_ENTITY, "51.9")
     await hass.async_block_till_done()
 
     spy.assert_not_called()
-    assert sensor.extra_state_attributes["current_soc_pct"] == 51.9
 
     # The gate compares with the SoC of the last plan, not the last event.
     hass.states.async_set(SOC_ENTITY, "52")
     await hass.async_block_till_done()
 
     spy.assert_called_once_with()
-    assert sensor.extra_state_attributes["current_soc_pct"] == 52
     _remove(sensor)
     await _settle(sensor)
 
@@ -858,7 +1165,7 @@ async def test_soc_drop_of_two_points_replans(hass) -> None:
     await _settle(sensor)
 
 
-async def test_soc_becoming_unusable_is_stored_without_a_replan(hass) -> None:
+async def test_soc_becoming_unusable_does_not_replan(hass) -> None:
     sensor = _soc_sensor(hass, "50")
     await sensor.async_added_to_hass()
     await _settle(sensor)
@@ -869,7 +1176,6 @@ async def test_soc_becoming_unusable_is_stored_without_a_replan(hass) -> None:
     await hass.async_block_till_done()
 
     spy.assert_not_called()
-    assert sensor.extra_state_attributes["current_soc_pct"] is None
 
     # ... but a usable value after an unusable plan always replans.
     sensor._last_planned_soc_pct = None
@@ -992,23 +1298,138 @@ async def test_a_new_worker_starts_after_the_previous_one_finished(
     assert sensor.async_write_ha_state.call_count == 2
 
 
-async def test_planning_runs_in_the_executor(make_sensor, hass) -> None:
-    sensor = make_sensor(_valley_peak_rates(), options=BATTERY_OPTIONS)
-    threads: list[threading.Thread] = []
+async def test_planning_runs_off_the_event_loop(make_sensor, hass) -> None:
+    sensor = make_sensor(_long_rates(288), options=SOC_OPTIONS)
+    hass.states.async_set(SOC_ENTITY, "0")
+    loop = asyncio.get_running_loop()
+    loop_ident = threading.get_ident()
+    snapshot_idents: list[int] = []
+    solve_idents: dict[str, int] = {}
+    started = threading.Event()
+    release = threading.Event()
+    real_build_inputs = sensor._build_inputs
     real_build_schedule = batterychargemodesensor.build_schedule
+    real_plan_battery = batterychargemodesensor.plan_battery
+
+    def recording_build_inputs(now):
+        snapshot_idents.append(threading.get_ident())
+        return real_build_inputs(now)
 
     def recording_build_schedule(inputs):
-        threads.append(threading.current_thread())
+        solve_idents["build_schedule"] = threading.get_ident()
+        started.set()
+        assert release.wait(5)
         return real_build_schedule(inputs)
 
-    with patch.object(
-        batterychargemodesensor, "build_schedule", recording_build_schedule
+    def recording_plan_battery(*args):
+        solve_idents["plan_battery"] = threading.get_ident()
+        return real_plan_battery(*args)
+
+    sensor._build_inputs = recording_build_inputs
+    with (
+        patch.object(
+            batterychargemodesensor, "build_schedule", recording_build_schedule
+        ),
+        patch.object(batterychargemodesensor, "plan_battery", recording_plan_battery),
     ):
         sensor._request_plan()
+        assert await hass.async_add_executor_job(started.wait, 5)
+        # The solve is blocked in its worker thread; the loop keeps running.
+        responsive = asyncio.Event()
+        loop.call_later(0.01, responsive.set)
+        await asyncio.wait_for(responsive.wait(), 1)
+        assert not sensor._plan_task.done()
+        release.set()
         await _settle(sensor)
 
-    assert len(threads) == 1
-    assert threads[0] is not threading.main_thread()
+    # The inputs are snapshotted on the loop, the solve runs in another thread.
+    assert snapshot_idents == [loop_ident]
+    assert solve_idents.keys() == {"build_schedule", "plan_battery"}
+    assert solve_idents["build_schedule"] != loop_ident
+    assert solve_idents["plan_battery"] == solve_idents["build_schedule"]
+    assert len(sensor.extra_state_attributes["modes"]) == 288
+
+
+async def test_nothing_that_runs_on_the_loop_calls_the_planner(
+    make_sensor, hass
+) -> None:
+    hass.states.async_set(SOC_ENTITY, "30")
+    household = _household([{"from": "2026-08-15T00:00", "load": 2.0}])
+    sensor = make_sensor(
+        _long_rates(288),
+        options=SOC_OPTIONS,
+        household=household,
+    )
+    sensor._request_plan = MagicMock()
+    forbidden = MagicMock(side_effect=AssertionError("planner called on the loop"))
+
+    with patch.object(batterychargemodesensor, "plan_battery", forbidden):
+        await sensor.async_added_to_hass()
+        default_modes = sensor._default_schedule().modes
+        inputs = sensor._build_inputs(BASE)
+        sensor._handle_price_update()
+        sensor._handle_household_update()
+        sensor._handle_time_change(BASE)
+
+    forbidden.assert_not_called()
+    assert inputs.params is not None
+    assert len(inputs.slots) == len(default_modes) == 288
+    assert {m["mode"] for m in default_modes} == {"standby"}
+    assert {m["target_soc"] for m in default_modes} == {50}
+    assert sensor._modes == default_modes
+
+
+def test_building_the_snapshot_is_cheap_for_a_three_day_array(hass) -> None:
+    forecast = [
+        {"from": slot["start"].strftime("%Y-%m-%dT%H:%M"), "load": 1.0}
+        for slot in _long_rates(192)
+    ]
+    sensor = _make_sensor(
+        hass,
+        _long_rates(288),
+        options=SOC_OPTIONS,
+        household=_household(forecast),
+    )
+    hass.states.async_set(SOC_ENTITY, "30")
+
+    started = time.perf_counter()
+    inputs = sensor._build_inputs(BASE)
+    sensor._default_schedule()
+    elapsed = time.perf_counter() - started
+
+    assert len(inputs.slots) == 288
+    assert elapsed < 0.25
+
+
+def test_the_snapshot_is_immutable_and_detached_from_its_sources(hass) -> None:
+    rates = _long_rates(96)
+    forecast = [{"from": "2026-08-15T00:00", "load": 2.0}]
+    household = _household(forecast)
+    hass.states.async_set(SOC_ENTITY, "30")
+    sensor = _make_sensor(hass, rates, options=SOC_OPTIONS, household=household)
+
+    inputs = sensor._build_inputs(BASE)
+    expected = tuple(
+        (s.start, s.end, s.cost, s.credit, s.load_kw) for s in inputs.slots
+    )
+    rates.clear()
+    forecast.clear()
+    sensor._price_sensor._rates = []
+
+    assert isinstance(inputs.slots, tuple) and len(inputs.slots) == 96
+    assert (
+        tuple((s.start, s.end, s.cost, s.credit, s.load_kw) for s in inputs.slots)
+        == expected
+    )
+    assert inputs.slots[0].load_kw == 2.0
+    for frozen in (inputs, inputs.slots[0], inputs.params):
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            setattr(frozen, "attribute", 0)
+    assert all(
+        isinstance(value, (datetime.datetime, float))
+        for slot in inputs.slots
+        for value in dataclasses.astuple(slot)
+    )
 
 
 async def test_failed_plan_keeps_the_previous_modes_and_later_triggers_work(
@@ -1077,3 +1498,244 @@ async def test_removal_while_planning_discards_the_result(make_sensor, hass) -> 
 
     assert task.cancelled()
     sensor.async_write_ha_state.assert_not_called()
+
+
+# -- sensor: daytime maxuse ----------------------------------------------------
+
+
+async def test_daytime_discharge_is_published_as_maxuse(make_sensor, hass, sun) -> None:
+    sun.side_effect = _all_day
+    hass.states.async_set(SOC_ENTITY, "95")
+    probe = make_sensor(_valley_peak_rates(), options=SOC_OPTIONS)
+    await probe.async_added_to_hass()
+    await _settle(probe)
+    first_peak = _modes(probe).index("maxuse")
+    now = BASE + datetime.timedelta(minutes=15 * first_peak + 1)
+    sensor = make_sensor(_valley_peak_rates(), options=SOC_OPTIONS, now=now)
+
+    await sensor.async_added_to_hass()
+    await _settle(sensor)
+
+    assert sensor.state == "maxuse"
+    assert sensor.icon == "mdi:battery-sync"
+    assert "discharge" not in _modes(sensor)
+    sun.assert_any_call(hass, "sunrise", BASE.date())
+    sun.assert_any_call(hass, "sunset", BASE.date())
+
+
+async def test_discharge_at_night_stays_discharge(make_sensor, hass) -> None:
+    hass.states.async_set(SOC_ENTITY, "95")
+    now = BASE + datetime.timedelta(hours=3, minutes=1)
+    sensor = make_sensor(_valley_peak_rates(), options=SOC_OPTIONS, now=now)
+
+    await sensor.async_added_to_hass()
+    await _settle(sensor)
+
+    assert sensor.state == "discharge"
+    assert sensor.icon == "mdi:battery-arrow-down"
+    assert "maxuse" not in _modes(sensor)
+
+
+def test_daylight_windows_cover_every_day_the_slots_start_on(hass, sun) -> None:
+    sun.side_effect = _all_day
+    next_day = BASE + datetime.timedelta(days=1)
+    rates = _rates([1.0] * 2, start=BASE) + _rates([1.0] * 2, start=next_day)
+    sensor = _make_sensor(hass, rates, options=BATTERY_OPTIONS)
+
+    windows = sensor._build_inputs(BASE).daylight
+
+    assert windows == tuple(
+        (
+            _all_day(hass, "sunrise", day).timestamp(),
+            _all_day(hass, "sunset", day).timestamp(),
+        )
+        for day in (BASE.date(), next_day.date())
+    )
+
+
+@pytest.mark.parametrize(
+    "sunrise_and_sunset", [(None, None), (None, "set"), ("rise", None)]
+)
+def test_a_day_without_sunrise_or_sunset_has_no_daylight(
+    hass, sun, sunrise_and_sunset
+) -> None:
+    sun.side_effect = lambda _hass, event, day: (
+        _all_day(_hass, event, day)
+        if sunrise_and_sunset[0 if event == "sunrise" else 1]
+        else None
+    )
+    sensor = _make_sensor(hass, _valley_peak_rates(), options=BATTERY_OPTIONS)
+
+    assert sensor._build_inputs(BASE).daylight == ()
+
+
+async def test_the_real_sun_helper_gives_a_summer_day_in_sweden(
+    hass, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        batterychargemodesensor, "get_astral_event_date", get_astral_event_date
+    )
+    hass.config.latitude = 59.33
+    hass.config.longitude = 18.07
+    hass.config.elevation = 20
+    await hass.config.async_set_time_zone("Europe/Stockholm")
+    sensor = _make_sensor(hass, _valley_peak_rates(), options=BATTERY_OPTIONS)
+
+    ((sunrise, sunset),) = sensor._build_inputs(BASE).daylight
+
+    rise = datetime.datetime.fromtimestamp(sunrise, TEST_TIMEZONE)
+    set_ = datetime.datetime.fromtimestamp(sunset, TEST_TIMEZONE)
+    assert rise.date() == set_.date() == BASE.date()
+    assert 4 <= rise.hour <= 6 and 19 <= set_.hour <= 21
+
+
+# -- sensor: modes of the slots that have run ------------------------------------
+
+
+async def test_ended_slots_keep_the_mode_they_ran_with(make_sensor, hass) -> None:
+    hass.states.async_set(SOC_ENTITY, "0")
+    sensor = make_sensor(_valley_peak_rates(), options=SOC_OPTIONS)
+    await sensor.async_added_to_hass()
+    await _settle(sensor)
+    charge_index = _modes(sensor).index("charge")
+    sensor._now = lambda: BASE + datetime.timedelta(minutes=15 * charge_index + 1)
+    sensor._request_plan()
+    await _settle(sensor)
+    ran_target = sensor.extra_state_attributes["modes"][charge_index]["target_soc"]
+
+    hass.states.async_set(SOC_ENTITY, "95")
+    sensor._now = lambda: BASE + datetime.timedelta(hours=3, minutes=1)
+    sensor._request_plan()
+    await _settle(sensor)
+
+    ended = sensor.extra_state_attributes["modes"][charge_index]
+    assert ended["mode"] == "charge"
+    assert ended["target_soc"] == ran_target
+
+
+async def test_apply_schedule_records_the_current_slot(make_sensor) -> None:
+    sensor = make_sensor(_valley_peak_rates(), options=BATTERY_OPTIONS)
+    schedule = Schedule([], "charge", (), SlotRecord(1000.0, "charge", 12.0))
+
+    sensor._apply_schedule(schedule)
+
+    assert sensor._history == {1000.0: SlotRecord(1000.0, "charge", 12.0)}
+    sensor._apply_schedule(Schedule([], "standby", (), None))
+    assert len(sensor._history) == 1
+    sensor._apply_schedule(
+        Schedule([], "maxuse", (), SlotRecord(1000.0, "maxuse", 9.0))
+    )
+    assert sensor._history == {1000.0: SlotRecord(1000.0, "maxuse", 9.0)}
+
+
+async def test_records_older_than_two_days_are_dropped(make_sensor) -> None:
+    sensor = make_sensor(_valley_peak_rates(), options=BATTERY_OPTIONS)
+    now = BASE.timestamp()
+    day = 24 * 3600
+    for start in (now - 3 * day, now - 2 * day - 900, now - 2 * day, now - 900):
+        sensor._history[start] = SlotRecord(start, "charge", 10.0)
+
+    sensor._apply_schedule(Schedule([], "standby", (), SlotRecord(now, "standby", 5.0)))
+
+    assert sorted(sensor._history) == [now - 2 * day, now - 900, now]
+
+
+async def test_the_history_is_planned_with_and_survives_a_restart(
+    make_sensor, hass
+) -> None:
+    hass.states.async_set(SOC_ENTITY, "0")
+    rates = _valley_peak_rates()
+    first = make_sensor(rates, options=SOC_OPTIONS)
+    await first.async_added_to_hass()
+    await _settle(first)
+    charge_index = _modes(first).index("charge")
+    first._now = lambda: BASE + datetime.timedelta(minutes=15 * charge_index + 1)
+    first._request_plan()
+    await _settle(first)
+    saved = json.loads(json.dumps(first.extra_restore_state_data.as_dict()))
+
+    now = BASE + datetime.timedelta(hours=3, minutes=1)
+    second = make_sensor(rates, options=SOC_OPTIONS, now=now)
+    second.async_get_last_extra_data = AsyncMock(return_value=RestoredExtraData(saved))
+    await second.async_added_to_hass()
+    await _settle(second)
+
+    assert second._history.keys() >= {_ts(rates, charge_index)}
+    assert _modes(second)[charge_index] == "charge"
+
+
+async def test_the_current_slot_is_saved_for_the_next_start(make_sensor) -> None:
+    rates = _valley_peak_rates()
+    sensor = make_sensor(rates, options=BATTERY_OPTIONS)
+
+    await sensor.async_added_to_hass()
+    await _settle(sensor)
+
+    ((start, mode, target),) = sensor.extra_restore_state_data.as_dict()["history"]
+    assert (start, mode) == (_ts(rates, 0), sensor.state)
+    assert target == sensor.extra_state_attributes["modes"][0]["target_soc"]
+
+
+def test_the_restore_data_lists_records_oldest_first(hass) -> None:
+    sensor = _make_sensor(hass, [], options=BATTERY_OPTIONS)
+    sensor._history = {
+        20.0: SlotRecord(20.0, "maxuse", 1.5),
+        10.0: SlotRecord(10.0, "charge", 2.5),
+    }
+
+    assert sensor.extra_restore_state_data.as_dict() == {
+        "history": [[10.0, "charge", 2.5], [20.0, "maxuse", 1.5]]
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        {"history": None},
+        {"history": "charge"},
+        {"history": 5},
+        {"history": [None, 3, "abc", [], [1.0], [1.0, "charge"], [1, 2, 3, 4]]},
+        {"history": [[1.0, "bogus", 5.0], [2.0, ["charge"], 5.0]]},
+        {
+            "history": [
+                ["x", "charge", 5.0],
+                [None, "charge", 5.0],
+                [True, "charge", 5.0],
+            ]
+        },
+        {
+            "history": [
+                [1.0, "charge", "x"],
+                [1.0, "charge", None],
+                [1.0, "charge", True],
+            ]
+        },
+        {"history": [[float("nan"), "charge", 5.0], [1.0, "charge", float("inf")]]},
+    ],
+)
+def test_malformed_restore_data_is_ignored(payload) -> None:
+    data = None if payload is None else RestoredExtraData(payload)
+
+    assert _parse_history(data) == {}
+
+
+def test_restoring_keeps_the_good_records_among_bad_ones() -> None:
+    data = RestoredExtraData(
+        {
+            "history": [
+                [1.0, "charge", 5.0],
+                ["bad", "charge", 5.0],
+                [2.0, "bogus", 5.0],
+                [3.0, "maxuse", "7.5"],
+                [4.0, "standby", 50],
+            ]
+        }
+    )
+
+    assert _parse_history(data) == {
+        1.0: SlotRecord(1.0, "charge", 5.0),
+        3.0: SlotRecord(3.0, "maxuse", 7.5),
+        4.0: SlotRecord(4.0, "standby", 50.0),
+    }

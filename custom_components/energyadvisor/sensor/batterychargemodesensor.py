@@ -5,10 +5,30 @@ copies each slot's cost and credit. The mode and target SoC of each slot come
 from the battery planner (``battery_planner``), an exact dynamic programme
 over the battery's state of charge that minimises the grid cost.
 
-Planning runs in an executor job so that it never blocks the event loop. A
-single worker task serves every trigger (new prices, a new household load
-forecast, a clearly changed battery SoC and every quarter hour). Triggers that
-arrive while a plan is being calculated are coalesced into one more run.
+Every price slot that has not ended is planned, however many the price sensor
+holds (about a day, or two once tomorrow's prices are known). The plan is rolled
+forward and extended whenever new prices arrive. The slot that contains "now" is
+planned as a whole slot, so its mode stays stable until the slot ends.
+
+Slots that already ended keep the mode and target SoC the sensor published
+while they were running. Those records are stored with the entity's restore
+data, so they survive a restart.
+
+The sensor's ``target_soc`` attribute is the target SoC of the slot that
+contains "now", so it is always available next to the ``modes``.
+
+The planner only knows ``standby``, ``charge`` and ``discharge``. A planned
+discharge in daylight is published as ``maxuse``: the battery then covers the
+household load, which leaves any solar surplus for charging the battery.
+
+Costs are the price sensor's ``cost`` (fees, taxes and VAT included), not the
+raw spot price, and the battery's wear cost is in the same unit.
+
+Planning runs in an executor job so that it never blocks the event loop. Only
+an immutable snapshot of the inputs (``ScheduleInputs``) is handed to the
+thread. A single worker task serves every trigger (new prices, a new household
+load forecast, a clearly changed battery SoC and every quarter hour). Triggers
+that arrive while a plan is being calculated are coalesced into one more run.
 
 Solar and the water heater are not modelled. The household load forecast
 already leaves out the water heater, and it is always on in the cheapest hours
@@ -34,6 +54,8 @@ from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
 )
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
+from homeassistant.helpers.sun import get_astral_event_date
 from homeassistant.util import dt as dt_util
 
 from ..battery_planner import (
@@ -51,7 +73,6 @@ from ..const import (
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_MIN_SOC_PCT,
-    CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EXCLUDE_FROM_RECORDING,
     DOMAIN,
@@ -74,19 +95,26 @@ DEFAULT_TARGET_SOC_PCT = 50
 DEFAULT_LOAD_KW = 1.5
 DEFAULT_MIN_SOC_PCT = 5.0
 DEFAULT_MAX_SOC_PCT = 100.0
-DEFAULT_HORIZON_HOURS = 48.0
 # The SoC entity only triggers a new plan when it moved this far since the
 # last plan; smaller changes are picked up at the next quarter hour.
 SOC_REPLAN_DELTA_PCT = 2.0
 SOC_REPLAN_EPSILON = 1e-9
-MIN_CURRENT_SLOT_HOURS = 1 / 60
 SLOT_TIME_FORMAT = "%Y-%m-%dT%H:%M"
 QUARTER_HOUR_MINUTES = (0, 15, 30, 45)
+# Daytime discharge: the battery covers the load and leaves solar to the grid
+# or the battery's own charging; the planner models it as plain discharge.
+MODE_MAXUSE = "maxuse"
+MODES = (MODE_STANDBY, MODE_CHARGE, MODE_DISCHARGE, MODE_MAXUSE)
 MODE_ICONS = {
     MODE_STANDBY: "mdi:battery-off",
     MODE_CHARGE: "mdi:battery-arrow-up",
     MODE_DISCHARGE: "mdi:battery-arrow-down",
+    MODE_MAXUSE: "mdi:battery-sync",
 }
+# How long the modes of ended slots are remembered; the price sensor never
+# holds older slots.
+HISTORY_KEEP = timedelta(days=2)
+HISTORY_RESTORE_KEY = "history"
 
 
 @dataclass(frozen=True)
@@ -105,14 +133,30 @@ class ScheduleSlot:
 
 
 @dataclass(frozen=True)
+class SlotRecord:
+    """The mode and target SoC published for one slot, keyed by its start."""
+
+    start: float
+    mode: str
+    target_soc: float
+
+
+@dataclass(frozen=True)
 class ScheduleInputs:
-    """Everything ``build_schedule`` needs; safe to hand to an executor."""
+    """Everything ``build_schedule`` needs; safe to hand to an executor.
+
+    ``history`` holds the records of slots that have run; slots that ended
+    without a record are ``standby``. ``daylight`` holds ``(sunrise, sunset)``
+    timestamp windows; a planned discharge in the middle of a window becomes
+    ``maxuse``.
+    """
 
     slots: tuple[ScheduleSlot, ...]
     params: BatteryParams | None
     start_soc_pct: float
     now: datetime
-    horizon_hours: float
+    history: tuple[SlotRecord, ...] = ()
+    daylight: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -120,12 +164,32 @@ class Schedule:
     """The planned ``modes``, the mode of the current slot and the SoC trace.
 
     ``soc_trace`` holds ``(slot end timestamp, planned end SoC %)`` per slot. It
-    is empty when there is no battery to plan.
+    is empty when there is no battery to plan. ``current`` is the record of the
+    slot that contains ``now`` (``None`` without a battery or such a slot).
+    ``current_target_soc`` is that slot's published ``target_soc`` (the fixed
+    50 % without a battery); it is ``None`` only when no slot contains ``now``.
     """
 
     modes: list[dict[str, str | float]]
     current_mode: str
     soc_trace: tuple[tuple[float, float], ...]
+    current: SlotRecord | None = None
+    current_target_soc: float | None = None
+
+
+@dataclass(frozen=True)
+class _StoredHistory(ExtraStoredData):
+    """The slot records saved with the entity's restore state."""
+
+    records: tuple[SlotRecord, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            HISTORY_RESTORE_KEY: [
+                [record.start, record.mode, record.target_soc]
+                for record in self.records
+            ]
+        }
 
 
 def build_schedule(inputs: ScheduleInputs) -> Schedule:
@@ -134,39 +198,54 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
     Inputs:
         - Price slots in chronological order, each with its household load.
         - The battery parameters (``None`` when no battery is configured), the
-          SoC at ``now``, ``now`` itself and the planning horizon in hours.
+          SoC at ``now`` and ``now`` itself.
     Outputs:
-        - A ``Schedule``. Slots that already ended are ``standby`` with the
-          start SoC as target. The slot that contains ``now`` is planned for
-          its remaining time (at least one minute). Slots starting after the
-          horizon are ``standby`` and hold the last planned SoC. Without a
-          battery every slot is ``standby`` with a fixed target of 50 %.
+        - A ``Schedule``. Slots that already ended take the mode and target of
+          their ``history`` record, or are ``standby`` (carrying the SoC on)
+          when there is none. Every other slot is planned, so the plan spans
+          all the slots given. The slot that contains ``now`` is planned as a
+          whole slot starting from the SoC at ``now``; the mode then does not
+          change as the slot runs out, and its target SoC is scaled to the time
+          that is left. A planned discharge in daylight is ``maxuse``. Without
+          a battery every slot is ``standby`` with a fixed target of 50 %.
+          ``current_target_soc`` is the target of the slot that contains
+          ``now``.
     Times are compared as timestamps, so the repeated hour when the clocks go
-    back is handled correctly.
+    back is handled correctly. It touches nothing but ``inputs`` and is safe to
+    run in a worker thread.
     """
     slots = inputs.slots
     modes = [MODE_STANDBY] * len(slots)
     params = inputs.params
     current_mode = MODE_STANDBY
+    current: SlotRecord | None = None
     soc_trace: tuple[tuple[float, float], ...] = ()
+    now_ts = inputs.now.timestamp()
+    bounds = [(slot.start.timestamp(), slot.end.timestamp()) for slot in slots]
+    current_index = next(
+        (
+            index
+            for index, (start_ts, end_ts) in enumerate(bounds)
+            if start_ts <= now_ts < end_ts
+        ),
+        None,
+    )
 
     if params is None:
         targets: list[float] = [DEFAULT_TARGET_SOC_PCT] * len(slots)
     else:
-        start_soc = min(
-            max(inputs.start_soc_pct, params.min_soc_pct), params.max_soc_pct
-        )
-        now_ts = inputs.now.timestamp()
-        horizon_ts = now_ts + inputs.horizon_hours * 3600
-        bounds = [(slot.start.timestamp(), slot.end.timestamp()) for slot in slots]
+
+        def clamp(soc: float) -> float:
+            return min(max(soc, params.min_soc_pct), params.max_soc_pct)
+
+        start_soc = clamp(inputs.start_soc_pct)
+        history = {record.start: record for record in inputs.history}
         planned: list[int] = []
         plan_slots: list[PlanSlot] = []
         for index, (start_ts, end_ts) in enumerate(bounds):
-            if end_ts <= now_ts or start_ts >= horizon_ts:
+            if end_ts <= now_ts:
                 continue
-            hours = max(end_ts - max(start_ts, now_ts), 0.0) / 3600
-            if start_ts <= now_ts:
-                hours = max(hours, MIN_CURRENT_SLOT_HOURS)
+            hours = max(end_ts - start_ts, 0.0) / 3600
             planned.append(index)
             plan_slots.append(
                 PlanSlot(hours, slots[index].cost, slots[index].load_kw * hours)
@@ -174,16 +253,40 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
 
         result = plan_battery(plan_slots, params, start_soc)
         plan_position = {index: pos for pos, index in enumerate(planned)}
+        end_socs = list(result.end_soc_pct)
+
+        # The current slot was planned as a whole slot from the SoC at now, so
+        # its real end SoC is only the share of the change that is still left,
+        # and every later target moves by the part that has already elapsed.
+        shift = 0.0
+        if current_index is not None:
+            start_ts, end_ts = bounds[current_index]
+            position = plan_position[current_index]
+            elapsed = (now_ts - start_ts) / (end_ts - start_ts)
+            change = end_socs[position] - start_soc
+            end_socs[position] = start_soc + change * (1 - elapsed)
+            shift = -change * elapsed
+
         targets = []
         soc = start_soc
         for index, (start_ts, end_ts) in enumerate(bounds):
             position = plan_position.get(index)
             if position is not None:
-                modes[index] = result.modes[position]
-                soc = result.end_soc_pct[position]
+                mode = result.modes[position]
+                if mode == MODE_DISCHARGE and _in_daylight(
+                    start_ts, end_ts, inputs.daylight
+                ):
+                    mode = MODE_MAXUSE
+                modes[index] = mode
+                moved = 0.0 if index == current_index else shift
+                soc = clamp(end_socs[position] + moved)
+            elif (record := history.get(start_ts)) is not None:
+                modes[index] = record.mode
+                soc = clamp(record.target_soc)
             targets.append(soc)
-            if start_ts <= now_ts < end_ts:
+            if index == current_index:
                 current_mode = modes[index]
+                current = SlotRecord(start_ts, current_mode, soc)
         soc_trace = tuple(
             (end_ts, target) for (_, end_ts), target in zip(bounds, targets)
         )
@@ -199,10 +302,13 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
         }
         for slot, mode, target in zip(slots, modes, targets)
     ]
-    return Schedule(entries, current_mode, soc_trace)
+    current_target = (
+        None if current_index is None else entries[current_index]["target_soc"]
+    )
+    return Schedule(entries, current_mode, soc_trace, current, current_target)
 
 
-class BatteryChargeModeSensor(SensorEntity):
+class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
     """Battery charge mode sensor."""
 
     _attr_should_poll = False
@@ -222,7 +328,8 @@ class BatteryChargeModeSensor(SensorEntity):
         self._modes: list[dict[str, str | float]] = []
         self._current_mode = MODE_STANDBY
         self._soc_trace: tuple[tuple[float, float], ...] = ()
-        self._current_soc_pct: float | None = None
+        self._history: dict[float, SlotRecord] = {}
+        self._current_target_soc: float | None = None
         self._last_planned_soc_pct: float | None = None
         # One worker serves all triggers; they only set the flag.
         self._plan_task: asyncio.Task[None] | None = None
@@ -245,8 +352,10 @@ class BatteryChargeModeSensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.async_on_remove(self._stop_worker)
-        self._modes = self._default_modes()
-        self._current_soc_pct = self._read_soc_pct()
+        self._history = _parse_history(await self.async_get_last_extra_data())
+        default = self._default_schedule()
+        self._modes = default.modes
+        self._current_target_soc = default.current_target_soc
 
         self.async_on_remove(
             self._price_sensor.async_add_update_listener(self._handle_price_update)
@@ -305,10 +414,9 @@ class BatteryChargeModeSensor(SensorEntity):
 
     @callback
     def _handle_soc_change(self, event: Event) -> None:
-        """Store the new SoC and plan again once it has moved far enough."""
+        """Plan again once the SoC has moved far enough from the last plan's."""
         new_state = event.data.get("new_state")
         soc = _parse_soc(new_state.state) if new_state is not None else None
-        self._current_soc_pct = soc
         if soc is None:
             return
         last = self._last_planned_soc_pct
@@ -351,38 +459,71 @@ class BatteryChargeModeSensor(SensorEntity):
 
     @callback
     def _apply_schedule(self, schedule: Schedule) -> None:
-        """Publish a new plan."""
+        """Publish a new plan and remember the current slot's mode."""
         self._modes = schedule.modes
         self._current_mode = schedule.current_mode
+        self._current_target_soc = schedule.current_target_soc
         self._soc_trace = schedule.soc_trace
+        current = schedule.current
+        if current is not None:
+            self._history[current.start] = current
+            oldest = current.start - HISTORY_KEEP.total_seconds()
+            self._history = {
+                start: record
+                for start, record in self._history.items()
+                if start >= oldest
+            }
         self.async_write_ha_state()
+
+    @property
+    def extra_restore_state_data(self) -> ExtraStoredData:
+        """Save the modes of the slots that have run, for the next start."""
+        return _StoredHistory(
+            tuple(sorted(self._history.values(), key=lambda record: record.start))
+        )
 
     def _now(self) -> datetime:
         return dt_util.now()
 
-    def _default_modes(self) -> list[dict[str, str | float]]:
+    def _default_schedule(self) -> Schedule:
         """Return the fixed schedule: every slot ``standby`` with target 50 %."""
         slots = self._price_slots({})
-        return build_schedule(
-            ScheduleInputs(tuple(slots), None, 0.0, self._now(), DEFAULT_HORIZON_HOURS)
-        ).modes
+        return build_schedule(ScheduleInputs(tuple(slots), None, 0.0, self._now()))
 
     def _build_inputs(self, now: datetime) -> ScheduleInputs:
         """Copy the current prices, load forecast, SoC and options for planning."""
         params = self._battery_params()
         slots = self._price_slots(_load_by_start(self._household_forecast_slots()))
         soc = self._read_soc_pct()
-        self._current_soc_pct = soc
         self._last_planned_soc_pct = soc
         if soc is None:
             soc = self._dead_reckoned_soc_pct(now)
         if soc is None:
             soc = params.min_soc_pct if params is not None else 0.0
+        return ScheduleInputs(
+            tuple(slots),
+            params,
+            soc,
+            now,
+            history=tuple(self._history.values()),
+            daylight=self._daylight_windows(slots),
+        )
 
-        horizon = self._option_float(CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS)
-        if horizon is None or horizon <= 0:
-            horizon = DEFAULT_HORIZON_HOURS
-        return ScheduleInputs(tuple(slots), params, soc, now, horizon)
+    def _daylight_windows(
+        self, slots: list[ScheduleSlot]
+    ) -> tuple[tuple[float, float], ...]:
+        """Return the sunrise-to-sunset window of every day the slots start on.
+
+        A day without a sunrise or sunset (polar day or night) has no window,
+        so none of its slots counts as daytime.
+        """
+        windows = []
+        for day in sorted({slot.start.date() for slot in slots}):
+            sunrise = get_astral_event_date(self.hass, "sunrise", day)
+            sunset = get_astral_event_date(self.hass, "sunset", day)
+            if sunrise is not None and sunset is not None and sunrise < sunset:
+                windows.append((sunrise.timestamp(), sunset.timestamp()))
+        return tuple(windows)
 
     def _price_slots(self, loads: dict[str, list[float]]) -> list[ScheduleSlot]:
         """Copy the price sensor's slots that have both a start and an end."""
@@ -475,14 +616,32 @@ class BatteryChargeModeSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        return {
-            "modes": self._modes,
-            "current_soc_pct": (
-                None
-                if self._current_soc_pct is None
-                else round(self._current_soc_pct, 1)
-            ),
-        }
+        return {"modes": self._modes, "target_soc": self._current_target_soc}
+
+
+def _in_daylight(
+    start_ts: float, end_ts: float, windows: tuple[tuple[float, float], ...]
+) -> bool:
+    """Return whether the middle of the slot lies between a sunrise and sunset."""
+    middle = (start_ts + end_ts) / 2
+    return any(sunrise <= middle < sunset for sunrise, sunset in windows)
+
+
+def _parse_history(data: ExtraStoredData | None) -> dict[float, SlotRecord]:
+    """Return the slot records saved in ``data``, skipping malformed ones."""
+    stored = data.as_dict() if data is not None else None
+    raw = stored.get(HISTORY_RESTORE_KEY) if isinstance(stored, Mapping) else None
+    history: dict[float, SlotRecord] = {}
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, (list, tuple)) or len(item) != 3:
+            continue
+        start = _as_float(item[0])
+        mode = item[1]
+        target = _as_float(item[2])
+        if start is None or target is None or mode not in MODES:
+            continue
+        history[start] = SlotRecord(start, mode, target)
+    return history
 
 
 def _as_float(value: object) -> float | None:

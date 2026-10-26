@@ -113,10 +113,10 @@
           "battery_degradation_cost": "Slitagekostnad för batteriet"
         },
         "data_description": {
-          "battery_optimization_horizon_hours": "Optimeringshorisont i timmar som används av optimeraren.",
+          "battery_optimization_horizon_hours": "Används för närvarande inte: optimeraren planerar över alla kända prisperioder.",
           "battery_min_soc_pct": "Nedre SoC-gräns som används av optimeraren.",
           "battery_max_soc_pct": "Övre SoC-gräns som används av optimeraren.",
-          "battery_degradation_cost": "Slitagekostnad per kWh som batteriet levererar. Planeraren cyklar bara batteriet när prisskillnaden också täcker denna kostnad och förlusterna vid laddning och urladdning. Lämna tomt för 0."
+          "battery_degradation_cost": "Slitagekostnad per kWh som batteriet levererar, i samma enhet som prissensorns kostnad (inklusive avgifter, skatter och moms), inte spotpriset. Planeraren cyklar bara batteriet när prisskillnaden också täcker denna kostnad och förlusterna vid laddning och urladdning. Lämna tomt för 0."
         }
       },
       "grid_metering": {
@@ -309,10 +309,10 @@
           "battery_degradation_cost": "Slitagekostnad för batteriet"
         },
         "data_description": {
-          "battery_optimization_horizon_hours": "Optimeringshorisont i timmar som används av optimeraren.",
+          "battery_optimization_horizon_hours": "Används för närvarande inte: optimeraren planerar över alla kända prisperioder.",
           "battery_min_soc_pct": "Nedre SoC-gräns som används av optimeraren.",
           "battery_max_soc_pct": "Övre SoC-gräns som används av optimeraren.",
-          "battery_degradation_cost": "Slitagekostnad per kWh som batteriet levererar. Planeraren cyklar bara batteriet när prisskillnaden också täcker denna kostnad och förlusterna vid laddning och urladdning. Lämna tomt för 0."
+          "battery_degradation_cost": "Slitagekostnad per kWh som batteriet levererar, i samma enhet som prissensorns kostnad (inklusive avgifter, skatter och moms), inte spotpriset. Planeraren cyklar bara batteriet när prisskillnaden också täcker denna kostnad och förlusterna vid laddning och urladdning. Lämna tomt för 0."
         }
       },
       "grid_metering": {

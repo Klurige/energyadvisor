@@ -106,10 +106,10 @@ Battery capacity and max charge power must be set together. Min SoC must be lowe
 | `battery_capacity_kwh`     | Usable battery capacity; set together with max charge power | `10.0` | In use (battery charge mode sensor) |
 | `battery_max_charge_power_w` | Maximum battery charge power; set together with capacity | `5000` | In use (battery charge mode sensor) |
 | `battery_max_discharge_power_w` | Maximum battery discharge power; the form pre-fills it with the max charge power, and the planner uses the max charge power when it is unset | `5000` | In use (battery charge mode sensor) |
-| `battery_optimization_horizon_hours` | Look-ahead horizon in hours (1-48, form default 48); the planner only plans slots that start within this time from now and the rest stay `standby` | `48` | In use (battery charge mode sensor) |
+| `battery_optimization_horizon_hours` | Look-ahead horizon in hours (1-48, form default 48); the form field and the stored value are kept | `48` | currently not in use (the planner plans every known price slot) |
 | `battery_min_soc_pct`      | Lower SoC bound in % (form default 5) | `5` | In use (battery charge mode sensor) |
 | `battery_max_soc_pct`      | Upper SoC bound in % (form default 100) | `100` | In use (battery charge mode sensor) |
-| `battery_degradation_cost` | Wear cost: cost per kWh delivered by the battery (in the price currency). A cycle must save more than this and the round-trip losses before the planner uses it; no default (unset counts as `0`). Before this planner it was a minimum price spread | `0.7` | In use (battery charge mode sensor) |
+| `battery_degradation_cost` | Wear cost: cost per kWh delivered by the battery, in the same unit as the price sensor's `cost` (import price with fees, taxes and VAT), not the raw spot price. A cycle must save more than this and the round-trip losses before the planner uses it; no default (unset counts as `0`). Before this planner it was a minimum price spread | `0.7` | In use (battery charge mode sensor) |
 | `battery_soc_entity`       | Battery state-of-charge sensor (percent); the start of every plan | `sensor.home_battery_soc` | In use (battery charge mode sensor; the household forecast also records its history) |
 | `battery_charge_power_entity` | Battery charge power sensor | `sensor.home_battery_charge_power` | currently not in use (history is recorded but not used) |
 
@@ -242,22 +242,36 @@ See [docs/householdforecast.md](docs/householdforecast.md) for the model, qualit
 - **State:** The mode of the slot that contains the current time (`standby`, `charge` or `discharge`); `standby` when no slot contains it. The icon follows the mode: `mdi:battery-off`, `mdi:battery-arrow-up` or `mdi:battery-arrow-down`.
 - **Attributes:**
   - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; so far `discharge`, `charge` or `standby`), `target_soc` (the planned battery state of charge at the end of the slot in percent, rounded to 1 decimal; `50` for every slot while the battery is not configured), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
-  - `current_soc_pct`: The latest battery state of charge read from the `battery_soc_entity`, in percent, or `null` when it is not configured or not available. It is refreshed whenever a new plan is published.
+  - `target_soc`: The `target_soc` of the slot that contains the current time, in percent: the planned battery state of charge at the end of the current slot (`50` while the battery is not configured). It is always present, and `null` only when no slot contains the current time. It is not the measured state of charge; that stays available from the `battery_soc_entity` itself.
 
 The battery options in the configuration (capacity, power limits, SoC bounds,
-horizon, wear cost and SoC sensor) are described in the [Battery](#battery)
+wear cost and SoC sensor) are described in the [Battery](#battery)
 configuration table. Without a battery capacity and a max charge power, or with
 a min SoC that is not below the max SoC, the sensor stays on `standby` with a
 `target_soc` of `50` in every slot.
 
 #### Planner
 
-The planner calculates the cheapest way to run the battery over the planning
-horizon (`battery_optimization_horizon_hours`, 48 hours by default; slots that
-start later stay `standby`). It is an exact dynamic programme over the battery
-state of charge, written in plain Python: it does not use a solver or any extra
-package. A 48 hour plan takes a few tens of milliseconds and is calculated in an
-executor job, so it never blocks Home Assistant.
+The planner calculates the cheapest way to run the battery over all the price
+slots it knows. It is an exact dynamic programme over the battery state of
+charge, written in plain Python: it does not use a solver or any extra package.
+A plan takes about 15 ms for 192 slots (48 hours) and about 25 ms for 288 slots
+(72 hours) on a desktop computer. It is calculated in an executor job, so it
+never blocks Home Assistant.
+
+How far ahead it plans:
+- Every price slot of the price sensor that has not ended is planned. There is no
+  look-ahead limit and the configuration option
+  `battery_optimization_horizon_hours` is not used (see the [Battery](#battery)
+  table).
+- The price sensor holds today's prices, and tomorrow's as well once they are
+  published. Nord Pool does that in the afternoon, usually around 13:30. The
+  plan therefore covers the rest of today (about 10 to 24 hours) until tomorrow's
+  prices arrive, and the rest of today plus tomorrow (about 24 to 35 hours)
+  after that. It follows the number of price slots, whatever it is.
+- Energy still in the battery after the last known price slot is worth nothing.
+  The battery is therefore used up by the end of the known prices, and the next
+  plan looks further ahead when new prices arrive.
 
 What it works with:
 - **Prices:** The `cost` of each price slot (import price with all fees and
@@ -273,6 +287,9 @@ What it works with:
   power (discharge defaults to the charge power), and a round-trip efficiency of
   90 % split evenly between charging and discharging. The wear cost
   (`battery_degradation_cost`) is added for every kWh the battery delivers.
+  It is in the same unit as the price sensor's `cost` (see **Prices** above),
+  with fees, taxes and VAT included. It does not apply to the raw spot price
+  (for example from elprisetjustnu.se), which is much lower.
 - **State of charge:** The current value of `battery_soc_entity`, limited to
   the min and max SoC. When it is unknown or unavailable the planner continues
   from the end-of-slot `target_soc` of the previous plan for the slot before the
@@ -286,31 +303,51 @@ How it decides:
   wear cost, so flat prices, or a spread that is too small, give `standby`.
 - Charging is spread over as many cheap slots as the charge power requires, and
   discharging over the expensive slots, limited by how much the household uses
-  in each slot. Energy still in the battery at the end of the horizon is worth
-  nothing, so it is used up at the end of the plan; the next plan, a quarter
-  hour later, looks further ahead again.
-- The plan is made from now. Slots that have ended are `standby`, with the
-  state of charge the plan started from as `target_soc`. The current slot is
-  planned for its remaining time.
-- Solar production is not used yet.
+  in each slot.
+- The plan is made from now. The current slot is planned as a whole slot from
+  the state of charge now, so its mode stays the same until the slot ends; its
+  `target_soc` is the state of charge expected at the end of the slot. Slots
+  that have ended keep the mode and `target_soc` they had while they ran. They
+  are remembered for two days, also across a restart. A slot that never ran
+  since the integration started is `standby`, with the state of charge the plan
+  started from as `target_soc`.
+- A planned `discharge` in daylight (the middle of the slot lies between
+  sunrise and sunset, from Home Assistant's location) is published as `maxuse`
+  so that any solar surplus charges the battery. The battery is used the same
+  way, so the plan does not change. At night it stays `discharge`.
+- Solar production is not used yet. It is small in winter, and the planner does
+  not take it into account.
 
-The plan is rebuilt when:
-- the price sensor gets new rates,
-- the household load forecast is updated,
-- the battery state of charge differs by 2 percentage points or more from the
-  one the last plan started from (smaller changes are picked up later), and
-- every quarter hour (at :00, :15, :30 and :45), so that the state and the
-  targets roll forward.
+#### When it is calculated
 
-Triggers that arrive while a plan is being calculated are merged into one
-re-plan with the latest inputs.
+A single worker plans for the sensor. A plan is requested by these triggers:
+
+| Trigger | When it fires |
+|---------|---------------|
+| Prices | Every time the price sensor has new rates. That is when the configured Nord Pool entity changes state (normally once per price period, so every 15 minutes) and when the Nord Pool coordinator publishes data. The coordinator publishes once a day when tomorrow's prices are fetched. Until then it asks again every 2 minutes from 13:00 and publishes each time, so expect about 15 extra plans before the prices arrive around 13:30. |
+| Household load forecast | Twice every quarter hour: at :00, :15, :30 and :45 when the forecast shell is republished, and again when the rebuilt forecast is ready. Only when the household meter is configured. |
+| Battery state of charge | Whenever the `battery_soc_entity` differs by 2 percentage points or more from the state of charge the last plan started from. A 5 kW charge of a 15 kWh battery moves it about 33 points per hour, so this fires about every 3.6 minutes while charging at full power, and about every 12 minutes when discharging into a 1.5 kW load. |
+| Quarter hour | At :00, :15, :30 and :45, so that the state and the targets roll forward. 96 times per day. |
+
+At every quarter hour the triggers above arrive within a second or so of each
+other. Only one plan runs at a time. Triggers that arrive while a plan is being
+calculated are merged into one more plan with the latest inputs, and the plan
+that was being calculated is discarded because it is outdated. Typically this
+means two plans per quarter hour (the first for the quarter-hour trigger, the
+second when the rebuilt household forecast arrives), about 190 plans per day
+with an idle battery. State of charge changes add to this while the battery is
+charging or discharging: three hours of full-power charging and nine hours of
+discharging in a day add up to roughly 100 plans. Charging at full power all day
+would give about 24 plans per hour. At 15 to 25 ms per plan this is a few seconds
+of calculation per day.
 
 #### Battery charge modes
 
 Each slot in `modes` has exactly one of these six modes. They are mutually
-exclusive within a slot. Only `discharge`, `charge` and `standby` are assigned so
-far, by the [planner](#planner); `maxuse`, `pvcharge` and `sell` are not used
-yet because solar and export are not part of the planning.
+exclusive within a slot. Only `maxuse`, `discharge`, `charge` and `standby` are
+assigned so far, by the [planner](#planner); `pvcharge` and `sell` are not used
+yet because solar and export are not part of the planning. `maxuse` is used in
+place of `discharge` during daylight.
 
 | Mode | Meaning |
 |------|---------|
@@ -323,8 +360,8 @@ yet because solar and export are not part of the planning.
 
 `target_soc` is the battery state of charge, in percent, planned for the end of
 the slot. It follows from the plan: it rises in `charge` slots, falls in
-`discharge` slots and stays the same in `standby` slots. It is a fixed `50` while
-the battery is not configured.
+`discharge` and `maxuse` slots and stays the same in `standby` slots. It is a
+fixed `50` while the battery is not configured.
 
 ### `energyadvisor.get_levels`
 - **Description:** The price levels for today and tomorrow as a string with one char per time period. Main purpose is to provide data for the Level Indicator Clock (https://github.com/Klurige/LevelIndicatorClock)

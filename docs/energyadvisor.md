@@ -220,7 +220,11 @@ CompactLevelsSensor            BatteryChargeModeSensor
   • reads the main sensor's      • builds one `modes` entry per
     internal rates, builds         price slot from the same rates;
     the level string               plans charge / discharge / standby
-                                   in an executor job with the DP in
+                                   for every slot that has not ended
+                                   (discharge by day is published as
+                                   maxuse; ended slots keep their
+                                   mode), in an executor job with the
+                                   DP in
                                    battery_planner.py (also triggered
                                    by the household forecast, the
                                    battery SoC and every quarter hour)

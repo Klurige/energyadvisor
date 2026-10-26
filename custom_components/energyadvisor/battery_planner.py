@@ -3,7 +3,7 @@
 The planner has no Home Assistant dependency and is pure Python. It takes a
 chronological list of slots (duration, grid price, household load) and decides
 for each slot whether the battery should charge from the grid, discharge into
-the household or stay idle, so that the total grid cost over the horizon is as
+the household or stay idle, so that the total grid cost over all the slots is as
 low as possible.
 
 Model:
@@ -19,8 +19,11 @@ Model:
   discharge power, the load and the energy left in the battery.
 - ``standby`` leaves the battery alone; the grid delivers the load.
 - Each kWh the battery delivers adds ``wear_cost_per_kwh``.
-- Energy left in the battery at the end of the horizon is worth nothing, so
-  callers should re-plan regularly (rolling horizon).
+- Energy left in the battery after the last slot (the end of the known prices)
+  is worth nothing, so callers should re-plan regularly (rolling horizon): the
+  battery is used up by the end, and a later plan looks further when new prices
+  arrive.
+- The number of slots is not limited. The work grows linearly with it.
 - Ties go to ``standby``, and otherwise to the smaller action.
 """
 

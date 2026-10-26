@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import itertools
 import math
 import random
@@ -9,6 +11,7 @@ import time
 
 import pytest
 
+from custom_components.energyadvisor import battery_planner
 from custom_components.energyadvisor.battery_planner import (
     MODE_CHARGE,
     MODE_DISCHARGE,
@@ -457,3 +460,26 @@ def test_solving_192_slots_is_fast() -> None:
 
     assert len(result.modes) == 192
     assert elapsed < 2.0
+
+
+def test_solving_three_days_of_slots_is_fast() -> None:
+    rng = random.Random(2)
+    slots = _slots([rng.uniform(0.5, 3.0) for _ in range(288)])
+
+    started = time.perf_counter()
+    result = plan_battery(slots, _params(wear_cost_per_kwh=0.2), 50.0)
+    elapsed = time.perf_counter() - started
+
+    assert len(result.modes) == 288
+    assert elapsed < 3.0
+
+
+def test_planner_only_imports_the_standard_library() -> None:
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(inspect.getsource(battery_planner))):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add((node.module or "").split(".")[0])
+
+    assert imported == {"__future__", "collections", "dataclasses", "math"}
