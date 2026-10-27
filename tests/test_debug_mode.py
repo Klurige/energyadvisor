@@ -200,10 +200,14 @@ async def test_debug_date_flows_to_battery_modes_and_compact_levels() -> None:
     by_mode: dict[str, list[str]] = {}
     for slot in modes:
         by_mode.setdefault(slot["mode"], []).append(slot["from"])
-    # The planner charges in the cheap hours (03:00 and 13:00) and discharges
-    # over the expensive ones (08:00 and 19:00), never the other way round.
+    # The planner charges in the cheap hours (03:00 and 13:00) and sells over
+    # the expensive ones (08:00 and 19:00), never the other way round. Credit
+    # equals cost in the debug prices, so the battery sells instead of
+    # discharging.
     charge_hours = {t[11:13] for t in by_mode["charge"]}
-    discharge_hours = {t[11:13] for t in by_mode["discharge"]}
+    discharge_hours = {
+        t[11:13] for mode in ("discharge", "sell") for t in by_mode.get(mode, [])
+    }
     assert {"03", "13"} <= charge_hours
     assert {"08", "19"} <= discharge_hours
     assert not charge_hours & {"08", "19"}

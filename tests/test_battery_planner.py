@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import itertools
 import math
@@ -15,6 +16,7 @@ from custom_components.energyadvisor import battery_planner
 from custom_components.energyadvisor.battery_planner import (
     MODE_CHARGE,
     MODE_DISCHARGE,
+    MODE_SELL,
     MODE_STANDBY,
     BatteryParams,
     PlanResult,
@@ -42,9 +44,17 @@ def _params(**overrides) -> BatteryParams:
 
 
 def _slots(
-    prices: list[float], load_kwh: float = LOAD_KWH, hours: float = SLOT_H
+    prices: list[float],
+    load_kwh: float = LOAD_KWH,
+    hours: float = SLOT_H,
+    credits: list[float] | None = None,
 ) -> list[PlanSlot]:
-    return [PlanSlot(hours, price, load_kwh) for price in prices]
+    if credits is None:
+        return [PlanSlot(hours, price, load_kwh) for price in prices]
+    return [
+        PlanSlot(hours, price, load_kwh, credit)
+        for price, credit in zip(prices, credits, strict=True)
+    ]
 
 
 def _runs(modes: list[str], mode: str) -> list[tuple[int, int]]:
@@ -75,10 +85,19 @@ def _execute(
             delivered = min(-delta_kwh * eta, slot.load_kwh)
             total += slot.import_cost * (slot.load_kwh - delivered)
             total += params.wear_cost_per_kwh * delivered
+        elif mode == MODE_SELL:
+            # The battery covers the load, so nothing is imported, and the
+            # rest is exported at the credit.
+            assert delta_kwh < 0
+            out = -delta_kwh * eta
+            assert out > slot.load_kwh
+            total += params.wear_cost_per_kwh * out
+            total -= slot.export_credit * (out - slot.load_kwh)
         else:
             assert delta_kwh == pytest.approx(0, abs=1e-9)
             total += slot.import_cost * slot.load_kwh
-    return total
+    stored_kwh = (previous - params.min_soc_pct) * params.capacity_kwh / 100.0
+    return total - params.terminal_value_per_kwh * stored_kwh
 
 
 def _valley_peak_prices(
@@ -368,6 +387,15 @@ def _brute_force_cost(
             delivered = min(k * step * eta, slot.load_kwh)
             cost = slot.import_cost * (slot.load_kwh - delivered)
             actions.append((-k, cost + params.wear_cost_per_kwh * delivered))
+        if math.isfinite(slot.export_credit) and slot.export_credit > 0:
+            max_sell = math.floor(
+                params.max_discharge_power_kw * slot.duration_h / step + 1e-9
+            )
+            for k in range(1, max_sell + 1):
+                out = k * step * eta
+                if out > slot.load_kwh + 1e-9:
+                    revenue = slot.export_credit * (out - slot.load_kwh)
+                    actions.append((-k, params.wear_cost_per_kwh * out - revenue))
         options.append(actions)
 
     best = math.inf
@@ -375,7 +403,8 @@ def _brute_force_cost(
     def search(index: int, state: int, cost: float) -> None:
         nonlocal best
         if index == len(options):
-            best = min(best, cost)
+            kept = params.terminal_value_per_kwh * state * step
+            best = min(best, cost - kept)
             return
         for k, action_cost in options[index]:
             if 0 <= state + k <= states:
@@ -408,6 +437,17 @@ def test_plan_is_optimal_against_exhaustive_search(seed: int) -> None:
     ]
     # Start close to the bounds so that they matter.
     start_soc = rng.choice([10.0, 12.5, 15.0, 85.0, 88.0, 90.0])
+    # The credits and the terminal value are drawn last, so the seeds above
+    # keep their slots; a slot may have no credit at all.
+    slots = [
+        dataclasses.replace(
+            slot, export_credit=rng.choice([math.nan, rng.uniform(0, 4)])
+        )
+        for slot in slots
+    ]
+    params = dataclasses.replace(
+        params, terminal_value_per_kwh=rng.choice([0.0, 0.0, 1.5])
+    )
 
     result = plan_battery(slots, params, start_soc)
 
@@ -418,6 +458,225 @@ def test_plan_is_optimal_against_exhaustive_search(seed: int) -> None:
     assert _execute(slots, params, snapped, result) == pytest.approx(
         result.total_cost, abs=1e-6
     )
+
+
+def _spike_slots(
+    spike_credit: float = 4.0, other_credit: float = 0.5
+) -> list[PlanSlot]:
+    """Flat import price, and a credit spike in slots 40-43 (of 48)."""
+    credits = [spike_credit if 40 <= i < 44 else other_credit for i in range(48)]
+    return _slots([1.0] * 48, credits=credits)
+
+
+def test_a_credit_spike_is_sold_into_after_charging_before_it() -> None:
+    slots = _spike_slots()
+    params = _params()
+
+    result = plan_battery(slots, params, 0.0)
+
+    assert [i for i, m in enumerate(result.modes) if m == MODE_SELL] == [
+        40,
+        41,
+        42,
+        43,
+    ]
+    charged = [i for i, m in enumerate(result.modes) if m == MODE_CHARGE]
+    assert charged and max(charged) < 40
+    assert MODE_DISCHARGE not in result.modes
+    assert result.end_soc_pct[-1] == pytest.approx(0.0, abs=1e-9)
+    baseline = sum(slot.import_cost * slot.load_kwh for slot in slots)
+    assert result.total_cost < baseline
+    assert _execute(slots, params, 0.0, result) == pytest.approx(result.total_cost)
+
+
+@pytest.mark.parametrize("credit", [math.nan, math.inf, 0.0, -2.0])
+def test_without_a_usable_credit_nothing_is_sold(credit: float) -> None:
+    prices = _valley_peak_prices(cheap=1.0, dear=3.0)
+    params = _params(wear_cost_per_kwh=0.1)
+
+    without = plan_battery(_slots(prices), params, 0.0)
+    with_credit = plan_battery(_slots(prices, credits=[credit] * 48), params, 0.0)
+
+    assert MODE_DISCHARGE in without.modes
+    assert with_credit == without
+    sold = plan_battery(_slots(prices, credits=[9.0] * 48), params, 0.0)
+    assert MODE_SELL in sold.modes
+
+
+def test_a_slot_without_a_price_never_sells() -> None:
+    slots = [PlanSlot(SLOT_H, 0.1, 0.0), PlanSlot(SLOT_H, math.nan, 0.0, 9.0)]
+
+    result = plan_battery(slots, _params(), 95.0)
+
+    assert result.modes == [MODE_STANDBY, MODE_STANDBY]
+
+
+@pytest.mark.parametrize(
+    ("rte", "wear", "cost"),
+    [
+        pytest.param(0.9, 0.0, 1.0, id="losses"),
+        pytest.param(0.64, 0.0, 1.0, id="more-losses"),
+        pytest.param(1.0, 0.5, 0.2, id="wear-only"),
+        pytest.param(0.9, 0.3, 2.0, id="losses-and-wear"),
+    ],
+)
+def test_sell_pays_above_the_charge_cost_over_efficiency_plus_wear(
+    rte: float, wear: float, cost: float
+) -> None:
+    """Energy charged at ``cost`` is worth selling for more than the threshold.
+
+    A stored kWh costs ``cost / eta`` and delivers ``eta`` kWh, each of which
+    wears the battery, so the threshold is ``cost / rte + wear``.
+    """
+    eta = math.sqrt(rte)
+    threshold = cost / rte + wear
+    params = _params(round_trip_efficiency=rte, wear_cost_per_kwh=wear)
+
+    def plan(credit: float) -> PlanResult:
+        # No load: the second slot can only sell what the first one charged.
+        slots = [PlanSlot(SLOT_H, cost, 0.0), PlanSlot(SLOT_H, 9.0, 0.0, credit)]
+        return plan_battery(slots, params, 0.0)
+
+    above = plan(threshold * 1.01)
+    below = plan(threshold * 0.99)
+
+    assert above.modes == [MODE_CHARGE, MODE_SELL]
+    assert below.modes == [MODE_STANDBY, MODE_STANDBY]
+    # 5 kW for a quarter of an hour is 1.25 kWh into the battery.
+    stored = 1.25
+    assert above.end_soc_pct == pytest.approx([stored / 15.0 * 100.0, 0.0])
+    expected = (
+        cost * stored / eta + wear * stored * eta - threshold * 1.01 * stored * eta
+    )
+    assert above.total_cost == pytest.approx(expected)
+    assert below.total_cost == 0.0
+
+
+def test_a_sell_slot_imports_nothing_and_exports_what_the_load_leaves() -> None:
+    params = _params(wear_cost_per_kwh=0.1)
+    # Importing the load would cost 100 per kWh.
+    slots = [PlanSlot(SLOT_H, 0.1, 0.0), PlanSlot(SLOT_H, 100.0, 0.5, 4.0)]
+
+    result = plan_battery(slots, params, 0.0)
+
+    assert result.modes == [MODE_CHARGE, MODE_SELL]
+    stored = result.end_soc_pct[0] * 15.0 / 100.0
+    out = (result.end_soc_pct[0] - result.end_soc_pct[1]) * 15.0 / 100.0 * ETA
+    exported = out - 0.5
+    assert exported > 0
+    assert result.total_cost == pytest.approx(
+        0.1 * stored / ETA + 0.1 * out - 4.0 * exported
+    )
+    assert _execute(slots, params, 0.0, result) == pytest.approx(result.total_cost)
+
+
+def test_sell_is_limited_by_the_discharge_power_not_the_charge_power() -> None:
+    # 2 kW for a quarter of an hour is 0.5 kWh out of the battery per slot.
+    params = _params(max_discharge_power_kw=2.0, max_charge_power_kw=5.0)
+    slots = _slots([9.0] * 6, load_kwh=0.0, credits=[4.0] * 6)
+
+    result = plan_battery(slots, params, 95.0)
+
+    drops = [95.0, *result.end_soc_pct]
+    steps = [(a - b) * 15.0 / 100.0 for a, b in zip(drops, drops[1:])]
+    assert result.modes == [MODE_SELL] * 6
+    assert steps == pytest.approx([0.5] * 6)
+
+
+def test_a_discharge_power_of_zero_blocks_selling() -> None:
+    slots = _slots([9.0] * 4, load_kwh=0.0, credits=[4.0] * 4)
+
+    result = plan_battery(slots, _params(max_discharge_power_kw=0.0), 95.0)
+
+    assert result.modes == [MODE_STANDBY] * 4
+
+
+def test_sell_stops_at_the_min_soc() -> None:
+    params = _params(min_soc_pct=20.0)
+    # Charging costs 9 per kWh, more than a sale earns, so only the sale counts.
+    slots = _slots([9.0] * 8, load_kwh=0.0, credits=[4.0] * 8)
+
+    result = plan_battery(slots, params, 30.0)
+
+    # 10 points of 15 kWh are 1.5 kWh above the floor: a full slot of selling
+    # (1.25 kWh) and a part of another. Equal slots tie, so they come last.
+    assert result.modes == [MODE_STANDBY] * 6 + [MODE_SELL] * 2
+    assert min(result.end_soc_pct) == pytest.approx(20.0)
+    assert result.end_soc_pct[-1] == pytest.approx(20.0)
+
+
+def test_a_sell_is_never_planned_in_the_same_slot_as_a_charge() -> None:
+    rng = random.Random(5)
+    slots = _slots(
+        [rng.uniform(0.2, 3.0) for _ in range(96)],
+        credits=[rng.uniform(0.0, 4.0) for _ in range(96)],
+    )
+    params = _params(wear_cost_per_kwh=0.1, min_soc_pct=10.0)
+
+    result = plan_battery(slots, params, 40.0)
+
+    previous = 40.0
+    for mode, soc in zip(result.modes, result.end_soc_pct):
+        assert soc >= 10.0 - 1e-9
+        if mode == MODE_SELL:
+            assert soc < previous
+        previous = soc
+    assert MODE_SELL in result.modes and MODE_CHARGE in result.modes
+    assert _execute(slots, params, 40.0, result) == pytest.approx(result.total_cost)
+
+
+def test_terminal_value_keeps_energy_worth_more_than_selling_it() -> None:
+    slots = _slots([1.0] * 8, credits=[1.0] * 8)
+    # A kWh is worth less than it costs to charge (1 / eta) and more than it
+    # earns when sold (credit * eta), so it is neither bought nor sold.
+    kept_params = _params(terminal_value_per_kwh=1.0)
+
+    default = plan_battery(slots, _params(), 50.0)
+    kept = plan_battery(slots, kept_params, 50.0)
+
+    assert MODE_SELL in default.modes
+    assert default.end_soc_pct[-1] == pytest.approx(0.0, abs=0.5)
+    assert kept.modes == [MODE_STANDBY] * 8
+    assert kept.end_soc_pct == pytest.approx([50.0] * 8)
+    # 7.5 kWh stay in the battery, worth 1 each, besides the load's import.
+    assert kept.total_cost == pytest.approx(8 * LOAD_KWH - 1.0 * 7.5)
+
+
+def test_terminal_value_decides_between_selling_and_keeping_at_the_end() -> None:
+    wear = 0.2
+    credit = 1.0
+    # A stored kWh delivers eta kWh that earn the credit less the wear.
+    threshold = ETA * (credit - wear)
+    slots = _slots([1.0] * 8, load_kwh=0.0, credits=[credit] * 8)
+    params = _params(wear_cost_per_kwh=wear)
+
+    def plan(value: float) -> PlanResult:
+        kept_params = dataclasses.replace(params, terminal_value_per_kwh=value)
+        return plan_battery(slots, kept_params, 50.0)
+
+    assert MODE_SELL in plan(threshold * 0.99).modes
+    assert set(plan(threshold * 1.01).modes) == {MODE_STANDBY}
+
+
+def test_terminal_value_charges_cheap_energy_to_keep_at_the_end() -> None:
+    slots = _slots([1.0] * 12)
+
+    default = plan_battery(slots, _params(), 0.0)
+    valued = plan_battery(slots, _params(terminal_value_per_kwh=2.0), 0.0)
+
+    assert default.modes == [MODE_STANDBY] * 12
+    assert MODE_CHARGE in valued.modes
+    assert valued.end_soc_pct[-1] == pytest.approx(95.0)
+
+
+@pytest.mark.parametrize("value", [-1.0, math.nan, math.inf])
+def test_a_bad_terminal_value_counts_as_zero(value: float) -> None:
+    slots = _spike_slots()
+
+    plain = plan_battery(slots, _params(), 20.0)
+    bad = plan_battery(slots, _params(terminal_value_per_kwh=value), 20.0)
+
+    assert bad == plain
 
 
 def _double_hump_price(hour: float) -> float:
@@ -471,6 +730,23 @@ def test_solving_three_days_of_slots_is_fast() -> None:
     elapsed = time.perf_counter() - started
 
     assert len(result.modes) == 288
+    assert elapsed < 3.0
+
+
+def test_solving_three_days_of_slots_with_credits_is_fast() -> None:
+    rng = random.Random(4)
+    slots = _slots(
+        [rng.uniform(0.5, 3.0) for _ in range(288)],
+        credits=[rng.uniform(0.2, 3.0) for _ in range(288)],
+    )
+    params = _params(wear_cost_per_kwh=0.2, terminal_value_per_kwh=1.0)
+
+    started = time.perf_counter()
+    result = plan_battery(slots, params, 50.0)
+    elapsed = time.perf_counter() - started
+
+    assert len(result.modes) == 288
+    assert MODE_SELL in result.modes
     assert elapsed < 3.0
 
 

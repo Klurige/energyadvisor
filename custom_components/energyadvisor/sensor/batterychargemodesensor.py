@@ -19,12 +19,26 @@ contains "now", so it is always available next to the ``modes``. Every
 published ``target_soc`` is an integer percent, always rounded up so that the
 battery keeps the higher level.
 
-The planner only knows ``standby``, ``charge`` and ``discharge``. A planned
-discharge in daylight is published as ``maxuse``: the battery then covers the
-household load, which leaves any solar surplus for charging the battery.
+The planner knows ``standby``, ``charge``, ``discharge`` and ``sell``.
+``discharge`` covers the household load and never exports; ``sell`` also
+exports to the grid when the slot's credit makes that profitable. Selling is
+always part of the plan when a battery is configured. A planned ``discharge`` in
+daylight is published as ``maxuse``: the battery then covers the household load,
+which leaves any solar surplus for charging the battery. A ``sell`` is never
+turned into ``maxuse``, which would stop the export. Solar production is not
+modelled, so selling in daylight is allowed.
 
-Costs are the price sensor's ``cost`` (fees, taxes and VAT included), not the
-raw spot price, and the battery's wear cost is in the same unit.
+Costs are the price sensor's ``cost`` and credits its ``credit`` (fees, taxes
+and VAT included), not the raw spot price, and the battery's wear cost is in the
+same unit. The credit is the revenue per exported kWh; a slot whose credit is
+unknown, zero or negative never sells.
+
+The known prices end at some point (today, or tomorrow once its prices are
+published), and the plan has to value the energy still in the battery then. It
+is worth what it saves later, the median cost of the planned slots at the
+battery's efficiency, less the wear. Without that value the battery would be
+sold off at the end of the known prices for any positive credit, before
+tomorrow's prices are known.
 
 Planning runs in an executor job so that it never blocks the event loop. Only
 an immutable snapshot of the inputs (``ScheduleInputs``) is handed to the
@@ -42,8 +56,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import statistics
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -63,6 +78,7 @@ from homeassistant.util import dt as dt_util
 from ..battery_planner import (
     MODE_CHARGE,
     MODE_DISCHARGE,
+    MODE_SELL,
     MODE_STANDBY,
     BatteryParams,
     PlanSlot,
@@ -94,7 +110,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_TARGET_SOC_PCT = 50
-DEFAULT_LOAD_KW = 1.5
+DEFAULT_LOAD_KW = 1.0
 DEFAULT_MIN_SOC_PCT = 5.0
 DEFAULT_MAX_SOC_PCT = 100.0
 # The SoC entity only triggers a new plan when it moved this far since the
@@ -106,11 +122,12 @@ QUARTER_HOUR_MINUTES = (0, 15, 30, 45)
 # Daytime discharge: the battery covers the load and leaves solar to the grid
 # or the battery's own charging; the planner models it as plain discharge.
 MODE_MAXUSE = "maxuse"
-MODES = (MODE_STANDBY, MODE_CHARGE, MODE_DISCHARGE, MODE_MAXUSE)
+MODES = (MODE_STANDBY, MODE_CHARGE, MODE_DISCHARGE, MODE_SELL, MODE_MAXUSE)
 MODE_ICONS = {
     MODE_STANDBY: "mdi:battery-off",
     MODE_CHARGE: "mdi:battery-arrow-up",
     MODE_DISCHARGE: "mdi:battery-arrow-down",
+    MODE_SELL: "mdi:transmission-tower-export",
     MODE_MAXUSE: "mdi:battery-sync",
 }
 # How long the modes of ended slots are remembered; the price sensor never
@@ -124,7 +141,8 @@ class ScheduleSlot:
     """A copy of one price slot plus the household load expected in it.
 
     ``cost`` is NaN when the price slot has no usable cost; the planner then
-    leaves the battery alone in that slot.
+    leaves the battery alone in that slot. ``credit`` is the revenue per
+    exported kWh; a credit that is unknown, zero or negative never sells.
     """
 
     start: datetime
@@ -150,7 +168,8 @@ class ScheduleInputs:
     ``history`` holds the records of slots that have run; slots that ended
     without a record are ``standby``. ``daylight`` holds ``(sunrise, sunset)``
     timestamp windows; a planned discharge in the middle of a window becomes
-    ``maxuse``.
+    ``maxuse``, a planned sell stays a sell. ``params.terminal_value_per_kwh`` is
+    what the energy left in the battery after the last slot is worth.
     """
 
     slots: tuple[ScheduleSlot, ...]
@@ -210,7 +229,8 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
           all the slots given. The slot that contains ``now`` is planned as a
           whole slot starting from the SoC at ``now``; the mode then does not
           change as the slot runs out, and its target SoC is scaled to the time
-          that is left. A planned discharge in daylight is ``maxuse``. Without
+          that is left. A planned discharge in daylight is ``maxuse``; a planned
+          sell is never changed. Without
           a battery every slot is ``standby`` with a fixed target of 50 %.
           ``current_target_soc`` is the target of the slot that contains
           ``now``.
@@ -252,7 +272,12 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
             hours = max(end_ts - start_ts, 0.0) / 3600
             planned.append(index)
             plan_slots.append(
-                PlanSlot(hours, slots[index].cost, slots[index].load_kw * hours)
+                PlanSlot(
+                    hours,
+                    slots[index].cost,
+                    slots[index].load_kw * hours,
+                    slots[index].credit,
+                )
             )
 
         result = plan_battery(plan_slots, params, start_soc)
@@ -277,6 +302,7 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
             position = plan_position.get(index)
             if position is not None:
                 mode = result.modes[position]
+                # Only a discharge becomes maxuse: maxuse never exports.
                 if mode == MODE_DISCHARGE and _in_daylight(
                     start_ts, end_ts, inputs.daylight
                 ):
@@ -498,6 +524,11 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
         """Copy the current prices, load forecast, SoC and options for planning."""
         params = self._battery_params()
         slots = self._price_slots(_load_by_start(self._household_forecast_slots()))
+        if params is not None:
+            params = replace(
+                params,
+                terminal_value_per_kwh=_terminal_value_per_kwh(params, slots, now),
+            )
         soc = self._read_soc_pct()
         self._last_planned_soc_pct = soc
         if soc is None:
@@ -621,6 +652,27 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         return {"modes": self._modes, "target_soc": self._current_target_soc}
+
+
+def _terminal_value_per_kwh(
+    params: BatteryParams, slots: list[ScheduleSlot], now: datetime
+) -> float:
+    """Return what a kWh stored in the battery is worth after the last slot.
+
+    It is the median cost of the slots that are planned (those that have not
+    ended and have a usable cost) at the battery's discharge efficiency, less
+    the wear cost, and never below zero. It is zero when no slot has a cost.
+    """
+    now_ts = now.timestamp()
+    costs = [
+        slot.cost
+        for slot in slots
+        if slot.end.timestamp() > now_ts and math.isfinite(slot.cost)
+    ]
+    if not costs:
+        return 0.0
+    eta = math.sqrt(params.round_trip_efficiency)
+    return max(eta * statistics.median(costs) - params.wear_cost_per_kwh, 0.0)
 
 
 def _publish_soc(soc: float) -> int:

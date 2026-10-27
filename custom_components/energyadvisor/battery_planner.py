@@ -3,8 +3,8 @@
 The planner has no Home Assistant dependency and is pure Python. It takes a
 chronological list of slots (duration, grid price, household load) and decides
 for each slot whether the battery should charge from the grid, discharge into
-the household or stay idle, so that the total grid cost over all the slots is as
-low as possible.
+the household, sell to the grid or stay idle, so that the total grid cost (net
+of what the exported energy earns) over all the slots is as low as possible.
 
 Model:
 - The usable energy window is ``capacity * (max_soc - min_soc)``. The state of
@@ -15,14 +15,25 @@ Model:
   power and the room left in the battery.
 - ``discharge`` takes ``k`` steps out of the battery and delivers
   ``min(k * step * eta_discharge, load)`` to the household. The grid delivers
-  the rest of the load. The battery never exports. ``k`` is limited by the
+  the rest of the load. ``discharge`` never exports. ``k`` is limited by the
   discharge power, the load and the energy left in the battery.
+- ``sell`` takes ``k`` steps out of the battery, like ``discharge``, but so
+  much that the household load is covered and the surplus
+  ``k * step * eta_discharge - load`` is exported to the grid at the slot's
+  ``export_credit`` per kWh. Nothing is imported while selling. ``k`` is limited
+  by the discharge power (there is no separate export limit) and the energy
+  left in the battery. A slot without a positive finite ``export_credit`` never
+  sells.
 - ``standby`` leaves the battery alone; the grid delivers the load.
-- Each kWh the battery delivers adds ``wear_cost_per_kwh``.
+- Each kWh the battery delivers (to the household and to the grid) adds
+  ``wear_cost_per_kwh``. A kWh bought at price ``c`` and sold again therefore
+  only pays when ``export_credit > c / round_trip_efficiency +
+  wear_cost_per_kwh``.
 - Energy left in the battery after the last slot (the end of the known prices)
-  is worth nothing, so callers should re-plan regularly (rolling horizon): the
-  battery is used up by the end, and a later plan looks further when new prices
-  arrive.
+  is worth ``terminal_value_per_kwh`` per stored kWh. With the default of zero
+  the battery is used up by the end; callers that re-plan regularly (rolling
+  horizon) set it to what the energy will be worth once new prices arrive, so
+  that the battery is not emptied just because the known prices end.
 - The number of slots is not limited. The work grows linearly with it.
 - Ties go to ``standby``, and otherwise to the smaller action.
 """
@@ -36,6 +47,7 @@ from dataclasses import dataclass
 MODE_STANDBY = "standby"
 MODE_CHARGE = "charge"
 MODE_DISCHARGE = "discharge"
+MODE_SELL = "sell"
 
 MIN_STEP_KWH = 0.125
 MAX_STATES = 160
@@ -53,6 +65,8 @@ class BatteryParams:
     ``round_trip_efficiency`` is split evenly over charging and discharging
     (``eta = sqrt(round_trip_efficiency)``). ``wear_cost_per_kwh`` is the cost
     of each kWh the battery delivers, in the same currency as the slot prices.
+    ``terminal_value_per_kwh`` is what each kWh stored in the battery above the
+    min SoC is worth after the last slot (0: it is worth nothing).
     """
 
     capacity_kwh: float
@@ -62,6 +76,7 @@ class BatteryParams:
     max_discharge_power_kw: float
     round_trip_efficiency: float = DEFAULT_ROUND_TRIP_EFFICIENCY
     wear_cost_per_kwh: float = 0.0
+    terminal_value_per_kwh: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -69,20 +84,25 @@ class PlanSlot:
     """One planning slot.
 
     ``import_cost`` is the price per kWh imported from the grid (fees and VAT
-    included) and ``load_kwh`` the energy the household uses during the slot.
+    included), ``load_kwh`` the energy the household uses during the slot and
+    ``export_credit`` the revenue per kWh exported to the grid (all taxes and
+    fees included). NaN, which is the default, means that nothing can be sold
+    in the slot.
     """
 
     duration_h: float
     import_cost: float
     load_kwh: float
+    export_credit: float = math.nan
 
 
 @dataclass(frozen=True)
 class PlanResult:
     """The plan: one mode and one planned end-of-slot SoC (%) per slot.
 
-    ``total_cost`` is the grid cost plus wear over all slots; energy left in
-    the battery at the end counts as zero.
+    ``total_cost`` is the grid cost plus wear minus the revenue of the exported
+    energy over all slots, minus the terminal value of the energy left in the
+    battery at the end.
     """
 
     modes: list[str]
@@ -108,8 +128,9 @@ def plan_battery(
     slot with a non-finite price allows no battery action and adds no cost.
     Negative prices are valid. Non-finite or negative powers count as zero,
     the efficiency is clamped into 0.01..1 and a negative or non-finite wear
-    cost counts as zero. When the battery has no usable energy window every
-    slot is ``standby`` and the SoC stays where it is.
+    cost or terminal value counts as zero. A slot whose export credit is not
+    finite or not positive never sells. When the battery has no usable energy
+    window every slot is ``standby`` and the SoC stays where it is.
     """
     count = len(slots)
     if not count:
@@ -122,7 +143,7 @@ def plan_battery(
         for slot, price in zip(slots, prices)
     ]
     prices = [price if math.isfinite(price) else 0.0 for price in prices]
-
+    credits = [_finite(slot.export_credit, math.nan) for slot in slots]
     capacity = _finite(params.capacity_kwh, 0.0)
     low = _finite(params.min_soc_pct, 0.0)
     high = _finite(params.max_soc_pct, 0.0)
@@ -142,6 +163,7 @@ def plan_battery(
     pct_per_state = (high - low) / states
     eta = math.sqrt(min(max(_finite(params.round_trip_efficiency, 0.9), 0.01), 1.0))
     wear = max(_finite(params.wear_cost_per_kwh, 0.0), 0.0)
+    terminal_value = max(_finite(params.terminal_value_per_kwh, 0.0), 0.0)
     max_charge_kw = max(_finite(params.max_charge_power_kw, 0.0), 0.0)
     max_discharge_kw = max(_finite(params.max_discharge_power_kw, 0.0), 0.0)
 
@@ -160,10 +182,24 @@ def plan_battery(
         )
         for hours, load in zip(durations, loads)
     ]
+    # A sell must take out more than the load, so that something is exported.
+    sell_min_steps = [
+        math.floor(load / (step * eta) + LIMIT_EPSILON) + 1 for load in loads
+    ]
+    sell_max_steps = [
+        (
+            min(states, math.floor(max_discharge_kw * hours / step + LIMIT_EPSILON))
+            if math.isfinite(credit) and credit > 0
+            else 0
+        )
+        for hours, credit in zip(durations, credits)
+    ]
 
-    # choices[t][s]: steps charged (> 0) or discharged (< 0) in slot t at state s.
+    # choices[t][s]: steps charged (> 0) or taken out of the battery (< 0) in
+    # slot t at state s; sold[t][s] tells a sell from a discharge.
     choices: list[list[int]] = [[]] * count
-    next_value = [0.0] * (states + 1)
+    sold: list[list[bool]] = [[]] * count
+    next_value = [0.0 - terminal_value * s * step for s in range(states + 1)]
     for t in range(count - 1, -1, -1):
         price = prices[t]
         load = loads[t]
@@ -187,18 +223,34 @@ def plan_battery(
                     value[s] = total
                     choice[s] = -k
 
+        credit = credits[t]
+        sell = [False] * (states + 1)
+        for k in range(sell_min_steps[t], sell_max_steps[t] + 1):
+            out = k * step * eta
+            cost = wear * out - credit * (out - load)
+            for s in range(k, states + 1):
+                total = cost + next_value[s - k]
+                if total + TIE_EPSILON < value[s]:
+                    value[s] = total
+                    choice[s] = -k
+                    sell[s] = True
+
         choices[t] = choice
+        sold[t] = sell
         next_value = value
 
     modes: list[str] = []
     end_soc_pct: list[float] = []
     state = start_state
-    for choice in choices:
+    for choice, sell in zip(choices, sold):
         k = choice[state]
+        if k > 0:
+            modes.append(MODE_CHARGE)
+        elif k < 0:
+            modes.append(MODE_SELL if sell[state] else MODE_DISCHARGE)
+        else:
+            modes.append(MODE_STANDBY)
         state += k
-        modes.append(
-            MODE_CHARGE if k > 0 else MODE_DISCHARGE if k < 0 else MODE_STANDBY
-        )
         end_soc_pct.append(min(low + state * pct_per_state, high))
     return PlanResult(modes, end_soc_pct, next_value[start_state])
 

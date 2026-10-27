@@ -21,7 +21,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 - Exposes a household Load forecast that falls back to a cold-start shell and
   learns a seasonal baseline from retained slot history.
 - Can refine a solar production forecast using your solar's measured output.
-- Plans a battery schedule from the prices, the household load forecast and the battery state of charge: `charge` in the cheap hours before a price peak, `discharge` to cover the household load during the peak and `standby` elsewhere (see [Planner](#planner)).
+- Plans a battery schedule from the prices, the household load forecast and the battery state of charge: `charge` in the cheap hours before a price peak, `discharge` to cover the household load during the peak, `sell` to export battery energy when the credit pays for it and `standby` elsewhere (see [Planner](#planner)).
 
 ## Prerequisites
 - Home Assistant (2025.0 or newer recommended)
@@ -99,13 +99,13 @@ See [docs/solarforecast.md](docs/solarforecast.md) for details.
 
 #### Battery
 
-Battery capacity and max charge power must be set together. Min SoC must be lower than max SoC. The battery charge mode sensor plans with these options (see [Planner](#planner)); without a capacity and a max charge power it keeps every slot on `standby`. Solar production is not used by the planner.
+Battery capacity and max charge power must be set together. Min SoC must be lower than max SoC. The battery charge mode sensor plans with these options (see [Planner](#planner)); without a capacity and a max charge power it keeps every slot on `standby`. Solar production is not used by the planner. Selling battery energy to the grid is part of the planning whenever a battery is configured; it needs no option of its own.
 
 | Key                        | Description                  | Example Value | Status |
 |----------------------------|------------------------------|---------------|--------|
 | `battery_capacity_kwh`     | Usable battery capacity; set together with max charge power | `10.0` | In use (battery charge mode sensor) |
 | `battery_max_charge_power_w` | Maximum battery charge power; set together with capacity | `5000` | In use (battery charge mode sensor) |
-| `battery_max_discharge_power_w` | Maximum battery discharge power; the form pre-fills it with the max charge power, and the planner uses the max charge power when it is unset | `5000` | In use (battery charge mode sensor) |
+| `battery_max_discharge_power_w` | Maximum battery discharge power; the form pre-fills it with the max charge power, and the planner uses the max charge power when it is unset. It also limits how fast the battery can export (`sell`) | `5000` | In use (battery charge mode sensor) |
 | `battery_optimization_horizon_hours` | Look-ahead horizon in hours (1-48, form default 48); the form field and the stored value are kept | `48` | currently not in use (the planner plans every known price slot) |
 | `battery_min_soc_pct`      | Lower SoC bound in % (form default 5) | `5` | In use (battery charge mode sensor) |
 | `battery_max_soc_pct`      | Upper SoC bound in % (form default 100) | `100` | In use (battery charge mode sensor) |
@@ -159,7 +159,7 @@ Large attributes are always kept out of the recorder, regardless of any option:
 - The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_load_forecast` when the household meter is configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
-  - `sensor.energy_advisor_battery_charge_mode` provides a battery schedule with one entry per price slot: `charge` in the cheap slots before a price peak, `discharge` over the peak, `standby` elsewhere, with the slot's `cost` and `credit` and the planned battery state of charge as `target_soc`. Its state is the mode of the current slot.
+  - `sensor.energy_advisor_battery_charge_mode` provides a battery schedule with one entry per price slot: `charge` in the cheap slots before a price peak, `discharge` over the peak, `sell` when exporting pays, `standby` elsewhere, with the slot's `cost` and `credit` and the planned battery state of charge as `target_soc`. Its state is the mode of the current slot.
   - `sensor.energy_advisor_load_forecast` provides a learned household load forecast in 15-minute slots for today and tomorrow. It publishes a fixed `0.60 kW` profile until enough meter history has been collected.
   - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors. The forecast inputs must be the raw 15-minute forecast sensors with `watts`, `wh_period`, or `forecasts` data; when a tomorrow forecast sensor is configured, updates from either forecast sensor rebuild the solar forecast.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
@@ -237,11 +237,11 @@ See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast d
 See [docs/householdforecast.md](docs/householdforecast.md) for the model, quality warnings and database tables.
 
 ### `sensor.energy_advisor_battery_charge_mode`
-- **Description:** Battery schedule built from the linked `sensor.energy_advisor_price` entry. A planner decides for every price slot whether the battery should charge from the grid, discharge into the household or stand by, from the prices, the household load forecast and the battery state of charge (see [Planner](#planner)).
+- **Description:** Battery schedule built from the linked `sensor.energy_advisor_price` entry. A planner decides for every price slot whether the battery should charge from the grid, discharge into the household, sell to the grid or stand by, from the prices, the household load forecast and the battery state of charge (see [Planner](#planner)).
 - **Default Entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
-- **State:** The mode of the slot that contains the current time (`standby`, `charge` or `discharge`); `standby` when no slot contains it. The icon follows the mode: `mdi:battery-off`, `mdi:battery-arrow-up` or `mdi:battery-arrow-down`.
+- **State:** The mode of the slot that contains the current time (`standby`, `charge`, `discharge`, `sell`, or `maxuse` in place of `discharge` in daylight); `standby` when no slot contains it. The icon follows the mode: `mdi:battery-off`, `mdi:battery-arrow-up`, `mdi:battery-arrow-down`, `mdi:transmission-tower-export` or `mdi:battery-sync`.
 - **Attributes:**
-  - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; so far `discharge`, `charge` or `standby`), `target_soc` (the planned battery state of charge at the end of the slot in whole percent, always rounded up so the battery keeps the higher level; `50` for every slot while the battery is not configured), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
+  - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; the planner assigns `standby`, `charge`, `discharge` and `sell`, and `maxuse` in place of `discharge` in daylight), `target_soc` (the planned battery state of charge at the end of the slot in whole percent, always rounded up so the battery keeps the higher level; `50` for every slot while the battery is not configured), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
   - `target_soc`: The `target_soc` of the slot that contains the current time, in whole percent (rounded up): the planned battery state of charge at the end of the current slot (`50` while the battery is not configured). It is always present, and `null` only when no slot contains the current time. It is not the measured state of charge; that stays available from the `battery_soc_entity` itself.
 
 The battery options in the configuration (capacity, power limits, SoC bounds,
@@ -269,14 +269,21 @@ How far ahead it plans:
   plan therefore covers the rest of today (about 10 to 24 hours) until tomorrow's
   prices arrive, and the rest of today plus tomorrow (about 24 to 35 hours)
   after that. It follows the number of price slots, whatever it is.
-- Energy still in the battery after the last known price slot is worth nothing.
-  The battery is therefore used up by the end of the known prices, and the next
-  plan looks further ahead when new prices arrive.
+- Energy still in the battery after the last known price slot is worth something
+  to the plan: `η × the median cost of the planned slots − the wear cost` per
+  stored kWh (`η` is the efficiency of one direction, `√0.9`), but never less
+  than 0. That is roughly what the energy saves once new prices arrive, and
+  without it the battery would be sold off at the end of the known prices at any
+  positive credit. The battery is therefore not necessarily empty at the end of
+  the plan. It is used in the slots that cost more than the typical price of the
+  slots left and kept in the others. The next plan looks further ahead when new
+  prices arrive.
 
 What it works with:
 - **Prices:** The `cost` of each price slot (import price with all fees and
-  taxes). Slots can be 15 or 60 minutes long, and a day with a clock change can
-  have 92 or 100 slots.
+  taxes) and its `credit` (the price received for exported energy, with all fees
+  and taxes of selling included in the same way). Slots can be 15 or 60 minutes
+  long, and a day with a clock change can have 92 or 100 slots.
 - **Household load:** The base load from the household Load forecast, matched to
   the price slots by start time (a longer price slot averages the forecast slots
   it covers). Slots without a forecast, or without the household inputs
@@ -284,9 +291,11 @@ What it works with:
   in the day's cheapest hours regardless, and a simulation showed that planning
   for it does not change the savings, so the heater is not modelled.
 - **Battery:** Usable window between min and max SoC, max charge and discharge
-  power (discharge defaults to the charge power), and a round-trip efficiency of
+  power (discharge defaults to the charge power; `sell` uses the discharge
+  power, since there is no export limit), and a round-trip efficiency of
   90 % split evenly between charging and discharging. The wear cost
-  (`battery_degradation_cost`) is added for every kWh the battery delivers.
+  (`battery_degradation_cost`) is added for every kWh the battery delivers,
+  whether it goes to the household or to the grid.
   It is in the same unit as the price sensor's `cost` (see **Prices** above),
   with fees, taxes and VAT included. It does not apply to the raw spot price
   (for example from elprisetjustnu.se), which is much lower.
@@ -298,12 +307,32 @@ What it works with:
 How it decides:
 - `charge` buys energy from the grid for the battery, on top of the household
   load. `discharge` covers the household load from the battery and never
-  exports. `standby` leaves the battery alone.
+  exports. `sell` discharges for more than the household uses, so that the rest
+  is exported to the grid, and nothing is imported in the slot. `standby` leaves
+  the battery alone. `charge` and `sell` never share a slot.
 - The battery only moves when the price difference pays for the losses and the
   wear cost, so flat prices, or a spread that is too small, give `standby`.
+- Selling is part of the same optimisation, with the slot's `credit` as the
+  revenue for every exported kWh. The `credit` already includes all taxes and
+  fees of selling, so there is no sell margin to set. Only the battery limits
+  the export: there is no export limit to the grid, so a `sell` slot can export
+  at the max discharge power, and the min SoC is the floor. A slot whose
+  `credit` is unknown, `0` or negative never sells.
+- A kWh is worth selling when the `credit` is higher than the cost it was
+  charged at, adjusted for the round-trip losses, plus the wear cost. With the
+  90 % round-trip efficiency that is `credit > cost at charge / 0.9 + wear
+  cost`. Energy charged at 1.00 with a wear cost of 0.70 is therefore sold at a
+  `credit` above 1.81. In a `sell` slot the battery covers the household load
+  first, which saves the slot's `cost`, and exports the rest.
+- Without selling, the energy worth charging is capped by what the household
+  uses in the expensive slots. Selling has no such cap, since the grid takes
+  whatever the battery can deliver, so the battery is charged as far as the SoC
+  bounds and the power allow whenever a later `credit` pays for it. The wear
+  cost is then the main brake on cycling the battery.
 - Charging is spread over as many cheap slots as the charge power requires, and
   discharging over the expensive slots, limited by how much the household uses
-  in each slot.
+  in each slot. Selling is spread over the slots with the highest credit, up to
+  the max discharge power.
 - The plan is made from now. The current slot is planned as a whole slot from
   the state of charge now, so its mode stays the same until the slot ends; its
   `target_soc` is the state of charge expected at the end of the slot. Slots
@@ -314,9 +343,11 @@ How it decides:
 - A planned `discharge` in daylight (the middle of the slot lies between
   sunrise and sunset, from Home Assistant's location) is published as `maxuse`
   so that any solar surplus charges the battery. The battery is used the same
-  way, so the plan does not change. At night it stays `discharge`.
-- Solar production is not used yet. It is small in winter, and the planner does
-  not take it into account.
+  way, so the plan does not change. At night it stays `discharge`. `sell` is
+  never changed to `maxuse`, because `maxuse` never exports.
+- Solar production is not used or modelled. It is small in winter, and the
+  planner does not take it into account. There is no export limit, so selling
+  is allowed in daylight as well.
 
 #### When it is calculated
 
@@ -344,10 +375,10 @@ of calculation per day.
 #### Battery charge modes
 
 Each slot in `modes` has exactly one of these six modes. They are mutually
-exclusive within a slot. Only `maxuse`, `discharge`, `charge` and `standby` are
-assigned so far, by the [planner](#planner); `pvcharge` and `sell` are not used
-yet because solar and export are not part of the planning. `maxuse` is used in
-place of `discharge` during daylight.
+exclusive within a slot. Only `maxuse`, `discharge`, `charge`, `sell` and
+`standby` are assigned so far, by the [planner](#planner); `pvcharge` is not
+used yet because solar is not part of the planning. `maxuse` is used in place of
+`discharge` during daylight, never in place of `sell`.
 
 | Mode | Meaning |
 |------|---------|
@@ -356,12 +387,14 @@ place of `discharge` during daylight.
 | `discharge` | The battery discharges to serve the household load, which reduces grid import. The battery does not charge from solar in this mode. |
 | `pvcharge` | The battery is charged from surplus solar only. Solar serves the household first and any surplus charges the battery; remaining household demand is imported from the grid. The battery never charges from the grid and never discharges. |
 | `standby` | The battery is idle: it neither charges nor discharges. Unlike `maxuse` it does not absorb surplus solar or cover household demand. |
-| `sell` | The battery discharges to export at a favourable price. It serves the household load first and exports the surplus, and nothing is imported from the grid while exporting. |
+| `sell` | The battery discharges to export at a favourable price. It serves the household load first and exports the surplus, and nothing is imported from the grid while exporting. The planner picks it when the slot's `credit` pays for the energy (see [Planner](#planner)). It never charges in the same slot. |
 
 `target_soc` is the battery state of charge, in whole percent (always rounded
 up), planned for the end of the slot. It follows from the plan: it rises in `charge` slots, falls in
-`discharge` and `maxuse` slots and stays the same in `standby` slots. It is a
-fixed `50` while the battery is not configured.
+`discharge`, `sell` and `maxuse` slots and stays the same in `standby` slots. It is a
+fixed `50` while the battery is not configured. In a `sell` slot whatever
+controls the battery should export until the measured state of charge reaches
+`target_soc`, and not below it.
 
 ### `energyadvisor.get_levels`
 - **Description:** The price levels for today and tomorrow as a string with one char per time period. Main purpose is to provide data for the Level Indicator Clock (https://github.com/Klurige/LevelIndicatorClock)
