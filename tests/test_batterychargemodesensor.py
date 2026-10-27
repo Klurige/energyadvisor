@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import datetime
 import json
+import math
 import random
 import threading
 import time
@@ -293,16 +294,21 @@ def test_battery_plan_charges_in_the_valley_and_discharges_on_the_peak() -> None
     assert schedule.current_mode == modes[0]
 
 
-def test_target_soc_is_the_planned_end_soc_rounded_to_one_decimal() -> None:
+def test_target_soc_is_the_planned_end_soc_rounded_up_to_whole_percent() -> None:
     schedule = build_schedule(_inputs(_valley_peak_rates(), soc=0.0))
 
     charge_targets = [m["target_soc"] for m in schedule.modes if m["mode"] == "charge"]
     assert charge_targets == sorted(charge_targets)
     assert max(charge_targets) <= 95.0
-    assert all(target == round(target, 1) for target in charge_targets)
-    # 1.25 kWh in a 15 kWh battery is 8.33 %, so rounding matters.
-    assert [m["target_soc"] for m in schedule.modes[:2]] == [0.0, 0.0]
-    assert any(target % 0.5 != 0 for target in charge_targets)
+    assert all(type(target) is int for target in charge_targets)
+    assert [m["target_soc"] for m in schedule.modes[:2]] == [0, 0]
+    # The charge slots reach 5, 13.33, 21.67 and 30 %: whole values stay as
+    # they are and the rest goes up.
+    assert charge_targets == [5, 14, 22, 30]
+    # The published value is never below the exact planned SoC, and less than
+    # one point above it.
+    for entry, (_, exact) in zip(schedule.modes, schedule.soc_trace):
+        assert exact <= entry["target_soc"] < exact + 1
     assert len(schedule.soc_trace) == 24
 
 
@@ -334,7 +340,7 @@ def test_slots_that_ended_are_standby_with_the_start_soc_as_target() -> None:
 
     ended = schedule.modes[:4]
     assert {m["mode"] for m in ended} == {"standby"}
-    assert {m["target_soc"] for m in ended} == {40.0}
+    assert {m["target_soc"] for m in ended} == {40}
     assert {m["cost"] for m in ended} == {0.1}
 
 
@@ -370,10 +376,10 @@ def test_the_current_slots_target_covers_only_the_time_that_is_left() -> None:
     targets = lambda schedule: [
         m["target_soc"] for m in schedule.modes[:3]
     ]  # noqa: E731
-    assert targets(start) == pytest.approx([46.7, 43.3, 40.0], abs=0.1)
+    assert targets(start) == [47, 44, 40]  # 46.7, 43.3 and 40.0 rounded up
     # The load of half a slot (1.67 %) is drawn from here; later slots follow.
-    assert targets(half) == pytest.approx([48.3, 45.0, 41.7], abs=0.1)
-    assert targets(last) == pytest.approx([50.0, 46.7, 43.3], abs=0.1)
+    assert targets(half) == [49, 45, 42]  # 48.3, 45.0 and 41.7 rounded up
+    assert targets(last) == [50, 47, 44]  # 50.0, 46.7 and 43.3 rounded up
 
 
 def test_the_schedule_reports_the_record_of_the_current_slot() -> None:
@@ -408,8 +414,9 @@ def test_slots_that_ended_keep_the_mode_and_target_they_ran_with() -> None:
         "maxuse",
         "standby",
     ]
-    # A slot without a record carries the SoC on from the one before it.
-    assert [m["target_soc"] for m in schedule.modes[:4]] == [40.0, 12.5, 9.0, 9.0]
+    # A slot without a record carries the SoC on from the one before it. The
+    # published targets are rounded up; the trace keeps the exact values.
+    assert [m["target_soc"] for m in schedule.modes[:4]] == [40, 13, 9, 9]
     assert [target for _, target in schedule.soc_trace[:4]] == [40.0, 12.5, 9.0, 9.0]
 
 
@@ -559,7 +566,7 @@ def test_all_slots_in_the_past_stay_standby() -> None:
     schedule = build_schedule(_inputs(_valley_peak_rates(), soc=33.33, now=now))
 
     assert {m["mode"] for m in schedule.modes} == {"standby"}
-    assert {m["target_soc"] for m in schedule.modes} == {33.3}
+    assert {m["target_soc"] for m in schedule.modes} == {34}
     assert schedule.current_mode == "standby"
 
 
@@ -636,7 +643,7 @@ def test_the_current_slots_target_soc_is_published_as_target_soc() -> None:
 
     assert schedule.modes[4]["target_soc"] == schedule.current_target_soc
     assert schedule.current is not None
-    assert schedule.current_target_soc == round(schedule.current.target_soc, 1)
+    assert schedule.current_target_soc == math.ceil(schedule.current.target_soc)
 
 
 def test_target_soc_is_the_fixed_default_without_a_battery() -> None:

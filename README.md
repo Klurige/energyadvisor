@@ -241,8 +241,8 @@ See [docs/householdforecast.md](docs/householdforecast.md) for the model, qualit
 - **Default Entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
 - **State:** The mode of the slot that contains the current time (`standby`, `charge` or `discharge`); `standby` when no slot contains it. The icon follows the mode: `mdi:battery-off`, `mdi:battery-arrow-up` or `mdi:battery-arrow-down`.
 - **Attributes:**
-  - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; so far `discharge`, `charge` or `standby`), `target_soc` (the planned battery state of charge at the end of the slot in percent, rounded to 1 decimal; `50` for every slot while the battery is not configured), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
-  - `target_soc`: The `target_soc` of the slot that contains the current time, in percent: the planned battery state of charge at the end of the current slot (`50` while the battery is not configured). It is always present, and `null` only when no slot contains the current time. It is not the measured state of charge; that stays available from the `battery_soc_entity` itself.
+  - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; so far `discharge`, `charge` or `standby`), `target_soc` (the planned battery state of charge at the end of the slot in whole percent, always rounded up so the battery keeps the higher level; `50` for every slot while the battery is not configured), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
+  - `target_soc`: The `target_soc` of the slot that contains the current time, in whole percent (rounded up): the planned battery state of charge at the end of the current slot (`50` while the battery is not configured). It is always present, and `null` only when no slot contains the current time. It is not the measured state of charge; that stays available from the `battery_soc_entity` itself.
 
 The battery options in the configuration (capacity, power limits, SoC bounds,
 wear cost and SoC sensor) are described in the [Battery](#battery)
@@ -358,8 +358,8 @@ place of `discharge` during daylight.
 | `standby` | The battery is idle: it neither charges nor discharges. Unlike `maxuse` it does not absorb surplus solar or cover household demand. |
 | `sell` | The battery discharges to export at a favourable price. It serves the household load first and exports the surplus, and nothing is imported from the grid while exporting. |
 
-`target_soc` is the battery state of charge, in percent, planned for the end of
-the slot. It follows from the plan: it rises in `charge` slots, falls in
+`target_soc` is the battery state of charge, in whole percent (always rounded
+up), planned for the end of the slot. It follows from the plan: it rises in `charge` slots, falls in
 `discharge` and `maxuse` slots and stays the same in `standby` slots. It is a
 fixed `50` while the battery is not configured.
 

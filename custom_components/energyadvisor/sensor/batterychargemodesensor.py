@@ -15,7 +15,9 @@ while they were running. Those records are stored with the entity's restore
 data, so they survive a restart.
 
 The sensor's ``target_soc`` attribute is the target SoC of the slot that
-contains "now", so it is always available next to the ``modes``.
+contains "now", so it is always available next to the ``modes``. Every
+published ``target_soc`` is an integer percent, always rounded up so that the
+battery keeps the higher level.
 
 The planner only knows ``standby``, ``charge`` and ``discharge``. A planned
 discharge in daylight is published as ``maxuse``: the battery then covers the
@@ -168,6 +170,8 @@ class Schedule:
     slot that contains ``now`` (``None`` without a battery or such a slot).
     ``current_target_soc`` is that slot's published ``target_soc`` (the fixed
     50 % without a battery); it is ``None`` only when no slot contains ``now``.
+    The published ``target_soc`` values are whole percent, rounded up; the
+    ``soc_trace`` and ``current`` keep the exact planned SoC.
     """
 
     modes: list[dict[str, str | float]]
@@ -296,7 +300,7 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
             "from": slot.start.strftime(SLOT_TIME_FORMAT),
             "to": slot.end.strftime(SLOT_TIME_FORMAT),
             "mode": mode,
-            "target_soc": target if params is None else round(target, 1),
+            "target_soc": _publish_soc(target),
             "cost": round(slot.cost, 2) if math.isfinite(slot.cost) else 0.0,
             "credit": round(slot.credit, 2),
         }
@@ -617,6 +621,15 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         return {"modes": self._modes, "target_soc": self._current_target_soc}
+
+
+def _publish_soc(soc: float) -> int:
+    """Return the SoC in percent as an integer, always rounded up.
+
+    Rounding up keeps a higher level in the battery. The rounding to 6
+    decimals first keeps float noise (30.000000000000004) from adding a point.
+    """
+    return math.ceil(round(soc, 6))
 
 
 def _in_daylight(
