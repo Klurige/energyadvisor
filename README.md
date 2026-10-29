@@ -11,7 +11,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 ## Features
 - Uses electricity prices provided by the Home Assistant NordPool integration.
 - Categorizes prices into levels (e.g., low, medium, high).
-- Provides two price sensors plus a battery charge mode sensor with a price-driven battery schedule, an optional household Load forecast sensor, and an optional refined solar forecast sensor.
+- Provides two price sensors plus a battery charge mode sensor, a water-heater schedule sensor, an optional household Load forecast sensor, and an optional refined solar forecast sensor.
 - Supports multiple languages (English, Swedish).
 - Easy configuration via the Home Assistant UI.
   - Adds support for extra fees and taxes from your grid and supplier.
@@ -156,10 +156,11 @@ Large attributes are always kept out of the recorder, regardless of any option:
 - `forecasts` on `sensor.energy_advisor_solar_forecast` and `sensor.energy_advisor_load_forecast`
 
 ## Usage
-- The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_load_forecast` when the household meter is configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
+- The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor, one water-heater schedule sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_water_heater_schedule`, `sensor.energy_advisor_load_forecast` when the household meter is configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
   - `sensor.energy_advisor_battery_charge_mode` provides a battery schedule with one entry per price slot: `charge` in the cheap slots before a price peak, `discharge` over the peak, `sell` when exporting pays, `standby` elsewhere, with the slot's `cost` and `credit` and the planned battery state of charge as `target_soc`. Its state is the mode of the current slot.
+  - `sensor.energy_advisor_water_heater_schedule` provides a fixed daily 20:00→20:00 ON schedule for the water heater, using full-precision price costs and learned runtime demand (`no_shower` vs `shower` day classes). Its state is `on` when now is in a scheduled ON slot, else `off`.
   - `sensor.energy_advisor_load_forecast` provides a learned household load forecast in 15-minute slots for today and tomorrow. It publishes a fixed `0.60 kW` profile until enough meter history has been collected.
   - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors. The forecast inputs must be the raw 15-minute forecast sensors with `watts`, `wh_period`, or `forecasts` data; when a tomorrow forecast sensor is configured, updates from either forecast sensor rebuild the solar forecast.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
@@ -243,6 +244,15 @@ See [docs/householdforecast.md](docs/householdforecast.md) for the model, qualit
 - **Attributes:**
   - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; the planner assigns `standby`, `charge`, `discharge` and `sell`, and `maxuse` in place of `discharge` in daylight), `target_soc` (the planned battery state of charge at the end of the slot in whole percent, always rounded up so the battery keeps the higher level; `50` for every slot while the battery is not configured), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
   - `target_soc`: The `target_soc` of the slot that contains the current time, in whole percent (rounded up): the planned battery state of charge at the end of the current slot (`50` while the battery is not configured). It is always present, and `null` only when no slot contains the current time. It is not the measured state of charge; that stays available from the `battery_soc_entity` itself.
+
+### `sensor.energy_advisor_water_heater_schedule`
+- **Description:** Fixed plan generated once per day at local 20:00 for the next 24 hours (to next 20:00), minimizing expected electricity cost from valid 15-minute price slots.
+- **State:** `on` if now falls in a planned ON slot, otherwise `off`.
+- **Required config:** `water_heater_power_entity`, `bathroom_humidity_entity`, `water_heater_power_w` (rated power), `water_heater_max_hours`.
+- **Learning model:** Two weekday-aware runtime models (`no_shower`/`shower`), 30-day rolling window, 95th percentile (nearest-rank), sparse fallback hierarchy, default/blended/learned sample handling (default below 10 samples, blend 10-20, learned at 20+).
+- **Threshold detection:** Deterministic histogram+Otsu split over the rolling window power distribution; non-heating and active-heating thresholds are derived from cluster means with hysteresis. If confidence is insufficient (samples, cluster balance, or separation), affected observations are excluded and diagnostics expose the reason.
+- **Observation quality:** Max gap 45 minutes and min daily coverage 90%; invalid/incomplete days are excluded and counted diagnostically.
+- **Future improvements (not implemented):** solar-production forecasts, weather adjustments, seasonal models, advanced occupancy prediction, and Saturday afternoon replenishment planning.
 
 The battery options in the configuration (capacity, power limits, SoC bounds,
 wear cost and SoC sensor) are described in the [Battery](#battery)

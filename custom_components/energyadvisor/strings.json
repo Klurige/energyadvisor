@@ -362,6 +362,9 @@
           "sell": "Sell"
         }
       },
+      "waterheaterschedule": {
+        "name": "Water heater schedule"
+      },
       "load_forecast": {
         "name": "Load forecast"
       },

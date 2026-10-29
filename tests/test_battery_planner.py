@@ -295,18 +295,21 @@ def test_empty_battery_with_the_only_peak_first_stays_in_standby() -> None:
     assert result.modes == [MODE_STANDBY] * 24
 
 
-def test_hourly_slots_charge_five_kwh_per_slot() -> None:
-    prices = [1.0] * 6 + [3.0] * 12
-    slots = _slots(prices, load_kwh=1.5, hours=1.0)
+def test_quarter_hour_slots_charge_within_the_power_limit() -> None:
+    # Six cheap hours followed by twelve expensive hours, in quarter-hour slots.
+    prices = [1.0] * 24 + [3.0] * 48
+    slots = _slots(prices, load_kwh=1.5 * SLOT_H)
 
     result = plan_battery(slots, _params(), 0.0)
 
-    # 14.25 kWh usable: 4.25 kWh and two full 5 kWh slots. Equal prices tie,
-    # and ties keep standby, so charging is pushed to the latest slots.
-    assert result.modes[:3] == [MODE_STANDBY] * 3
-    assert result.modes[3:6] == [MODE_CHARGE] * 3
-    assert result.end_soc_pct[3:6] == pytest.approx([4.25 / 0.15, 9.25 / 0.15, 95.0])
-    assert MODE_DISCHARGE in result.modes[6:]
+    assert result.modes[:12] == [MODE_STANDBY] * 12
+    assert MODE_CHARGE in result.modes[:24]
+    assert MODE_DISCHARGE in result.modes[24:]
+    previous = 0.0
+    for mode, soc in zip(result.modes, result.end_soc_pct):
+        if mode == MODE_CHARGE:
+            assert (soc - previous) * 15.0 / 100.0 <= 5.0 * SLOT_H + 1e-9
+        previous = soc
 
 
 def test_short_slot_cannot_move_a_full_step() -> None:

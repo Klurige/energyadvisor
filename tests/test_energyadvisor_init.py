@@ -176,6 +176,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
         "price": "sensor.energy_advisor_price",
         "compactlevels": "sensor.energy_advisor_compact_levels",
         "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
+        "waterheaterschedule": "sensor.energy_advisor_water_heater_schedule",
         "base_load": "sensor.energy_advisor_load_forecast_refined",
         "solarforecast": "sensor.energy_advisor_solar_forecast_refined",
     }

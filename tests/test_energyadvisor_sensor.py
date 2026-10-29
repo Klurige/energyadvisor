@@ -126,16 +126,16 @@ def test_sensor_uses_preferred_entity_id(sensor_instance):
 
 # Helper to create Nord Pool data
 def create_nordpool_raw_data(
-    start_dt_utc: datetime.datetime, num_hours: int, prices_mwh: list[float]
+    start_dt_utc: datetime.datetime, num_slots: int, prices_mwh: list[float]
 ):
-    if len(prices_mwh) != num_hours:
-        raise ValueError("Length of prices_mwh must match num_hours")
+    if len(prices_mwh) != num_slots:
+        raise ValueError("Length of prices_mwh must match num_slots")
 
     raw_entries = []
     current_dt = start_dt_utc
-    for i in range(num_hours):
+    for i in range(num_slots):
         entry_start = current_dt
-        entry_end = current_dt + datetime.timedelta(hours=1)
+        entry_end = current_dt + datetime.timedelta(minutes=15)
         # Ensure timestamps are timezone-aware (UTC) and in ISO format with Z
         raw_entries.append(
             {
@@ -212,13 +212,13 @@ async def test_async_update_data_24_hours_today(sensor_instance, mock_hass):
         TODAY_DATE, datetime.time(10, 30), tzinfo=TEST_TIMEZONE
     )
 
-    # Prices in EUR/MWh for 24 hours
-    prices_mwh = [i * 10 for i in range(1, 25)]  # e.g., 10, 20, ..., 240 EUR/MWh
+    # Prices in EUR/MWh for 24 hours, represented by 96 quarter-hour slots.
+    prices_mwh = [i * 10 for i in range(1, 97)]
 
     start_of_today_utc = datetime.datetime.combine(
         TODAY_DATE, datetime.time.min, tzinfo=TEST_TIMEZONE
     ).astimezone(datetime.timezone.utc)
-    nordpool_data = create_nordpool_raw_data(start_of_today_utc, 24, prices_mwh)
+    nordpool_data = create_nordpool_raw_data(start_of_today_utc, 96, prices_mwh)
 
     with patch("homeassistant.util.dt.now", return_value=now_local):
         with patch(
@@ -230,22 +230,22 @@ async def test_async_update_data_24_hours_today(sensor_instance, mock_hass):
 
             await sensor_instance.async_update_data(nordpool_data)
 
-    assert len(sensor_instance._rates) == 24
-    # Spot price for 10:00-11:00 (11th hour, index 10) is prices_mwh[10] / 1000
-    # prices_mwh[10] = (10+1)*10 = 110. Expected spot price = 0.11 EUR/kWh
-    expected_spot_price_for_current_hour = prices_mwh[10] / 1000.0
+    assert len(sensor_instance._rates) == 96
+    # At 10:30, the current slot is 10:30-10:45 (index 42).
+    expected_spot_price_for_current_slot = prices_mwh[42] / 1000.0
 
-    # Check state (cost for current hour)
-    # The sensor state should be the cost for the 10:00-11:00 slot
+    # Check state (cost for the current quarter-hour slot).
     current_rate_details = next(
         r
         for r in sensor_instance._rates
-        if r["start"].hour == 10 and r["start"].date() == TODAY_DATE
+        if r["start"].hour == 10
+        and r["start"].minute == 30
+        and r["start"].date() == TODAY_DATE
     )
     assert sensor_instance.state == current_rate_details["cost"]
     assert (
         sensor_instance.extra_state_attributes["spot_price"]
-        == expected_spot_price_for_current_hour
+        == expected_spot_price_for_current_slot
     )
     assert sensor_instance.extra_state_attributes[
         "level"
@@ -273,12 +273,12 @@ async def test_async_update_data_48_hours_today_and_tomorrow(
         TODAY_DATE, datetime.time(10, 30), tzinfo=TEST_TIMEZONE
     )
 
-    prices_mwh = [i * 5 for i in range(1, 49)]  # 5, 10, ..., 240 EUR/MWh
+    prices_mwh = [i * 5 for i in range(1, 193)]
 
     start_of_today_utc = datetime.datetime.combine(
         TODAY_DATE, datetime.time.min, tzinfo=TEST_TIMEZONE
     ).astimezone(datetime.timezone.utc)
-    nordpool_data = create_nordpool_raw_data(start_of_today_utc, 48, prices_mwh)
+    nordpool_data = create_nordpool_raw_data(start_of_today_utc, 192, prices_mwh)
 
     with patch("homeassistant.util.dt.now", return_value=now_local):
         with patch(
@@ -289,22 +289,24 @@ async def test_async_update_data_48_hours_today_and_tomorrow(
             mock_dt.side_effect = lambda *args, **kw: datetime.datetime(*args, **kw)
             await sensor_instance.async_update_data(nordpool_data)
 
-    assert len(sensor_instance._rates) == 48
-    # Spot price for 10:00-11:00 today (11th hour, index 10)
-    expected_spot_price_for_current_hour = prices_mwh[10] / 1000.0
+    assert len(sensor_instance._rates) == 192
+    # Spot price for the 10:30-10:45 slot today (index 42).
+    expected_spot_price_for_current_slot = prices_mwh[42] / 1000.0
 
     current_rate_details = next(
         r
         for r in sensor_instance._rates
-        if r["start"].hour == 10 and r["start"].date() == TODAY_DATE
+        if r["start"].hour == 10
+        and r["start"].minute == 30
+        and r["start"].date() == TODAY_DATE
     )
     assert sensor_instance.state == current_rate_details["cost"]
     assert (
         sensor_instance.extra_state_attributes["spot_price"]
-        == expected_spot_price_for_current_hour
+        == expected_spot_price_for_current_slot
     )
 
-    # Check ranking was done per day — 24 distinct prices should produce 24 unique ranks
+    # Check ranking was done per day — 96 quarter-hour prices produce 96 ranks.
     ranks_today = {
         r["rank"] for r in sensor_instance._rates if r["start"].date() == TODAY_DATE
     }
@@ -315,11 +317,11 @@ async def test_async_update_data_48_hours_today_and_tomorrow(
     }
 
     assert (
-        len(ranks_today) == 24
-    ), f"Expected 24 unique ranks for today, got {len(ranks_today)}"
+        len(ranks_today) == 96
+    ), f"Expected 96 unique ranks for today, got {len(ranks_today)}"
     assert (
-        len(ranks_tomorrow) == 24
-    ), f"Expected 24 unique ranks for tomorrow, got {len(ranks_tomorrow)}"
+        len(ranks_tomorrow) == 96
+    ), f"Expected 96 unique ranks for tomorrow, got {len(ranks_tomorrow)}"
 
 
 @pytest.mark.asyncio
@@ -331,15 +333,15 @@ async def test_async_update_data_48_hours_yesterday_and_today(
         TODAY_DATE, datetime.time(10, 30), tzinfo=TEST_TIMEZONE
     )
 
-    prices_mwh = [i * 7 for i in range(1, 49)]  # Prices for 48 hours
+    prices_mwh = [i * 7 for i in range(1, 193)]  # Prices for 48 hours
 
     yesterday_date = TODAY_DATE - datetime.timedelta(days=1)
     start_of_yesterday_utc = datetime.datetime.combine(
         yesterday_date, datetime.time.min, tzinfo=TEST_TIMEZONE
     ).astimezone(datetime.timezone.utc)
-    nordpool_data = create_nordpool_raw_data(start_of_yesterday_utc, 48, prices_mwh)
+    nordpool_data = create_nordpool_raw_data(start_of_yesterday_utc, 192, prices_mwh)
 
-    # Initial call to async_update_data populates all 48 rates.
+    # Initial call to async_update_data populates all 192 quarter-hour rates.
     # The subsequent _update_sensor_state_from_current_rate (called internally) will purge.
     with patch("homeassistant.util.dt.now", return_value=now_local):
         with patch(
@@ -356,23 +358,25 @@ async def test_async_update_data_48_hours_yesterday_and_today(
 
     # After async_update_data, _update_sensor_state_from_current_rate has run.
     # It purges rates older than "today_local" (which is TODAY_DATE based on mocked now_local).
-    # So, only today's 24 rates should remain.
-    assert len(sensor_instance._rates) == 24
+    # So, only today's 96 quarter-hour rates should remain.
+    assert len(sensor_instance._rates) == 96
     for rate_info in sensor_instance._rates:
         assert rate_info["start"].date() == TODAY_DATE
 
-    # Spot price for 10:00-11:00 today (this is the (24+10)th entry in original prices_mwh)
-    expected_spot_price_for_current_hour = prices_mwh[24 + 10] / 1000.0
+    # Today's 10:30-10:45 slot is index 96 + 42 in the original prices.
+    expected_spot_price_for_current_slot = prices_mwh[96 + 42] / 1000.0
 
     current_rate_details = next(
         r
         for r in sensor_instance._rates
-        if r["start"].hour == 10 and r["start"].date() == TODAY_DATE
+        if r["start"].hour == 10
+        and r["start"].minute == 30
+        and r["start"].date() == TODAY_DATE
     )
     assert sensor_instance.state == current_rate_details["cost"]
     assert (
         sensor_instance.extra_state_attributes["spot_price"]
-        == expected_spot_price_for_current_hour
+        == expected_spot_price_for_current_slot
     )
     assert sensor_instance.extra_state_attributes[
         "level"
@@ -506,15 +510,18 @@ def test_build_levels_payload_uses_internal_rates(sensor_instance):
     )
     sensor_instance._rates = [
         {
-            "start": start,
-            "end": start + datetime.timedelta(hours=1),
+            "start": start + datetime.timedelta(minutes=15 * i),
+            "end": start + datetime.timedelta(minutes=15 * (i + 1)),
             "level": "Low",
-        },
+        }
+        for i in range(4)
+    ] + [
         {
-            "start": start + datetime.timedelta(hours=1),
-            "end": start + datetime.timedelta(hours=2),
+            "start": start + datetime.timedelta(hours=1, minutes=15 * i),
+            "end": start + datetime.timedelta(hours=1, minutes=15 * (i + 1)),
             "level": "Medium",
-        },
+        }
+        for i in range(4)
     ]
 
     result = sensor_instance.build_levels_payload(
@@ -540,7 +547,7 @@ async def test_update_with_no_current_rate_data(sensor_instance, mock_hass):
     start_of_tomorrow_utc = datetime.datetime.combine(
         tomorrow_date, datetime.time.min, tzinfo=TEST_TIMEZONE
     ).astimezone(datetime.timezone.utc)
-    nordpool_data = create_nordpool_raw_data(start_of_tomorrow_utc, 24, [10] * 24)
+    nordpool_data = create_nordpool_raw_data(start_of_tomorrow_utc, 96, [10] * 96)
 
     with patch("homeassistant.util.dt.now", return_value=now_local):
         with patch(

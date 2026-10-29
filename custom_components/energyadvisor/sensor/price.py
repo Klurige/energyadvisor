@@ -454,7 +454,7 @@ class PriceSensor(SensorEntity):
 
     def _update_sensor_state_from_current_rate(self) -> datetime.datetime | None:
         """
-        Update sensor's state attributes from the current hourly rate.
+        Update sensor's state attributes from the current price slot.
 
         This method iterates through the stored rates to find the one
         that corresponds to the current time. If a current rate is found,
@@ -566,7 +566,7 @@ class PriceSensor(SensorEntity):
 
         This method is called when new data is available from the Nord Pool
         coordinator. It parses the raw price entries, calculates costs,
-        credits, levels, and ranks for each hourly slot, and stores them.
+        credits, levels, and ranks for each price slot, and stores them.
         Finally, it updates the sensor's current state based on this new data.
 
         Args:
@@ -692,7 +692,7 @@ class PriceSensor(SensorEntity):
         """
         Process a single price entry to calculate its cost, credit, level, and rank.
 
-        This method takes a single entry (representing an hour's price data)
+        This method takes a single price-slot entry
         and a list of all entries for that day (ranked by price). It calculates
         the final cost and credit including all fees and taxes, determines the
         price level (Low, Medium, High), and calculates a minute rank

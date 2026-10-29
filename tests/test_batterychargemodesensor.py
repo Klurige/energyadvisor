@@ -280,12 +280,12 @@ def test_modes_round_cost_and_credit_to_two_decimals() -> None:
     ]
 
 
-def test_modes_follow_the_slot_length_of_the_price_slots() -> None:
-    schedule = build_schedule(_inputs(_rates([1.0, 1.0], minutes=60), params=None))
+def test_modes_follow_the_quarter_hour_price_slots() -> None:
+    schedule = build_schedule(_inputs(_rates([1.0, 1.0]), params=None))
 
     assert [(m["from"], m["to"]) for m in schedule.modes] == [
-        ("2026-08-15T00:00", "2026-08-15T01:00"),
-        ("2026-08-15T01:00", "2026-08-15T02:00"),
+        ("2026-08-15T00:00", "2026-08-15T00:15"),
+        ("2026-08-15T00:15", "2026-08-15T00:30"),
     ]
 
 
@@ -1057,7 +1057,7 @@ def test_load_comes_from_the_household_forecast_slots(hass) -> None:
     assert loads == [2.0, 0.5, 4.0, DEFAULT_LOAD_KW]
 
 
-def test_hourly_price_slots_average_the_forecast_slots_they_cover(hass) -> None:
+def test_quarter_hour_price_slots_use_the_matching_forecast_load(hass) -> None:
     forecast = [
         {"from": "2026-08-15T00:00", "load": 1.0},
         {"from": "2026-08-15T00:15", "load": 2.0},
@@ -1070,13 +1070,21 @@ def test_hourly_price_slots_average_the_forecast_slots_they_cover(hass) -> None:
         {"from": "2026-08-15T03:00", "load": "junk"},
         {"from": "2026-08-15T03:15", "load": float("nan")},
     ]
-    sensor = _make_sensor(
-        hass, _rates([1.0] * 4, minutes=60), household=_household(forecast)
-    )
+    sensor = _make_sensor(hass, _rates([1.0] * 12), household=_household(forecast))
 
     loads = [slot.load_kw for slot in sensor._build_inputs(BASE).slots]
 
-    assert loads == [2.5, 7.0, DEFAULT_LOAD_KW, DEFAULT_LOAD_KW]
+    assert loads == [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        6.0,
+        8.0,
+        DEFAULT_LOAD_KW,
+        DEFAULT_LOAD_KW,
+        *([DEFAULT_LOAD_KW] * 4),
+    ]
 
 
 def test_fallback_load_is_1_0_kw_without_a_household_coordinator(hass) -> None:

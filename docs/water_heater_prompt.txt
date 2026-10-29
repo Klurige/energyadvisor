@@ -1,0 +1,527 @@
+Add a new sensor entity to the integration that calculates an optimal water-heater schedule.
+
+Goal
+----
+Minimize electricity cost while ensuring sufficient hot water is available.
+
+The integration already provides electricity-price data. Planning should use actual electricity cost values rather than price ranks because ranks are recalculated independently for each day and cannot be compared across multiple days.
+
+The sensor is responsible for planning only. It should publish a schedule that can be consumed by an automation in the same way that existing planning sensors expose their results.
+
+Before implementing, verify whether the existing battery-mode planning sensor is a suitable architectural precedent. Reuse implementation patterns only where they are actually applicable.
+
+Reuse existing integration configuration where possible, including:
+
+- Water-heater power entity
+- Bathroom humidity entity
+- Rated power
+- max_hours
+
+Use full-precision price-slot data where available. Avoid using rounded or compact representations if more detailed slot information already exists.
+
+Planning time
+-------------
+Perform planning every day at 20:00 local time.
+
+The generated plan should cover the period from the planning time until the next planning cycle at 20:00 the following day.
+
+The generated plan remains fixed for the entire planning window.
+
+Planning and sensor updates
+---------------------------
+Separate plan generation from sensor-state updates.
+
+Plan generation occurs only at 20:00.
+
+The plan shall not be modified again until the next planning cycle.
+
+The sensor shall update when:
+
+- The water heater changes state:
+  - Off -> On
+  - On -> Off
+- A scheduled ON slot starts
+- A scheduled ON slot ends
+- Home Assistant starts
+- A significant clock jump occurs (startup, restore, DST transition, manual time correction)
+
+These updates must not modify the generated plan.
+
+State-update events shall only refresh:
+
+- Current recommended state
+- Diagnostics
+- Progress information
+- Attributes derived from the existing plan
+
+Sensor state
+------------
+The sensor state shall represent the current recommended water-heater state:
+
+- on
+- off
+
+The state shall be calculated from the generated schedule.
+
+If the current time falls within a scheduled ON slot, the sensor state should be on.
+
+Otherwise the sensor state should be off.
+
+Prediction target
+-----------------
+The plan generated at 20:00 should be based on observations made during the current local calendar day.
+
+The current day is used only for classification and prediction.
+
+The current day's heating runtime must not be added to the learning dataset until the calendar day has completed and observation-quality checks have passed.
+
+Example:
+
+- Planning performed Tuesday at 20:00 uses Tuesday's shower classification.
+- The resulting schedule applies from Tuesday 20:00 until Wednesday 20:00.
+- Tuesday's runtime enters the learning dataset only after Tuesday has completed.
+
+Learning model
+--------------
+The required heating time depends on household hot-water usage.
+
+Maintain two independent runtime models:
+
+1. No shower detected
+2. At least one shower detected
+
+Use a default runtime of 4 hours until sufficient historical data exists.
+
+Shower detection
+----------------
+Use the bathroom humidity sensor.
+
+A day is considered a shower day if humidity reaches 100% at any point during the local calendar day.
+
+Important limitation
+--------------------
+The humidity sensor can only reliably determine whether at least one shower occurred.
+
+Humidity may remain elevated between consecutive showers, making it impossible to determine the number of showers.
+
+Do not attempt to estimate shower count.
+
+Only classify days as:
+
+- No shower detected
+- At least one shower detected
+
+Learning source
+---------------
+Use water-heater power-consumption history as the primary learning input.
+
+Humidity data should only be used for classification.
+
+Do not attempt to estimate heating demand from humidity values.
+
+Learn total daily heating time rather than scheduled heating time.
+
+The learned value should represent the total amount of heating that actually occurred, regardless of whether it was caused by:
+
+- Scheduled heating
+- Manual operation
+- Solar-surplus automation
+- Any other activation source
+
+This avoids biasing the model during periods when solar surplus contributes significantly to heating.
+
+Rolling history
+---------------
+Use a rolling 30-day learning window.
+
+Only observations from the most recent 30 days should influence runtime calculations.
+
+Weekday-aware learning
+----------------------
+Hot-water usage may vary systematically by day of week.
+
+Maintain separate historical statistics per weekday.
+
+For each runtime category:
+
+- No shower detected
+- At least one shower detected
+
+maintain independent statistics for:
+
+- Monday
+- Tuesday
+- Wednesday
+- Thursday
+- Friday
+- Saturday
+- Sunday
+
+When planning, preferentially use historical observations from the same weekday.
+
+Sparse-data handling
+--------------------
+When there are insufficient observations for a specific weekday/category combination, expand the dataset in the following order:
+
+1. Same weekday and same shower category
+2. Same weekday regardless of shower category
+3. Other weekdays with the same shower category
+4. All available observations
+
+Use the first level that satisfies the minimum sample requirement.
+
+Runtime estimation
+------------------
+For each day, determine the total heating time and store it in the appropriate category.
+
+Continuously update statistics for both categories.
+
+Determine heating runtime directly from observed water-heater power consumption.
+
+The implementation should identify active heating periods and aggregate them into daily heating runtime.
+
+Heating-threshold detection
+---------------------------
+Derive heating thresholds automatically from historical power data.
+
+Before implementing threshold detection, document:
+
+- The proposed threshold-detection algorithm
+- The assumptions made by the algorithm
+- Known limitations
+- Example behaviour using representative historical data
+
+The implementation must document and test the selected threshold-detection method.
+
+A deterministic method shall be used.
+
+The method should identify:
+
+- An active-heating power threshold
+- A non-heating power threshold
+
+from the observed power distribution.
+
+If historical data is insufficient to reliably separate active and inactive states:
+
+- Mark heating detection as unavailable.
+- Exclude affected observations from learning.
+- Expose a diagnostic attribute indicating insufficient threshold confidence.
+
+Do not silently choose arbitrary fallback thresholds.
+
+Day-boundary handling
+---------------------
+Heating cycles may cross midnight.
+
+Assign runtime proportionally to each calendar day based on actual elapsed time within each day.
+
+Example:
+
+- A heating cycle running from 23:30 to 00:30 contributes:
+  - 30 minutes to the first day
+  - 30 minutes to the second day
+
+Observation quality
+-------------------
+The learning model operates on daily observations.
+
+A sample represents one calendar day.
+
+The implementation shall use deterministic rules for:
+
+- Maximum allowed data-gap length
+- Minimum required daily sensor coverage
+
+The chosen rules must be documented, tested, and exposed in diagnostics.
+
+Only days meeting these requirements may enter the learning dataset.
+
+Threshold confidence shall be evaluated using the entire rolling learning window rather than individual days.
+
+Incomplete days shall:
+
+- Not contribute to sample counts
+- Not contribute to percentile calculations
+- Be reported through diagnostics
+
+Expose:
+
+- Valid daily observation count
+- Excluded daily observation count
+
+Incomplete and invalid data
+---------------------------
+Exclude observations affected by:
+
+- Missing power readings
+- Invalid power values
+- Significant data gaps
+
+Do not include incomplete observations in learned runtime statistics.
+
+Demand-learning safeguard
+-------------------------
+Observed heating time should only be treated as valid demand evidence when there is reasonable indication that the water heater completed its heating cycle.
+
+Days where the heater appears runtime-limited, power-limited, disabled, or interrupted should not automatically be interpreted as low hot-water demand.
+
+The implementation should avoid learning artificially low demand from days where the tank was not given sufficient opportunity to recover.
+
+Such observations may be excluded from learning or flagged as low-confidence samples.
+
+Conservative runtime selection
+------------------------------
+Use the 95th percentile of observed runtimes within each category.
+
+The purpose is to provide enough hot water on nearly all days without permanently overreacting to outliers.
+
+Examples of outliers include:
+
+- Unusually long showers
+- Sensor anomalies
+- Maintenance events
+- Temporary household-behaviour changes
+
+Percentile convention
+---------------------
+Use the standard nearest-rank percentile method.
+
+Sample-count handling
+---------------------
+For each dataset:
+
+- Fewer than 10 samples:
+  Use the default runtime of 4 hours.
+
+- Between 10 and 20 samples:
+  Blend default and learned values.
+
+- 20 samples or more:
+  Use the learned value directly.
+
+Blend calculation
+-----------------
+For sample counts between 10 and 20:
+
+weight = (sample_count - 10) / 10
+
+runtime =
+    default_runtime × (1 - weight)
+    + learned_runtime × weight
+
+If no valid percentile can be calculated, fall back to the historical maximum within the available dataset.
+
+Schedule generation
+-------------------
+At 20:00:
+
+1. Determine whether the current day belongs to the "no shower" or "at least one shower" category.
+2. Select the corresponding runtime estimate.
+3. Convert the required runtime into a number of slots.
+4. Evaluate all future electricity-price slots until the next planning cycle.
+5. Use actual electricity-cost values rather than daily rank values.
+6. Select the cheapest available future slots.
+7. Slots do not need to be consecutive.
+8. Generate a schedule with the lowest total expected cost.
+
+Price-slot model
+----------------
+The price sensor provides 15-minute slots.
+
+The internal price data may contain both the slot start and end times. The
+sensor's compact `rates` attribute may expose the start time as `from` without
+including the end time. Prefer the internal full-precision slot data, including
+its start and end times, when available. Do not treat the compact attribute's
+missing end time as evidence that the underlying slot has no end time.
+
+Each slot has a cost and a start time. Its duration is always 15 minutes.
+
+Use the slot's supplied end time when available. If only a start time is
+available, derive the end time as:
+
+start_time + 15 minutes
+
+Do not infer alternative slot lengths or use non-15-minute slots.
+
+Eligible price slots
+--------------------
+Only use valid price slots for scheduling.
+
+A slot is eligible when:
+
+- Start time is known
+- Cost is available
+- Cost is valid
+- End time is known, either from the internal slot data or by deriving it from
+  the start time
+- The entire slot falls within the planning window
+
+Exclude slots with:
+
+- Missing timestamps
+- Missing cost information
+- Invalid cost information
+
+Do not schedule partial slots.
+
+Slots overlapping a planning-window boundary are not eligible unless they are fully contained within the planning window.
+
+Runtime rounding
+----------------
+Convert runtime requirements into whole slots.
+
+Round upward when calculating the required slot count.
+
+Maximum runtime
+---------------
+Respect max_hours as a hard upper limit.
+
+The runtime cap takes precedence over slot-rounding rules.
+
+Never schedule more than max_hours of runtime within a planning window.
+
+If satisfying the slot-rounded requirement would exceed max_hours:
+
+- Limit the schedule to max_hours.
+- Mark the plan as incomplete.
+- Expose diagnostics indicating that the requested runtime could not be fully allocated.
+
+Insufficient future slots
+-------------------------
+If there are too few future slots available to satisfy the calculated runtime:
+
+- Use all available future slots.
+- Mark the plan as incomplete.
+- Expose a diagnostic attribute indicating that the runtime requirement could not be fully scheduled.
+
+Cost calculation
+----------------
+Use full-precision slot-cost values.
+
+Expected schedule cost shall be calculated as:
+
+sum(
+    slot_cost
+    × rated_power_kw
+    × slot_duration_hours
+)
+
+using the configured rated-power value.
+
+Maximum runtime adequacy
+------------------------
+Expose whether max_hours appears sufficient.
+
+Possible values:
+
+- sufficient
+- insufficient
+- unknown
+
+Use unknown when there is insufficient evidence to make a reliable determination.
+
+Do not classify max_hours as insufficient based solely on the schedule reaching the runtime limit.
+
+Require repeated historical evidence that heating demand exceeds the configured cap.
+
+Expose supporting diagnostics showing the basis for the assessment.
+
+Heater state source
+-------------------
+Use the configured active-state entity when available.
+
+If no active-state entity is configured, derive heater state from power-consumption data.
+
+If both sources are available:
+
+- Prefer the active-state entity for state transitions.
+- Use power data for runtime estimation and learning.
+
+Expose diagnostics indicating which source is currently being used.
+
+Configuration requirements
+--------------------------
+The sensor requires:
+
+- Water-heater power entity
+- Bathroom humidity entity
+- Rated power
+- max_hours
+
+If any required configuration is missing:
+
+- Create the entity in an unavailable state.
+- Expose diagnostics describing the missing configuration.
+- Do not generate schedules until configuration is complete.
+
+Sensor output
+-------------
+Expose at least:
+
+- Current recommended state
+- Required runtime (hours)
+- Required slot count
+- Runtime category used
+- Shower detected today
+- Selected ON schedule slots
+- Total expected schedule cost
+- Historical sample count
+- Runtime percentile used
+- Last calculation time
+- Runtime capped by max_hours
+- max_hours appears sufficient
+- Plan complete/incomplete
+- Valid daily observation count
+- Excluded daily observation count
+- Learning source level used
+- Heater state source
+- Threshold confidence status
+
+Learning source level
+---------------------
+Expose how the runtime estimate was produced.
+
+Possible values:
+
+1. Same weekday and same shower category
+2. Same weekday regardless of shower category
+3. Other weekdays with same shower category
+4. All available observations
+
+Schedule attribute format
+-------------------------
+Expose only ON slots.
+
+Each ON slot should include:
+
+- Start timestamp
+- End timestamp
+- Cost
+- Duration
+
+Do not expose OFF slots.
+
+Implementation requirements
+---------------------------
+- Persist learned data across Home Assistant restarts.
+- Use local time for all daily calculations.
+- Keep the implementation deterministic and testable.
+- Prefer explainable heuristics over machine-learning models.
+- Provide detailed debug logging explaining how runtime estimates and schedules were derived.
+- Keep thresholds and tuning parameters configurable where appropriate.
+- Before coding the threshold-detection logic, document the chosen algorithm, assumptions, limitations, and test strategy.
+
+Other
+-----
+The implementation should be well-documented and unit tested.
+
+Future improvements
+-------------------
+Do not implement the following in the initial version, but document them as potential future enhancements:
+
+- Solar-production forecast integration
+- Dynamic adjustment based on weather forecasts
+- Seasonal runtime models
+- More advanced occupancy prediction
+- Saturday-specific replenishment planning based on observed afternoon usage patterns
