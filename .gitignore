@@ -24,3 +24,4 @@ venv
 
 .venv/
 pip_freeze_local.txt
+dev_secrets.txt

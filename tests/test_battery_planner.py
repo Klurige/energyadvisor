@@ -16,6 +16,7 @@ from custom_components.energyadvisor import battery_planner
 from custom_components.energyadvisor.battery_planner import (
     MODE_CHARGE,
     MODE_DISCHARGE,
+    MODE_PVCHARGE,
     MODE_SELL,
     MODE_STANDBY,
     BatteryParams,
@@ -150,6 +151,49 @@ def test_spread_above_losses_and_wear_charges_then_discharges() -> None:
     assert all(i >= 24 for i, mode in enumerate(result.modes) if mode == MODE_DISCHARGE)
     baseline = sum(slot.import_cost * slot.load_kwh for slot in _slots(prices, 1.0))
     assert result.total_cost < baseline
+
+
+def test_solar_surplus_is_stored_when_future_use_beats_export() -> None:
+    slots = [
+        PlanSlot(0.25, 1.0, 0.0, 0.5, solar_surplus_kwh=1.25),
+        PlanSlot(0.25, 5.0, 0.8),
+    ]
+
+    result = plan_battery(
+        slots,
+        _params(capacity_kwh=2.0, max_soc_pct=100.0),
+        0.0,
+    )
+
+    assert result.modes[0] == MODE_PVCHARGE
+    assert result.end_soc_pct[0] > 0
+    assert result.modes[1] == MODE_DISCHARGE
+
+
+def test_solar_surplus_is_exported_when_credit_beats_future_use() -> None:
+    slots = [
+        PlanSlot(0.25, 1.0, 0.0, 10.0, solar_surplus_kwh=1.25),
+        PlanSlot(0.25, 1.0, 0.8),
+    ]
+
+    result = plan_battery(
+        slots,
+        _params(capacity_kwh=2.0, max_soc_pct=100.0),
+        0.0,
+    )
+
+    assert result.modes == [MODE_STANDBY, MODE_STANDBY]
+
+
+def test_solar_export_value_is_discounted_for_forecast_uncertainty() -> None:
+    slots = [
+        PlanSlot(0.25, 10.0, 0.0, 4.5, solar_surplus_kwh=1.5),
+        PlanSlot(0.25, 5.0, 0.25),
+    ]
+
+    result = plan_battery(slots, _params(), 0.0)
+
+    assert result.modes[0] == MODE_PVCHARGE
 
 
 def test_efficiency_and_wear_shift_the_decision() -> None:

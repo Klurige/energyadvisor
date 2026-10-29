@@ -1,18 +1,20 @@
 """Battery schedule planner: an exact dynamic programme over state of charge.
 
 The planner has no Home Assistant dependency and is pure Python. It takes a
-chronological list of slots (duration, grid price, household load) and decides
-for each slot whether the battery should charge from the grid, discharge into
-the household, sell to the grid or stay idle, so that the total grid cost (net
-of what the exported energy earns) over all the slots is as low as possible.
+chronological list of slots (duration, grid price, household load and solar
+surplus) and decides for each slot whether the battery should charge from the
+grid or solar, discharge into the household, sell to the grid or stay idle, so
+that the total grid cost (net of exported energy) is as low as possible.
 
 Model:
 - The usable energy window is ``capacity * (max_soc - min_soc)``. The state of
   charge is discretised in at most 160 equal energy steps of at least 0.125 kWh
   (the step is stretched slightly so that the top state is exactly ``max_soc``).
-- ``charge`` moves ``k`` steps into the battery. The grid delivers the
-  household load plus ``k * step / eta_charge``. ``k`` is limited by the charge
-  power and the room left in the battery.
+- ``charge`` moves ``k`` steps into the battery. Solar surplus is used first;
+  the grid delivers any remaining charge energy, in addition to the household
+  load. ``k`` is limited by the charge power and the room left in the battery.
+  ``pvcharge`` stores surplus solar only, giving up the export credit for the
+  energy stored.
 - ``discharge`` takes ``k`` steps out of the battery and delivers
   ``min(k * step * eta_discharge, load)`` to the household. The grid delivers
   the rest of the load. ``discharge`` never exports. ``k`` is limited by the
@@ -24,7 +26,8 @@ Model:
   by the discharge power (there is no separate export limit) and the energy
   left in the battery. A slot without a positive finite ``export_credit`` never
   sells.
-- ``standby`` leaves the battery alone; the grid delivers the load.
+- ``standby`` leaves the battery alone; the grid delivers any load not covered
+  by solar.
 - Each kWh the battery delivers (to the household and to the grid) adds
   ``wear_cost_per_kwh``. A kWh bought at price ``c`` and sold again therefore
   only pays when ``export_credit > c / round_trip_efficiency +
@@ -46,6 +49,7 @@ from dataclasses import dataclass
 
 MODE_STANDBY = "standby"
 MODE_CHARGE = "charge"
+MODE_PVCHARGE = "pvcharge"
 MODE_DISCHARGE = "discharge"
 MODE_SELL = "sell"
 
@@ -56,6 +60,8 @@ DEFAULT_ROUND_TRIP_EFFICIENCY = 0.9
 TIE_EPSILON = 1e-9
 # Absorbs float noise when rounding power / step ratios down or up.
 LIMIT_EPSILON = 1e-9
+# Discount forecast solar's export value so uncertain forecasts favor storage.
+SOLAR_EXPORT_CREDIT_FACTOR = 0.8
 
 
 @dataclass(frozen=True)
@@ -84,16 +90,18 @@ class PlanSlot:
     """One planning slot.
 
     ``import_cost`` is the price per kWh imported from the grid (fees and VAT
-    included), ``load_kwh`` the energy the household uses during the slot and
-    ``export_credit`` the revenue per kWh exported to the grid (all taxes and
-    fees included). NaN, which is the default, means that nothing can be sold
-    in the slot.
+    included), ``load_kwh`` the household energy still to be supplied after
+    direct solar use, and ``export_credit`` the revenue per kWh exported to the
+    grid (all taxes and fees included). ``solar_surplus_kwh`` is forecast solar
+    energy available after the household load is covered. NaN export credit,
+    which is the default, means that nothing can be sold in the slot.
     """
 
     duration_h: float
     import_cost: float
     load_kwh: float
     export_credit: float = math.nan
+    solar_surplus_kwh: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -144,6 +152,10 @@ def plan_battery(
     ]
     prices = [price if math.isfinite(price) else 0.0 for price in prices]
     credits = [_finite(slot.export_credit, math.nan) for slot in slots]
+    solar_surplus = [max(_finite(slot.solar_surplus_kwh, 0.0), 0.0) for slot in slots]
+    solar_export_credit = [
+        credit if math.isfinite(credit) and credit > 0 else 0.0 for credit in credits
+    ]
     capacity = _finite(params.capacity_kwh, 0.0)
     low = _finite(params.min_soc_pct, 0.0)
     high = _finite(params.max_soc_pct, 0.0)
@@ -155,7 +167,12 @@ def plan_battery(
         return PlanResult(
             [MODE_STANDBY] * count,
             [soc] * count,
-            sum(price * load for price, load in zip(prices, loads)),
+            sum(
+                price * load - credit * surplus
+                for price, load, credit, surplus in zip(
+                    prices, loads, solar_export_credit, solar_surplus
+                )
+            ),
         )
 
     states = min(MAX_STATES, max(1, round(usable_kwh / MIN_STEP_KWH)))
@@ -173,6 +190,13 @@ def plan_battery(
     charge_steps = [
         min(states, math.floor(max_charge_kw * hours / step + LIMIT_EPSILON))
         for hours in durations
+    ]
+    pvcharge_steps = [
+        min(
+            charge_steps[t],
+            math.floor(surplus * eta / step + LIMIT_EPSILON),
+        )
+        for t, surplus in enumerate(solar_surplus)
     ]
     discharge_steps = [
         min(
@@ -199,53 +223,80 @@ def plan_battery(
     # slot t at state s; sold[t][s] tells a sell from a discharge.
     choices: list[list[int]] = [[]] * count
     sold: list[list[bool]] = [[]] * count
+    pv_charged: list[list[bool]] = [[]] * count
     next_value = [0.0 - terminal_value * s * step for s in range(states + 1)]
     for t in range(count - 1, -1, -1):
         price = prices[t]
         load = loads[t]
-        value = [price * load + v for v in next_value]
+        surplus = solar_surplus[t]
+        export_credit = solar_export_credit[t]
+        value = [price * load - export_credit * surplus + v for v in next_value]
         choice = [0] * (states + 1)
+        pvcharged = [False] * (states + 1)
 
         for k in range(1, charge_steps[t] + 1):
-            cost = price * (load + k * step / eta)
+            charge_input = k * step / eta
+            if charge_input <= surplus + LIMIT_EPSILON:
+                continue
+            grid_charge = charge_input - surplus
+            cost = price * (load + grid_charge)
             for s, future in enumerate(next_value[k:]):
                 total = cost + future
                 if total + TIE_EPSILON < value[s]:
                     value[s] = total
                     choice[s] = k
+                    pvcharged[s] = False
+
+        for k in range(1, pvcharge_steps[t] + 1):
+            charge_input = k * step / eta
+            solar_used = min(charge_input, surplus)
+            exported = max(surplus - charge_input, 0.0)
+            credited_export = exported + solar_used * (1 - SOLAR_EXPORT_CREDIT_FACTOR)
+            cost = price * load - export_credit * credited_export
+            for s, future in enumerate(next_value[k:]):
+                total = cost + future
+                if total + TIE_EPSILON < value[s]:
+                    value[s] = total
+                    choice[s] = k
+                    pvcharged[s] = True
 
         for k in range(1, discharge_steps[t] + 1):
             delivered = min(k * step * eta, load)
-            cost = price * (load - delivered) + wear * delivered
+            cost = (
+                price * (load - delivered) + wear * delivered - export_credit * surplus
+            )
             for s in range(k, states + 1):
                 total = cost + next_value[s - k]
                 if total + TIE_EPSILON < value[s]:
                     value[s] = total
                     choice[s] = -k
+                    pvcharged[s] = False
 
         credit = credits[t]
         sell = [False] * (states + 1)
         for k in range(sell_min_steps[t], sell_max_steps[t] + 1):
             out = k * step * eta
-            cost = wear * out - credit * (out - load)
+            cost = wear * out - credit * (out - load) - export_credit * surplus
             for s in range(k, states + 1):
                 total = cost + next_value[s - k]
                 if total + TIE_EPSILON < value[s]:
                     value[s] = total
                     choice[s] = -k
                     sell[s] = True
+                    pvcharged[s] = False
 
         choices[t] = choice
         sold[t] = sell
+        pv_charged[t] = pvcharged
         next_value = value
 
     modes: list[str] = []
     end_soc_pct: list[float] = []
     state = start_state
-    for choice, sell in zip(choices, sold):
+    for choice, sell, pvcharge in zip(choices, sold, pv_charged):
         k = choice[state]
         if k > 0:
-            modes.append(MODE_CHARGE)
+            modes.append(MODE_PVCHARGE if pvcharge[state] else MODE_CHARGE)
         elif k < 0:
             modes.append(MODE_SELL if sell[state] else MODE_DISCHARGE)
         else:

@@ -19,14 +19,15 @@ contains "now", so it is always available next to the ``modes``. Every
 published ``target_soc`` is an integer percent, always rounded up so that the
 battery keeps the higher level.
 
-The planner knows ``standby``, ``charge``, ``discharge`` and ``sell``.
+The planner knows ``standby``, ``charge``, ``pvcharge``, ``discharge`` and
+``sell``.
 ``discharge`` covers the household load and never exports; ``sell`` also
 exports to the grid when the slot's credit makes that profitable. Selling is
 always part of the plan when a battery is configured. A planned ``discharge`` in
 daylight is published as ``maxuse``: the battery then covers the household load,
 which leaves any solar surplus for charging the battery. A ``sell`` is never
 turned into ``maxuse``, which would stop the export. Solar production is not
-modelled, so selling in daylight is allowed.
+modelled beyond the solar forecast's load offset and surplus.
 
 Costs are the price sensor's ``cost`` and credits its ``credit`` (fees, taxes
 and VAT included), not the raw spot price, and the battery's wear cost is in the
@@ -59,8 +60,9 @@ import math
 import statistics
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
@@ -78,6 +80,7 @@ from homeassistant.util import dt as dt_util
 from ..battery_planner import (
     MODE_CHARGE,
     MODE_DISCHARGE,
+    MODE_PVCHARGE,
     MODE_SELL,
     MODE_STANDBY,
     BatteryParams,
@@ -105,6 +108,7 @@ if TYPE_CHECKING:
     from ..coordinators.household_forecast_coordinator import (
         HouseholdForecastCoordinator,
     )
+    from ..coordinators.solar_forecast_coordinator import SolarForecastCoordinator
     from .price import PriceSensor
 
 _LOGGER = logging.getLogger(__name__)
@@ -122,10 +126,18 @@ QUARTER_HOUR_MINUTES = (0, 15, 30, 45)
 # Daytime discharge: the battery covers the load and leaves solar to the grid
 # or the battery's own charging; the planner models it as plain discharge.
 MODE_MAXUSE = "maxuse"
-MODES = (MODE_STANDBY, MODE_CHARGE, MODE_DISCHARGE, MODE_SELL, MODE_MAXUSE)
+MODES = (
+    MODE_STANDBY,
+    MODE_CHARGE,
+    MODE_PVCHARGE,
+    MODE_DISCHARGE,
+    MODE_SELL,
+    MODE_MAXUSE,
+)
 MODE_ICONS = {
     MODE_STANDBY: "mdi:battery-off",
     MODE_CHARGE: "mdi:battery-arrow-up",
+    MODE_PVCHARGE: "mdi:solar-power",
     MODE_DISCHARGE: "mdi:battery-arrow-down",
     MODE_SELL: "mdi:transmission-tower-export",
     MODE_MAXUSE: "mdi:battery-sync",
@@ -150,6 +162,8 @@ class ScheduleSlot:
     cost: float
     credit: float
     load_kw: float
+    solar_surplus_kwh: float = 0.0
+    solar_load_offset_kwh: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -275,8 +289,13 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
                 PlanSlot(
                     hours,
                     slots[index].cost,
-                    slots[index].load_kw * hours,
+                    max(
+                        slots[index].load_kw * hours
+                        - slots[index].solar_load_offset_kwh,
+                        0.0,
+                    ),
                     slots[index].credit,
+                    slots[index].solar_surplus_kwh,
                 )
             )
 
@@ -400,6 +419,13 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
                 )
             )
 
+        solar = self._solar_coordinator()
+        if solar is not None:
+            solar.register_update_callback(self._handle_solar_update)
+            self.async_on_remove(
+                lambda: solar.unregister_update_callback(self._handle_solar_update)
+            )
+
         soc_entity_id = self._entry.options.get(CONF_BATTERY_SOC_ENTITY)
         if soc_entity_id:
             self.async_on_remove(
@@ -435,6 +461,11 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
     @callback
     def _handle_household_update(self) -> None:
         """Plan again whenever the household load forecast changes."""
+        self._request_plan()
+
+    @callback
+    def _handle_solar_update(self) -> None:
+        """Plan again whenever the solar forecast changes."""
         self._request_plan()
 
     @callback
@@ -523,7 +554,10 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
     def _build_inputs(self, now: datetime) -> ScheduleInputs:
         """Copy the current prices, load forecast, SoC and options for planning."""
         params = self._battery_params()
-        slots = self._price_slots(_load_by_start(self._household_forecast_slots()))
+        slots = self._price_slots(
+            _load_by_start(self._household_forecast_slots()),
+            self._solar_forecast_intervals(),
+        )
         if params is not None:
             params = replace(
                 params,
@@ -560,7 +594,11 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
                 windows.append((sunrise.timestamp(), sunset.timestamp()))
         return tuple(windows)
 
-    def _price_slots(self, loads: dict[str, list[float]]) -> list[ScheduleSlot]:
+    def _price_slots(
+        self,
+        loads: dict[str, list[float]],
+        solar_intervals: tuple[tuple[float, float, float], ...] = (),
+    ) -> list[ScheduleSlot]:
         """Copy the price sensor's slots that have both a start and an end."""
         slots = []
         for rate in getattr(self._price_sensor, "_rates", None) or []:
@@ -570,16 +608,60 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
                 continue
             cost = _as_float(rate.get("cost", 0))
             credit = _as_float(rate.get("credit", 0))
+            load_kw = _slot_load_kw(start, end, loads)
+            solar_surplus_kwh, solar_load_offset_kwh = _solar_energy_for_slot(
+                start, end, load_kw, solar_intervals
+            )
             slots.append(
                 ScheduleSlot(
                     start=start,
                     end=end,
                     cost=math.nan if cost is None else cost,
                     credit=0.0 if credit is None else credit,
-                    load_kw=_slot_load_kw(start, end, loads),
+                    load_kw=load_kw,
+                    solar_surplus_kwh=solar_surplus_kwh,
+                    solar_load_offset_kwh=solar_load_offset_kwh,
                 )
             )
         return slots
+
+    def _solar_coordinator(self) -> SolarForecastCoordinator | None:
+        runtime_data = getattr(self._entry, "runtime_data", None)
+        return getattr(runtime_data, "solar_coordinator", None)
+
+    def _solar_forecast_intervals(self) -> tuple[tuple[float, float, float], ...]:
+        """Snapshot solar forecasts as UTC (start, end, power-kW) intervals."""
+        coordinator = self._solar_coordinator()
+        if coordinator is None:
+            return ()
+        try:
+            local_tz = ZoneInfo(self.hass.config.time_zone)
+        except (AttributeError, TypeError, ValueError, ZoneInfoNotFoundError):
+            return ()
+
+        intervals = []
+        for item in getattr(coordinator, "forecast", None) or ():
+            if not isinstance(item, Mapping):
+                continue
+            end_value = item.get("end")
+            power_kw = _as_float(item.get("pow"))
+            if not isinstance(end_value, str) or power_kw is None:
+                continue
+            try:
+                period_end = datetime.fromisoformat(end_value)
+                if period_end.tzinfo is None:
+                    period_end = period_end.replace(tzinfo=local_tz)
+                end_ts = period_end.astimezone(timezone.utc).timestamp()
+            except (OverflowError, OSError, ValueError):
+                continue
+            intervals.append(
+                (
+                    end_ts - FORECAST_SLOT_MINUTES * 60,
+                    end_ts,
+                    max(power_kw, 0.0),
+                )
+            )
+        return tuple(intervals)
 
     def _household_coordinator(self) -> HouseholdForecastCoordinator | None:
         runtime_data = getattr(self._entry, "runtime_data", None)
@@ -762,3 +844,23 @@ def _slot_load_kw(
         )
         values.extend(loads.get(key, ()))
     return sum(values) / len(values) if values else DEFAULT_LOAD_KW
+
+
+def _solar_energy_for_slot(
+    start: datetime,
+    end: datetime,
+    load_kw: float,
+    intervals: tuple[tuple[float, float, float], ...],
+) -> tuple[float, float]:
+    """Return forecast solar surplus and household load offset in kWh."""
+    start_ts = start.timestamp()
+    end_ts = end.timestamp()
+    surplus_kwh = 0.0
+    load_offset_kwh = 0.0
+    for solar_start, solar_end, power_kw in intervals:
+        overlap_h = max(0.0, min(end_ts, solar_end) - max(start_ts, solar_start)) / 3600
+        if overlap_h == 0:
+            continue
+        load_offset_kwh += min(power_kw, load_kw) * overlap_h
+        surplus_kwh += max(power_kw - load_kw, 0.0) * overlap_h
+    return surplus_kwh, load_offset_kwh

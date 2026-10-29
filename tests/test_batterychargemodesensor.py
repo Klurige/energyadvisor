@@ -1095,6 +1095,41 @@ def test_negative_forecast_load_counts_as_zero(hass) -> None:
     assert sensor._build_inputs(BASE).slots[0].load_kw == 0.0
 
 
+def test_solar_forecast_is_split_between_household_use_and_surplus(hass) -> None:
+    rate = _rates([1.0], start=BASE)[0]
+    solar_end = (BASE + datetime.timedelta(minutes=15)).isoformat()
+    solar = SimpleNamespace(
+        forecast=[{"end": solar_end, "pow": 3.0}],
+        register_update_callback=MagicMock(),
+        unregister_update_callback=MagicMock(),
+    )
+    sensor = _make_sensor(hass, [rate], options=BATTERY_OPTIONS)
+    sensor._entry.runtime_data.solar_coordinator = solar
+
+    slot = sensor._build_inputs(BASE).slots[0]
+
+    assert slot.load_kw == 1.0
+    assert slot.solar_load_offset_kwh == pytest.approx(0.25)
+    assert slot.solar_surplus_kwh == pytest.approx(0.5)
+
+
+def test_solar_forecast_can_select_pvcharge_instead_of_standby(hass) -> None:
+    rates = _rates([10.0, 5.0], start=BASE)
+    solar_end = (BASE + datetime.timedelta(minutes=15)).isoformat()
+    solar = SimpleNamespace(
+        forecast=[{"end": solar_end, "pow": 7.0}],
+        register_update_callback=MagicMock(),
+        unregister_update_callback=MagicMock(),
+    )
+    sensor = _make_sensor(hass, rates, options=BATTERY_OPTIONS)
+    sensor._entry.runtime_data.solar_coordinator = solar
+
+    schedule = build_schedule(sensor._build_inputs(BASE))
+
+    assert schedule.modes[0]["mode"] == "pvcharge"
+    assert schedule.modes[0]["target_soc"] > 0
+
+
 async def test_the_forecast_load_limits_the_discharge(make_sensor, hass) -> None:
     hass.states.async_set(SOC_ENTITY, "95")
     options = {**BATTERY_OPTIONS, CONF_BATTERY_SOC_ENTITY: SOC_ENTITY}
@@ -1134,6 +1169,28 @@ async def test_household_updates_replan_and_the_callback_is_removed(
     _remove(sensor)
     household.unregister_update_callback.assert_called_once_with(
         sensor._handle_household_update
+    )
+
+
+async def test_solar_updates_replan_and_the_callback_is_removed(make_sensor) -> None:
+    solar = SimpleNamespace(
+        forecast=[],
+        register_update_callback=MagicMock(),
+        unregister_update_callback=MagicMock(),
+    )
+    sensor = make_sensor(_valley_peak_rates(), options=BATTERY_OPTIONS)
+    sensor._entry.runtime_data.solar_coordinator = solar
+
+    await sensor.async_added_to_hass()
+    await _settle(sensor)
+    solar.register_update_callback.assert_called_once_with(sensor._handle_solar_update)
+    sensor._request_plan = MagicMock()
+    sensor._handle_solar_update()
+    sensor._request_plan.assert_called_once_with()
+
+    _remove(sensor)
+    solar.unregister_update_callback.assert_called_once_with(
+        sensor._handle_solar_update
     )
 
 
