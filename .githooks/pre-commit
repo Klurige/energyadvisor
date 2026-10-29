@@ -18,3 +18,4 @@ fi
 
 black --check .
 pytest --maxfail=1 --disable-warnings -q
+python3 scripts/bump_version.py

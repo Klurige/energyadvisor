@@ -651,7 +651,18 @@ git config --local core.hooksPath .githooks
 
 The hook runs the same unit-test and formatting checks used in CI:
 `black --check .` and `pytest --maxfail=1 --disable-warnings -q`.
+After those pass, it updates and stages the integration manifest version to one
+patch above the nearest reachable numeric release tag. For example, commits after
+tag `0.0.17` all use `0.0.18` until the next release is tagged. Fetch release tags
+with `git fetch --tags` before committing if they are missing from your clone.
+If a manifest needs updating but has unstaged edits, stage or stash those edits
+first; the hook will not overwrite them.
 
+To publish, push your commits and run **Actions -> Release -> Run workflow** on
+the desired branch. No version input is needed: the workflow tags the selected
+commit with its manifest version and creates a GitHub release with generated
+notes. It does not change the manifest or create a version-bump commit. The next
+local commit after fetching that tag starts the next patch version.
 
 ## License
 

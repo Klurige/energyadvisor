@@ -1,13 +1,12 @@
 name: Release
-run-name: Release ${{ inputs.version }}
+run-name: Release from ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: Version to release
-        required: true
-        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -20,74 +19,55 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate version and define tag
+      - name: Read and validate committed version
         run: |
-          VERSION="${{ inputs.version }}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Version must be semver-like (for example: 0.0.6 or 1.2.3-beta.1)."
+          if [ "$GITHUB_REF_TYPE" != "branch" ]; then
+            echo "Run the release workflow from a branch."
             exit 1
           fi
 
-          TAG="$VERSION"
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG already exists on origin."
-            exit 1
-          fi
-
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
-
-      - name: Update version in manifest.json files
-        run: |
-          manifests_found=0
+          VERSION=""
           for manifest in custom_components/*/manifest.json; do
             [ -f "$manifest" ] || continue
-            manifests_found=1
-            tmp="$(mktemp)"
-            jq --arg v "$VERSION" '.version = $v' "$manifest" > "$tmp"
-            mv "$tmp" "$manifest"
-            echo "Updated $manifest to version $VERSION"
+            manifest_version="$(jq -r '.version' "$manifest")"
+            if [[ ! "$manifest_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid version in $manifest: $manifest_version"
+              exit 1
+            fi
+            if [ -n "$VERSION" ] && [ "$manifest_version" != "$VERSION" ]; then
+              echo "Manifest versions must match: $manifest has $manifest_version, expected $VERSION"
+              exit 1
+            fi
+            VERSION="$manifest_version"
           done
 
-          if [ "$manifests_found" -eq 0 ]; then
+          if [ -z "$VERSION" ]; then
             echo "No manifest.json files found in custom_components/*."
             exit 1
           fi
 
-      - name: Verify manifest versions match tag
-        run: |
-          mismatch=0
-          for manifest in custom_components/*/manifest.json; do
-            [ -f "$manifest" ] || continue
-            manifest_version="$(jq -r '.version' "$manifest")"
-            if [ "$manifest_version" != "$VERSION" ]; then
-              echo "Mismatch in $manifest: expected $VERSION, found $manifest_version"
-              mismatch=1
-            fi
-          done
-
-          if [ "$mismatch" -ne 0 ]; then
-            exit 1
-          fi
-
-      - name: Commit manifest version updates
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add custom_components/*/manifest.json
-          if git diff --cached --quiet; then
-            echo "Manifest versions already set to $VERSION."
-          else
-            git commit -m "$TAG"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
-          fi
+          echo "TAG=$VERSION" >> "$GITHUB_ENV"
 
       - name: Create and push tag
         run: |
-          git tag -a "$TAG" -m "$TAG"
-          git push origin "$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            if [ "$(git rev-parse "$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
+              echo "Tag $TAG already exists on a different commit."
+              exit 1
+            fi
+          else
+            git tag -a "$TAG" -m "$TAG"
+            git push origin "refs/tags/$TAG"
+          fi
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$TAG" --generate-notes --verify-tag
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+          else
+            gh release create "$TAG" --generate-notes --verify-tag
+          fi
