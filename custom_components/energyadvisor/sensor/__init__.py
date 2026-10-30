@@ -33,7 +33,10 @@ from ..coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 from .compactlevels import CompactLevelsSensor
 from .householdforecastsensor import HouseholdForecastSensor
 from .price import PriceSensor
-from .waterheaterschedulesensor import WaterHeaterScheduleSensor
+from .waterheaterschedulesensor import (
+    WaterHeaterDiagnosticsSensor,
+    WaterHeaterScheduleSensor,
+)
 from ..coordinators.nordpool_coordinator import NordpoolDataCoordinator
 from ..coordinators.elpris_debug_coordinator import (
     ElprisDebugCoordinator,
@@ -107,11 +110,15 @@ async def async_setup_entry(
     water_heater_sensor = WaterHeaterScheduleSensor(
         hass, entry, device_info, levels_sensor
     )
+    water_heater_diagnostics_sensor = WaterHeaterDiagnosticsSensor(
+        entry, device_info, water_heater_sensor
+    )
     entities = [
         levels_sensor,
         compact_levels_sensor,
         battery_sensor,
         water_heater_sensor,
+        water_heater_diagnostics_sensor,
     ]
 
     household_coordinator: HouseholdForecastCoordinator | None = None

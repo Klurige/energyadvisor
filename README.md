@@ -11,7 +11,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 ## Features
 - Uses electricity prices provided by the Home Assistant NordPool integration.
 - Categorizes prices into levels (e.g., low, medium, high).
-- Provides two price sensors plus a battery charge mode sensor, a water-heater schedule sensor, an optional household Load forecast sensor, and an optional refined solar forecast sensor.
+- Provides two price sensors plus a battery charge mode sensor, a water-heater schedule and diagnostic sensor, an optional household Load forecast sensor, and an optional refined solar forecast sensor.
 - Supports multiple languages (English, Swedish).
 - Easy configuration via the Home Assistant UI.
   - Adds support for extra fees and taxes from your grid and supplier.
@@ -154,13 +154,15 @@ Large attributes are always kept out of the recorder, regardless of any option:
 - `rates` on `sensor.energy_advisor_price`
 - `modes` on `sensor.energy_advisor_battery_charge_mode`
 - `forecasts` on `sensor.energy_advisor_solar_forecast` and `sensor.energy_advisor_load_forecast`
+- `on_slots` on `sensor.energy_advisor_water_heater_schedule`
 
 ## Usage
-- The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor, one water-heater schedule sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_water_heater_schedule`, `sensor.energy_advisor_load_forecast` when the household meter is configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
+- The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor, one water-heater schedule sensor and its diagnostic sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_water_heater_schedule`, `sensor.energy_advisor_water_heater_diagnostics`, `sensor.energy_advisor_load_forecast` when the household meter is configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
   - `sensor.energy_advisor_battery_charge_mode` provides a battery schedule with one entry per price slot: `charge` in the cheap slots before a price peak, `discharge` over the peak, `sell` when exporting pays, `standby` elsewhere, with the slot's `cost` and `credit` and the planned battery state of charge as `target_soc`. Its state is the mode of the current slot.
   - `sensor.energy_advisor_water_heater_schedule` provides a fixed daily 20:00→20:00 ON schedule for the water heater, using full-precision price costs and learned runtime demand (`no_shower` vs `shower` day classes). Its state is `on` when now is in a scheduled ON slot, else `off`.
+  - `sensor.energy_advisor_water_heater_diagnostics` exposes the water-heater planner's diagnostic attributes.
   - `sensor.energy_advisor_load_forecast` provides a learned household load forecast in 15-minute slots for today and tomorrow. It publishes a fixed `0.60 kW` profile until enough meter history has been collected.
   - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors. The forecast inputs must be the raw 15-minute forecast sensors with `watts`, `wh_period`, or `forecasts` data; when a tomorrow forecast sensor is configured, updates from either forecast sensor rebuild the solar forecast.
   - `energyadvisor.get_levels` provides a string containing one character for each price level. (Level clock pattern. See https://github.com/Klurige/LevelIndicatorClock)
@@ -253,6 +255,45 @@ See [docs/householdforecast.md](docs/householdforecast.md) for the model, qualit
 - **Threshold detection:** Deterministic histogram+Otsu split over the rolling window power distribution; non-heating and active-heating thresholds are derived from cluster means with hysteresis. If confidence is insufficient (samples, cluster balance, or separation), affected observations are excluded and diagnostics expose the reason.
 - **Observation quality:** Max gap 45 minutes and min daily coverage 90%; invalid/incomplete days are excluded and counted diagnostically.
 - **Future improvements (not implemented):** solar-production forecasts, weather adjustments, seasonal models, advanced occupancy prediction, and Saturday afternoon replenishment planning.
+
+### `sensor.energy_advisor_water_heater_diagnostics`
+- **Description:** Diagnostic-category sensor for the water-heater planner. Its state is `complete` or `incomplete`; the diagnostic attributes update whenever the schedule sensor updates.
+- **Default Entity ID:** `sensor.energy_advisor_water_heater_diagnostics` for the first config entry.
+- **Attributes:**
+
+| Attribute | Description |
+|-----------|-------------|
+| `current_recommended_state` | Current recommendation, `on` or `off`. |
+| `required_runtime_hours` | Estimated runtime demand used to create the plan. |
+| `required_slot_count` | Number of price slots required for the runtime estimate. |
+| `selected_runtime_category` | Learning category used, such as `shower` or `no_shower`. |
+| `shower_detected_today` | Whether a shower was detected for today's plan. |
+| `total_expected_schedule_cost` | Expected electricity cost of the selected schedule. |
+| `historical_sample_count` | Number of historical runtime samples used by the estimate. |
+| `runtime_percentile` | Runtime percentile used for the demand estimate. |
+| `last_calculation_time` | Local time of the latest planning calculation. |
+| `runtime_capped` | Whether the requested runtime was capped by the configured maximum. |
+| `max_hours_adequacy` | Evidence-based assessment of the configured maximum runtime. |
+| `plan_status` | `complete` or `incomplete`. |
+| `plan_incomplete_reason` | Reason the plan could not meet runtime demand, if any. |
+| `valid_daily_count` | Number of valid days in the learning window. |
+| `excluded_daily_count` | Number of invalid or incomplete days excluded from learning. |
+| `learning_source_level` | Fallback level used to select historical runtime samples. |
+| `heater_state_source` | Source used to determine heater activity: active entity, power-derived, or unknown. |
+| `threshold_confidence` | Confidence status for the power-based heating thresholds. |
+| `threshold_active_heating_w` / `threshold_non_heating_w` | Derived power thresholds in watts. |
+| `threshold_sample_count` | Number of power samples used to derive thresholds. |
+| `max_gap_minutes_limit` | Maximum allowed gap between samples for a valid day. |
+| `min_daily_coverage_ratio` | Minimum daily sample coverage required for a valid observation. |
+| `max_hours_adequacy_evidence` | Valid and exceeding day counts used for the maximum-runtime assessment. |
+| `window_start` / `window_end` | Local start and end of the planned 24-hour window. |
+| `missing_config` | Required configuration values that are missing. |
+| `plan_available` | Whether a schedule plan is available. |
+| `updated_at` | Local time when these diagnostic values were read. |
+
+The schedule sensor itself retains only `on_slots`, the selected slots with local
+`start` and `end`, expected `cost`, and `duration` in minutes. This table is the
+complete attribute reference for both water-heater sensors.
 
 The battery options in the configuration (capacity, power limits, SoC bounds,
 wear cost and SoC sensor) are described in the [Battery](#battery)

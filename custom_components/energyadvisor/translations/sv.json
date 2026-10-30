@@ -413,6 +413,13 @@
       "waterheaterschedule": {
         "name": "Varmvattenberedarschema"
       },
+      "waterheaterdiagnostics": {
+        "name": "Diagnostik för varmvattenberedare",
+        "state": {
+          "complete": "Komplett",
+          "incomplete": "Ofullständig"
+        }
+      },
       "load_forecast": {
         "name": "Lastprognos"
       },

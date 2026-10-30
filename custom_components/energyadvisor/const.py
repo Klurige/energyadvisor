@@ -87,6 +87,7 @@ PREFERRED_SENSOR_ENTITY_IDS: dict[str, str] = {
     "compactlevels": "sensor.energy_advisor_compact_levels",
     "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
     "waterheaterschedule": "sensor.energy_advisor_water_heater_schedule",
+    "waterheaterdiagnostics": "sensor.energy_advisor_water_heater_diagnostics",
     # Keep the existing entity_id for backward compatibility with automations.
     "load_forecast": "sensor.energy_advisor_load_forecast",
     "solarforecast": "sensor.energy_advisor_solar_forecast",

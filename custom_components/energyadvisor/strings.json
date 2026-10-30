@@ -365,6 +365,13 @@
       "waterheaterschedule": {
         "name": "Water heater schedule"
       },
+      "waterheaterdiagnostics": {
+        "name": "Water heater diagnostics",
+        "state": {
+          "complete": "Complete",
+          "incomplete": "Incomplete"
+        }
+      },
       "load_forecast": {
         "name": "Load forecast"
       },

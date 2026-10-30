@@ -15,6 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.event import (
     async_track_point_in_time,
     async_track_state_change_event,
@@ -73,7 +74,7 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
 
     _attr_should_poll = False
     _attr_has_entity_name = True
-    _unrecorded_attributes = frozenset({"on_slots", "power_samples"})
+    _unrecorded_attributes = frozenset({"on_slots"})
 
     def __init__(
         self,
@@ -119,6 +120,7 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         self._power_samples: list[tuple[datetime, float]] = []
         self._humidity_daily_max: dict[str, float] = {}
         self._boundary_unsubs: list[Callable[[], None]] = []
+        self._update_listeners: list[Callable[[], None]] = []
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -605,9 +607,42 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
             self._recommended_state() if self._is_config_complete else STATE_UNAVAILABLE
         )
         self.async_write_ha_state()
+        for listener in tuple(self._update_listeners):
+            listener()
+
+    def async_add_update_listener(
+        self, listener: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Register a callback that runs when the schedule diagnostics change."""
+        self._update_listeners.append(listener)
+
+        def _remove_listener() -> None:
+            if listener in self._update_listeners:
+                self._update_listeners.remove(listener)
+
+        return _remove_listener
+
+    @property
+    def on_slots(self) -> list[dict[str, Any]]:
+        """Return the planned ON slots."""
+        if self._plan is None:
+            return []
+        return [
+            {
+                "start": slot.start.isoformat(),
+                "end": slot.end.isoformat(),
+                "cost": slot.cost,
+                "duration": slot.duration_minutes,
+            }
+            for slot in self._plan.selected_slots
+        ]
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        return {"on_slots": self.on_slots}
+
+    @property
+    def diagnostic_attributes(self) -> dict[str, Any]:
         options = self._entry.options
         missing_config = self._missing_requirements()
 
@@ -626,18 +661,6 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         else:
             heater_state_source = "unknown"
 
-        on_slots = []
-        if self._plan is not None:
-            on_slots = [
-                {
-                    "start": slot.start.isoformat(),
-                    "end": slot.end.isoformat(),
-                    "cost": slot.cost,
-                    "duration": slot.duration_minutes,
-                }
-                for slot in self._plan.selected_slots
-            ]
-
         return {
             "current_recommended_state": "on" if self._state == "on" else "off",
             "required_runtime_hours": self._required_runtime_hours,
@@ -646,7 +669,6 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
             "shower_detected_today": (
                 self._plan.shower_detected_today if self._plan else False
             ),
-            "on_slots": on_slots,
             "total_expected_schedule_cost": (
                 self._plan.expected_cost if self._plan else 0.0
             ),
@@ -684,3 +706,52 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         except (TypeError, ValueError):
             return None
         return number if math.isfinite(number) else None
+
+
+class WaterHeaterDiagnosticsSensor(SensorEntity):
+    """Expose water-heater planning and learning diagnostics."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        entry: ConfigEntry,
+        device_info: DeviceInfo,
+        schedule_sensor: WaterHeaterScheduleSensor,
+    ) -> None:
+        self._schedule_sensor = schedule_sensor
+        description = SensorEntityDescription(
+            key="waterheaterdiagnostics",
+            translation_key="waterheaterdiagnostics",
+            icon="mdi:water-boiler-alert",
+        )
+        self.entity_description = description
+        self.entity_id = PREFERRED_SENSOR_ENTITY_IDS[description.key]
+        self._attr_suggested_object_id = description.key
+        self._attr_unique_id = build_sensor_unique_id(entry, description.key)
+        self._attr_device_info = device_info
+        self._attr_exclude_from_recording = entry.options.get(
+            CONF_EXCLUDE_FROM_RECORDING, True
+        )
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._schedule_sensor.async_add_update_listener(self._handle_update)
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return whether the current plan is complete."""
+        return "complete" if self._schedule_sensor._plan_complete else "incomplete"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return all water-heater diagnostics."""
+        return self._schedule_sensor.diagnostic_attributes
+
+    @callback
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
