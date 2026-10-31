@@ -37,6 +37,8 @@ as missing. Days below thresholds are excluded from learning.
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 import math
@@ -447,6 +449,45 @@ def build_daily_observation(
     )
 
 
+def _sample_time(sample: tuple[datetime, float]) -> datetime:
+    return sample[0]
+
+
+def build_daily_observations(
+    *,
+    today: date,
+    tz_name: str,
+    power_samples: Sequence[tuple[datetime, float]],
+    shower_days: Collection[date],
+    thresholds: ThresholdResult,
+    days: int = ROLLING_WINDOW_DAYS,
+) -> list[DailyObservation]:
+    """Build one observation for each of the ``days`` days before ``today``.
+
+    ``power_samples`` must be sorted by time. Each day only looks at the
+    samples within ``MAX_GAP`` of it, so the total work grows linearly with
+    the number of samples instead of with samples times days.
+    """
+    tz = dt_util.get_time_zone(tz_name)
+    observations: list[DailyObservation] = []
+    for offset in range(days, 0, -1):
+        day = today - timedelta(days=offset)
+        day_start = datetime.combine(day, time.min, tz)
+        day_end = day_start + timedelta(days=1)
+        first = bisect_left(power_samples, day_start - MAX_GAP, key=_sample_time)
+        last = bisect_right(power_samples, day_end + MAX_GAP, key=_sample_time)
+        observations.append(
+            build_daily_observation(
+                day=day,
+                tz_name=tz_name,
+                power_samples=list(power_samples[first:last]),
+                shower_detected=day in shower_days,
+                thresholds=thresholds,
+            )
+        )
+    return observations
+
+
 def _select_learning_set(
     observations: list[DailyObservation],
     weekday: int,
@@ -595,7 +636,12 @@ def build_schedule_plan(
     raw_price_slots: list[dict],
     tz_name: str,
 ) -> SchedulePlan:
-    """Create the fixed cheapest ON-slot plan for the next planning window."""
+    """Create the fixed cheapest ON-slot plan for the current planning window.
+
+    Slots that have already ended at ``now_local`` are never selected, so a
+    plan made in the middle of a window (for example after a restart) only
+    uses the time that is left.
+    """
     today_2000 = datetime.combine(
         now_local.date(), time(PLANNING_HOUR, 0), tzinfo=now_local.tzinfo
     )
@@ -620,7 +666,7 @@ def build_schedule_plan(
             window_start=window_start,
             window_end=window_end,
         )
-        if extracted is not None:
+        if extracted is not None and extracted.end > now_local:
             eligible.append(extracted)
 
     eligible.sort(key=lambda slot: (slot.cost, slot.start))

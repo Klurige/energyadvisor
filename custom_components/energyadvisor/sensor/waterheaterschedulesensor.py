@@ -1,10 +1,19 @@
-"""Water-heater schedule planner sensor."""
+"""Water-heater schedule planner sensor.
+
+Power samples are kept sorted by time in a deque, so old samples are dropped
+from the front in constant time per sample. They are saved in their own
+``Store`` file rather than in the restore state, because 30 days of samples can
+be large. Learning from the samples runs in the executor; only the cheap slot
+selection runs on the event loop.
+"""
 
 from __future__ import annotations
 
+import asyncio
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 import logging
 import math
 from typing import TYPE_CHECKING
@@ -22,6 +31,7 @@ from homeassistant.helpers.event import (
     async_track_time_change,
 )
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from ..const import (
@@ -31,6 +41,7 @@ from ..const import (
     CONF_WATER_HEATER_MAX_HOURS,
     CONF_WATER_HEATER_POWER_ENTITY,
     CONF_WATER_HEATER_POWER_W,
+    DOMAIN,
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
 )
@@ -38,9 +49,10 @@ from ..water_heater_planner import (
     PLANNING_HOUR,
     ROLLING_WINDOW_DAYS,
     DailyObservation,
+    PlannedSlot,
     SchedulePlan,
     ThresholdResult,
-    build_daily_observation,
+    build_daily_observations,
     build_schedule_plan,
     compute_max_hours_adequacy,
     derive_thresholds,
@@ -55,10 +67,33 @@ _LOGGER = logging.getLogger(__name__)
 
 STORE_VERSION = 1
 RESTORE_KEY = "water_heater_schedule"
+# Only read to migrate samples saved in the restore state by older versions.
 POWER_SAMPLES_KEY = "power_samples"
 HUMIDITY_DAILY_MAX_KEY = "humidity_daily_max"
 OBSERVATIONS_KEY = "observations"
 PLAN_KEY = "plan"
+SAMPLES_STORE_VERSION = 1
+SAMPLES_SAVE_DELAY_S = 600
+SHOWER_HUMIDITY_PCT = 100.0
+SAMPLE_RETENTION = timedelta(days=ROLLING_WINDOW_DAYS + 2)
+
+
+def _learn_from_samples(
+    samples: list[tuple[datetime, float]],
+    today: date,
+    tz_name: str,
+    shower_days: set[date],
+) -> tuple[ThresholdResult, list[DailyObservation]]:
+    """Derive thresholds and daily observations; runs in the executor."""
+    thresholds = derive_thresholds([value for _ts, value in samples])
+    observations = build_daily_observations(
+        today=today,
+        tz_name=tz_name,
+        power_samples=samples,
+        shower_days=shower_days,
+        thresholds=thresholds,
+    )
+    return thresholds, observations
 
 
 @dataclass(frozen=True)
@@ -117,13 +152,21 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         self._state = "off"
         self._last_calculation: datetime | None = None
 
-        self._power_samples: list[tuple[datetime, float]] = []
+        self._power_samples: deque[tuple[datetime, float]] = deque()
+        self._samples_store: Store[dict[str, list[float]]] | None = None
+        self._plan_lock = asyncio.Lock()
+        self._removed = False
         self._humidity_daily_max: dict[str, float] = {}
         self._boundary_unsubs: list[Callable[[], None]] = []
         self._update_listeners: list[Callable[[], None]] = []
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        self._samples_store = Store(
+            self.hass,
+            SAMPLES_STORE_VERSION,
+            f"{DOMAIN}.water_heater_samples.{self._entry.entry_id}",
+        )
         await self._async_restore()
 
         self.async_on_remove(
@@ -180,6 +223,46 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
 
         self._reschedule_slot_boundaries()
         self._refresh_state_only()
+        self._request_plan_if_needed()
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._removed = True
+        for unsubscribe in self._boundary_unsubs:
+            unsubscribe()
+        self._boundary_unsubs.clear()
+        if self._samples_store is not None:
+            await self._samples_store.async_save(self._samples_store_data())
+        await super().async_will_remove_from_hass()
+
+    def _samples_store_data(self) -> dict[str, list[float]]:
+        return {
+            "t": [round(ts.timestamp(), 1) for ts, _value in self._power_samples],
+            "v": [value for _ts, value in self._power_samples],
+        }
+
+    def _plan_needs_refresh(self, now: datetime) -> bool:
+        """Return whether there is no usable plan for the current window.
+
+        A plan whose window has ended is replaced (for example when Home
+        Assistant was down at the planning hour). A plan that selected nothing
+        because no prices were known yet is retried, since nothing of it has
+        run. A plan with selected slots stays fixed until its window ends.
+        """
+        plan = self._plan
+        if plan is None or now >= plan.window_end:
+            return True
+        return (
+            not plan.selected_slots and plan.incomplete_reason == "insufficient_slots"
+        )
+
+    @callback
+    def _request_plan_if_needed(self) -> None:
+        if (
+            self._is_config_complete
+            and not self._plan_lock.locked()
+            and self._plan_needs_refresh(dt_util.now())
+        ):
+            self.hass.async_create_task(self._async_generate_plan())
 
     @property
     def _transition_entity_id(self) -> str | None:
@@ -230,9 +313,6 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
                 "version": STORE_VERSION,
                 RESTORE_KEY: {
                     PLAN_KEY: plan_payload,
-                    POWER_SAMPLES_KEY: [
-                        [ts.timestamp(), value] for ts, value in self._power_samples
-                    ],
                     HUMIDITY_DAILY_MAX_KEY: self._humidity_daily_max,
                     OBSERVATIONS_KEY: [
                         {
@@ -253,25 +333,29 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         )
 
     async def _async_restore(self) -> None:
+        tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        stored_samples = (
+            await self._samples_store.async_load()
+            if self._samples_store is not None
+            else None
+        )
+        if isinstance(stored_samples, dict):
+            self._set_power_samples(
+                zip(stored_samples.get("t", []), stored_samples.get("v", [])), tz
+            )
+
         restored = await self.async_get_last_extra_data()
         if restored is None:
+            self._prune_history()
             return
         payload = restored.as_dict().get(RESTORE_KEY)
         if not isinstance(payload, dict):
+            self._prune_history()
             return
 
-        tz = dt_util.get_time_zone(self.hass.config.time_zone)
-
-        self._power_samples = []
-        for row in payload.get(POWER_SAMPLES_KEY, []):
-            if not isinstance(row, list) or len(row) != 2:
-                continue
-            try:
-                ts = datetime.fromtimestamp(float(row[0]), tz)
-                value = float(row[1])
-            except (TypeError, ValueError, OSError):
-                continue
-            self._power_samples.append((ts, value))
+        if stored_samples is None and payload.get(POWER_SAMPLES_KEY):
+            self._set_power_samples(payload[POWER_SAMPLES_KEY], tz)
+            self._schedule_samples_save()
 
         humidity = payload.get(HUMIDITY_DAILY_MAX_KEY)
         if isinstance(humidity, dict):
@@ -320,8 +404,6 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
                             "duration_minutes": int(slot.get("duration_minutes", 15)),
                         }
                     )
-
-                from ..water_heater_planner import PlannedSlot
 
                 self._plan = SchedulePlan(
                     window_start=datetime.fromtimestamp(
@@ -395,6 +477,7 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         self._capture_current_power_sample()
         self._capture_current_humidity_state()
         self._refresh_state_only()
+        self._request_plan_if_needed()
 
     @callback
     def _handle_power_state_change(self, event: Event) -> None:
@@ -404,8 +487,7 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         value = self._parse_float(new_state.state)
         if value is None:
             return
-        self._power_samples.append((dt_util.now(), value))
-        self._prune_history()
+        self._add_power_sample(dt_util.now(), value)
         if self._transition_entity_id == self._entry.options.get(
             CONF_WATER_HEATER_POWER_ENTITY
         ):
@@ -446,8 +528,43 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         value = self._parse_float(state.state)
         if value is None:
             return
-        self._power_samples.append((dt_util.now(), value))
-        self._prune_history()
+        self._add_power_sample(dt_util.now(), value)
+
+    def _add_power_sample(self, ts: datetime, value: float) -> None:
+        """Append a sample, keeping the deque sorted, and drop expired ones."""
+        if self._power_samples and ts < self._power_samples[-1][0]:
+            # The clock went backwards; keep the samples ordered by time.
+            return
+        self._power_samples.append((ts, value))
+        self._prune_power_samples(ts)
+        self._schedule_samples_save()
+
+    def _prune_power_samples(self, now: datetime) -> None:
+        cutoff = now - SAMPLE_RETENTION
+        samples = self._power_samples
+        while samples and samples[0][0] < cutoff:
+            samples.popleft()
+
+    def _set_power_samples(self, rows: Any, tz: Any) -> None:
+        """Replace the samples with valid ``(timestamp, value)`` rows, sorted."""
+        samples: list[tuple[datetime, float]] = []
+        for row in rows:
+            try:
+                raw_ts, raw_value = row
+                ts = datetime.fromtimestamp(float(raw_ts), tz)
+                value = float(raw_value)
+            except (TypeError, ValueError, OSError, OverflowError):
+                continue
+            if math.isfinite(value):
+                samples.append((ts, value))
+        samples.sort(key=lambda sample: sample[0])
+        self._power_samples = deque(samples)
+
+    def _schedule_samples_save(self) -> None:
+        if self._samples_store is not None:
+            self._samples_store.async_delay_save(
+                self._samples_store_data, SAMPLES_SAVE_DELAY_S
+            )
 
     def _capture_current_humidity_state(self) -> None:
         entity_id = self._entry.options.get(CONF_BATHROOM_HUMIDITY_ENTITY)
@@ -465,14 +582,10 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         )
 
     def _prune_history(self) -> None:
-        cutoff = dt_util.now() - timedelta(days=ROLLING_WINDOW_DAYS + 2)
-        self._power_samples = [
-            (ts, value) for ts, value in self._power_samples if ts >= cutoff
-        ]
+        now = dt_util.now()
+        self._prune_power_samples(now)
 
-        day_cutoff = (
-            dt_util.now().date() - timedelta(days=ROLLING_WINDOW_DAYS + 2)
-        ).isoformat()
+        day_cutoff = (now.date() - SAMPLE_RETENTION).isoformat()
         self._humidity_daily_max = {
             day: value
             for day, value in self._humidity_daily_max.items()
@@ -481,43 +594,48 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         self._observations = [
             ob
             for ob in self._observations
-            if ob.day >= dt_util.now().date() - timedelta(days=ROLLING_WINDOW_DAYS)
+            if ob.day >= now.date() - timedelta(days=ROLLING_WINDOW_DAYS)
         ]
 
     async def _async_generate_plan(self) -> None:
+        if self._plan_lock.locked():
+            return
+        async with self._plan_lock:
+            await self._async_generate_plan_locked()
+
+    async def _async_generate_plan_locked(self) -> None:
         if not self._is_config_complete:
             self._plan = None
             self._refresh_state_only()
             return
 
-        now = dt_util.now().astimezone(
-            dt_util.get_time_zone(self.hass.config.time_zone)
-        )
+        tz_name = self.hass.config.time_zone
+        now = dt_util.now().astimezone(dt_util.get_time_zone(tz_name))
         self._capture_current_power_sample()
         self._capture_current_humidity_state()
 
-        sample_values = [value for _ts, value in self._power_samples]
-        self._thresholds = derive_thresholds(sample_values)
+        shower_days: set[date] = set()
+        for day_text, humidity in self._humidity_daily_max.items():
+            if humidity < SHOWER_HUMIDITY_PCT:
+                continue
+            try:
+                shower_days.add(date.fromisoformat(day_text))
+            except ValueError:
+                continue
 
-        observations: list[DailyObservation] = []
-        for offset in range(ROLLING_WINDOW_DAYS, 0, -1):
-            day = now.date() - timedelta(days=offset)
-            shower_detected = (
-                self._humidity_daily_max.get(day.isoformat(), 0.0) >= 100.0
-            )
-            observation = build_daily_observation(
-                day=day,
-                tz_name=self.hass.config.time_zone,
-                power_samples=self._power_samples,
-                shower_detected=shower_detected,
-                thresholds=self._thresholds,
-            )
-            observations.append(observation)
+        thresholds, observations = await self.hass.async_add_executor_job(
+            _learn_from_samples,
+            list(self._power_samples),
+            now.date(),
+            tz_name,
+            shower_days,
+        )
+        if self._removed:
+            return
+        self._thresholds = thresholds
         self._observations = observations
 
-        shower_today = (
-            self._humidity_daily_max.get(now.date().isoformat(), 0.0) >= 100.0
-        )
+        shower_today = now.date() in shower_days
         category = "shower" if shower_today else "no_shower"
 
         estimate = estimate_runtime(

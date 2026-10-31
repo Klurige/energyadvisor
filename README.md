@@ -123,11 +123,11 @@ All of these are optional sensors. Only `power_meter_consumption` enables a feat
 | `grid_export_entity`       | Grid export power sensor | `sensor.grid_export_power` | currently not in use (history is recorded but not used) |
 | `power_meter_consumption`  | Whole-house energy meter (cumulative kWh) or power sensor. Creates the Load forecast sensor | `sensor.household_energy_total` | In use |
 | `outdoor_temperature_entity` | Outdoor temperature sensor | `sensor.outdoor_temperature` | currently not in use (history is recorded but not used) |
-| `water_heater_power_entity` | Water heater power sensor; its measured power is subtracted from the meter | `sensor.water_heater_power` | In use |
-| `water_heater_power_w`     | Water heater rated power in W; fallback when the power sensor has no history | `3500` | In use (fallback) |
+| `water_heater_power_entity` | Water heater power sensor; its measured power is subtracted from the meter, and the water-heater schedule learns the heater's runtime from it | `sensor.water_heater_power` | In use (load forecast, water-heater schedule) |
+| `water_heater_power_w`     | Water heater rated power in W; fallback for the load forecast when the power sensor has no history, and used for the schedule's expected cost | `3500` | In use (load forecast fallback, water-heater schedule) |
 | `water_heater_active_entity` | Water heater active sensor; used with the rated power as fallback | `binary_sensor.water_heater_active` | In use (fallback) |
-| `water_heater_max_hours`   | Worst-case water heater refill time in hours | `4` | currently not in use |
-| `bathroom_humidity_entity` | Bathroom humidity sensor | `sensor.bathroom_humidity` | currently not in use (history is recorded but not used) |
+| `water_heater_max_hours`   | Worst-case water heater refill time in hours; the most the schedule plans per day | `4` | In use (water-heater schedule) |
+| `bathroom_humidity_entity` | Bathroom humidity sensor; a day that reaches 100 % counts as a shower day | `sensor.bathroom_humidity` | In use (water-heater schedule; the household forecast only records its history) |
 | `central_heating_power_entity` | Central heating power sensor; its measured power is subtracted from the meter | `sensor.central_heating_power` | In use |
 | `central_heating_power_w`  | Central heating rated power in W; fallback when the power sensor has no history | `2200` | In use (fallback) |
 | `central_heating_active_entity` | Central heating active sensor; used with the rated power as fallback | `binary_sensor.central_heating_active` | In use (fallback) |
@@ -248,12 +248,13 @@ See [docs/householdforecast.md](docs/householdforecast.md) for the model, qualit
   - `target_soc`: The `target_soc` of the slot that contains the current time, in whole percent (rounded up): the planned battery state of charge at the end of the current slot (`50` while the battery is not configured). It is always present, and `null` only when no slot contains the current time. It is not the measured state of charge; that stays available from the `battery_soc_entity` itself.
 
 ### `sensor.energy_advisor_water_heater_schedule`
-- **Description:** Fixed plan generated once per day at local 20:00 for the next 24 hours (to next 20:00), minimizing expected electricity cost from valid 15-minute price slots.
+- **Description:** Fixed plan generated once per day at local 20:00 for the next 24 hours (to next 20:00), minimizing expected electricity cost from valid 15-minute price slots. When there is no plan for the current window (first start, or Home Assistant was not running at 20:00), a plan for the time left in the window is made right away. A plan that found no prices is retried every 5 minutes; a plan with slots is never changed before the window ends.
 - **State:** `on` if now falls in a planned ON slot, otherwise `off`.
 - **Required config:** `water_heater_power_entity`, `bathroom_humidity_entity`, `water_heater_power_w` (rated power), `water_heater_max_hours`.
 - **Learning model:** Two weekday-aware runtime models (`no_shower`/`shower`), 30-day rolling window, 95th percentile (nearest-rank), sparse fallback hierarchy, default/blended/learned sample handling (default below 10 samples, blend 10-20, learned at 20+).
 - **Threshold detection:** Deterministic histogram+Otsu split over the rolling window power distribution; non-heating and active-heating thresholds are derived from cluster means with hysteresis. If confidence is insufficient (samples, cluster balance, or separation), affected observations are excluded and diagnostics expose the reason.
 - **Observation quality:** Max gap 45 minutes and min daily coverage 90%; invalid/incomplete days are excluded and counted diagnostically.
+- **Storage:** Power samples for the learning window are kept in `.storage/energyadvisor.water_heater_samples.<entry_id>` and written at most every 10 minutes and on shutdown. The plan, humidity maxima and daily observations are kept in the restore state.
 - **Future improvements (not implemented):** solar-production forecasts, weather adjustments, seasonal models, advanced occupancy prediction, and Saturday afternoon replenishment planning.
 
 ### `sensor.energy_advisor_water_heater_diagnostics`
@@ -294,6 +295,9 @@ See [docs/householdforecast.md](docs/householdforecast.md) for the model, qualit
 The schedule sensor itself retains only `on_slots`, the selected slots with local
 `start` and `end`, expected `cost`, and `duration` in minutes. This table is the
 complete attribute reference for both water-heater sensors.
+
+See [docs/waterheater.md](docs/waterheater.md) for how the plan is made and
+learned.
 
 The battery options in the configuration (capacity, power limits, SoC bounds,
 wear cost and SoC sensor) are described in the [Battery](#battery)

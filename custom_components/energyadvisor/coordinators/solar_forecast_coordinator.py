@@ -285,6 +285,10 @@ class SolarForecastCoordinator:
     def _local_tz(self) -> ZoneInfo:
         return ZoneInfo(self.hass.config.time_zone)
 
+    def _local_today(self) -> date:
+        """Today in Home Assistant's timezone (readings are keyed by it)."""
+        return datetime.now(self._local_tz).date()
+
     @property
     def _latitude(self) -> float:
         return self.hass.config.latitude
@@ -487,7 +491,7 @@ class SolarForecastCoordinator:
         """
         db = self._ensure_db()
         decay = math.log(2) / CORRECTION_HALF_LIFE_DAYS
-        today = date.today()
+        today = self._local_today()
         cutoff = (today - timedelta(days=MAX_HISTORY_DAYS)).isoformat()
 
         cursor = db.execute(
@@ -526,7 +530,7 @@ class SolarForecastCoordinator:
 
     def _purge_old_data_sync(self) -> None:
         db = self._ensure_db()
-        cutoff = (date.today() - timedelta(days=MAX_HISTORY_DAYS)).isoformat()
+        cutoff = (self._local_today() - timedelta(days=MAX_HISTORY_DAYS)).isoformat()
         db.execute("DELETE FROM readings WHERE date < ?", (cutoff,))
         db.commit()
 
@@ -542,7 +546,7 @@ class SolarForecastCoordinator:
         Returns 1.0 when fewer than INTRADAY_MIN_SAMPLES are available.
         """
         db = self._ensure_db()
-        today_str = date.today().isoformat()
+        today_str = self._local_today().isoformat()
 
         cursor = db.execute(
             "SELECT slot, om_w, actual_w FROM readings WHERE date = ? AND om_w >= ?",

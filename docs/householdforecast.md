@@ -63,15 +63,15 @@ active sensor. Rated-power values must be at least 1 W.
 ### Optional configuration that is currently not in use
 
 These keys are stored in the config entry and, where noted, their history is
-recorded in the SQLite database. None of them influences the forecast or any
-sensor attribute value.
+recorded in the SQLite database. None of them influences the household
+forecast.
 
 | Option (label) | Key | Step | Example | Status |
 |---|---|---|---|---|
 | Pool pump rated power | `pool_pump_power_w` | Flexible loads | `500` | currently not in use (the value is read, but it is only a fallback for an active sensor, which the pool pump does not have) |
 | Dehumidifier rated power | `dehumidifier_power_w` | Flexible loads | `1500` | currently not in use (same reason as the pool pump) |
-| Water heater worst-case refill hours | `water_heater_max_hours` | Water heater | `4` | currently not in use (not read by the household forecast) |
-| Bathroom humidity sensor | `bathroom_humidity_entity` | Water heater | `sensor.bathroom_humidity` | currently not in use (history is recorded but not used) |
+| Water heater worst-case refill hours | `water_heater_max_hours` | Water heater | `4` | Not read by the household forecast; used by the water-heater schedule (see [waterheater.md](waterheater.md)) |
+| Bathroom humidity sensor | `bathroom_humidity_entity` | Water heater | `sensor.bathroom_humidity` | History is recorded but not used by the household forecast; the water-heater schedule uses it to detect shower days (see [waterheater.md](waterheater.md)) |
 | Outdoor temperature sensor | `outdoor_temperature_entity` | Household load | `sensor.outdoor_temperature` | currently not in use (history is recorded but not used; the slot feature `outdoor_temp_c` is always `null`) |
 | Battery state of charge sensor | `battery_soc_entity` | Battery hardware | `sensor.battery_soc` | Used by the battery charge mode sensor as the start of each plan (history is also recorded) |
 | Battery charge power sensor | `battery_charge_power_entity` | Battery hardware | `sensor.battery_charge_power` | currently not in use (history is recorded but not used) |

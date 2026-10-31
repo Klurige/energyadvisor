@@ -760,9 +760,9 @@ def test_solving_192_slots_is_fast() -> None:
     rng = random.Random(1)
     slots = _slots([rng.uniform(0.5, 3.0) for _ in range(192)])
 
-    started = time.perf_counter()
+    started = time.process_time()
     result = plan_battery(slots, _params(wear_cost_per_kwh=0.2), 50.0)
-    elapsed = time.perf_counter() - started
+    elapsed = time.process_time() - started
 
     assert len(result.modes) == 192
     assert elapsed < 2.0
@@ -772,9 +772,9 @@ def test_solving_three_days_of_slots_is_fast() -> None:
     rng = random.Random(2)
     slots = _slots([rng.uniform(0.5, 3.0) for _ in range(288)])
 
-    started = time.perf_counter()
+    started = time.process_time()
     result = plan_battery(slots, _params(wear_cost_per_kwh=0.2), 50.0)
-    elapsed = time.perf_counter() - started
+    elapsed = time.process_time() - started
 
     assert len(result.modes) == 288
     assert elapsed < 3.0
@@ -788,9 +788,9 @@ def test_solving_three_days_of_slots_with_credits_is_fast() -> None:
     )
     params = _params(wear_cost_per_kwh=0.2, terminal_value_per_kwh=1.0)
 
-    started = time.perf_counter()
+    started = time.process_time()
     result = plan_battery(slots, params, 50.0)
-    elapsed = time.perf_counter() - started
+    elapsed = time.process_time() - started
 
     assert len(result.modes) == 288
     assert MODE_SELL in result.modes

@@ -954,37 +954,466 @@ class TestRecordCurrentSlot:
 
 
 # ---------------------------------------------------------------------------
-# DB schema migration
+# Real-SQLite persistence, refresh pipeline and lifecycle
 # ---------------------------------------------------------------------------
 
+_SFC_MODULE = "custom_components.energyadvisor.coordinators.solar_forecast_coordinator"
+_SFC = sys.modules[_SFC_MODULE]
+_STOCKHOLM = "Europe/Stockholm"
 
-class TestDbMigration:
 
-    def test_v0_clears_readings(self):
-        """v0/v1 migration should clear all readings."""
-        coord = _make_coordinator()
-        conn = sqlite3.connect(":memory:")
-        conn.execute("""
-            CREATE TABLE readings (
-                date TEXT NOT NULL, slot INTEGER NOT NULL,
-                om_w REAL NOT NULL, actual_w REAL NOT NULL,
-                PRIMARY KEY (date, slot))
-        """)
-        conn.execute("INSERT INTO readings VALUES ('2024-01-01', 5, 100, 150)")
-        conn.execute("PRAGMA user_version = 0")
+async def _run_sync(func, *args):
+    return func(*args)
+
+
+def _make_disk_coordinator(tmp_path, **kwargs):
+    """Coordinator whose DB lives in tmp_path and executor runs inline."""
+    coord = _make_coordinator(config_dir=str(tmp_path), **kwargs)
+    coord.hass.async_add_executor_job = _run_sync
+    return coord
+
+
+def _db_file(tmp_path, entry_id="test_entry_1"):
+    return tmp_path / ".storage" / f"solar_forecast_{entry_id}.db"
+
+
+def _create_legacy_db(path, version, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("""
+        CREATE TABLE readings (
+            date TEXT NOT NULL, slot INTEGER NOT NULL,
+            om_w REAL NOT NULL, actual_w REAL NOT NULL,
+            PRIMARY KEY (date, slot))
+    """)
+    conn.executemany("INSERT INTO readings VALUES (?, ?, ?, ?)", rows)
+    conn.execute(f"PRAGMA user_version = {version}")
+    conn.commit()
+    conn.close()
+
+
+def _local_today_at(hour, minute=0):
+    """Return today's local Stockholm time as an aware UTC datetime."""
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(_STOCKHOLM)
+    local = datetime.now(tz).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return local.astimezone(UTC)
+
+
+def _om_state(watts_by_utc):
+    return SimpleNamespace(
+        state="1",
+        attributes={
+            "watts": {dt.isoformat(): w for dt, w in watts_by_utc.items()},
+        },
+    )
+
+
+class TestOpenDb:
+
+    def test_creates_schema_and_persists_across_reopen(self, tmp_path):
+        """A fresh DB is created under .storage and v3 data survives reopening."""
+        coord = _make_disk_coordinator(tmp_path)
+        conn = coord._open_db()
+        conn.execute("INSERT INTO readings VALUES ('2024-06-01', 61, 100, 150)")
         conn.commit()
+        conn.close()
 
-        # Patch _open_db to return our in-memory conn
-        with patch.object(coord, "_db_path", return_value=":memory:"):
-            # Manually run the migration logic
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            assert version == 0
-            if version < 2:
-                conn.execute("DELETE FROM readings")
-            conn.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
-            conn.commit()
+        assert _db_file(tmp_path).exists()
+        conn = coord._open_db()
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
+        assert conn.execute("SELECT * FROM readings").fetchall() == [
+            ("2024-06-01", 61, 100.0, 150.0)
+        ]
+        conn.close()
 
-        rows = conn.execute("SELECT * FROM readings").fetchall()
-        assert len(rows) == 0
-        new_ver = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert new_ver == DB_SCHEMA_VERSION
+    @pytest.mark.parametrize("version", [0, 1])
+    def test_pre_v2_data_is_cleared(self, tmp_path, version):
+        """v0/v1 data was never valid and must be dropped on upgrade."""
+        _create_legacy_db(
+            _db_file(tmp_path), version, [("2024-06-01", 5, 100.0, 150.0)]
+        )
+        coord = _make_disk_coordinator(tmp_path)
+
+        conn = coord._open_db()
+
+        assert conn.execute("SELECT COUNT(*) FROM readings").fetchone()[0] == 0
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
+        conn.close()
+
+    def test_v2_local_slots_migrated_to_solar_bins(self, tmp_path):
+        """v2 rows are re-keyed by sun position, merged per bin, night dropped."""
+        from zoneinfo import ZoneInfo
+
+        day = "2024-06-21"
+        # Local 12:00-12:15 and 12:15-12:30 (slots 48/49) share one solar bin;
+        # local 00:00 (slot 0) is night; a malformed date row is discarded.
+        _create_legacy_db(
+            _db_file(tmp_path),
+            2,
+            [
+                (day, 48, 1000.0, 1200.0),
+                (day, 49, 2000.0, 1800.0),
+                (day, 0, 50.0, 50.0),
+                ("not-a-date", 48, 1.0, 1.0),
+            ],
+        )
+        tz = ZoneInfo(_STOCKHOLM)
+        mid_48 = datetime(2024, 6, 21, 12, 7, tzinfo=tz).astimezone(UTC)
+        mid_49 = datetime(2024, 6, 21, 12, 22, tzinfo=tz).astimezone(UTC)
+        expected_slot = _solar_slot(
+            59.33, 18.07, mid_48, SLOT_ELEVATION_STEP, SLOT_AZIMUTH_BINS
+        )
+        assert expected_slot >= 0
+        assert expected_slot == _solar_slot(
+            59.33, 18.07, mid_49, SLOT_ELEVATION_STEP, SLOT_AZIMUTH_BINS
+        )
+        coord = _make_disk_coordinator(tmp_path)
+
+        conn = coord._open_db()
+
+        assert conn.execute("SELECT * FROM readings").fetchall() == [
+            (day, expected_slot, 1500.0, 1500.0)
+        ]
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
+        conn.close()
+
+
+class TestCleanupStaleDbs:
+
+    @pytest.mark.asyncio
+    async def test_removes_only_db_files_of_deleted_entries(self, tmp_path):
+        storage = tmp_path / ".storage"
+        storage.mkdir()
+        keep = [
+            "solar_forecast_test_entry_1.db",
+            "solar_forecast_test_entry_1.db-wal",
+            "core.config_entries",
+            "solar_forecast_notes.txt",
+        ]
+        stale = [
+            "solar_forecast_gone.db",
+            "solar_forecast_gone.db-wal",
+            "solar_forecast_gone.db-shm",
+        ]
+        for name in keep + stale:
+            (storage / name).write_text("x")
+        coord = _make_disk_coordinator(tmp_path)
+        coord.hass.config_entries.async_entries = MagicMock(
+            return_value=[SimpleNamespace(entry_id="test_entry_1")]
+        )
+
+        await coord._cleanup_stale_dbs()
+
+        assert sorted(p.name for p in storage.iterdir()) == sorted(keep)
+
+    @pytest.mark.asyncio
+    async def test_missing_storage_dir_is_ignored(self, tmp_path):
+        coord = _make_disk_coordinator(tmp_path / "missing")
+        coord.hass.config_entries.async_entries = MagicMock(return_value=[])
+
+        await coord._cleanup_stale_dbs()
+
+
+class TestRecordCurrentSlotPersistence:
+
+    def _coord(self, tmp_path, om_watts):
+        coord = _make_disk_coordinator(tmp_path, time_zone=_STOCKHOLM)
+        coord.hass.states.get = lambda eid: (
+            _om_state(om_watts) if eid == coord._forecast_entity else None
+        )
+        return coord
+
+    @pytest.mark.asyncio
+    async def test_records_slot_average_with_local_date(self, tmp_path):
+        now = _local_today_at(12, 15)
+        coord = self._coord(tmp_path, {now: 1200.0})
+        coord._power_buffer.extend(
+            [(now - timedelta(minutes=14), 800.0), (now - timedelta(minutes=1), 800.0)]
+        )
+
+        await coord._record_current_slot(now)
+
+        rows = coord._ensure_db().execute("SELECT * FROM readings").fetchall()
+        local_date = now.astimezone(coord._local_tz).date().isoformat()
+        assert rows == [(local_date, coord._slot_for(now), 1200.0, 800.0)]
+        coord._close_db_sync()
+
+    @pytest.mark.parametrize(
+        "hour, om_w, power",
+        [
+            pytest.param(12, 1200.0, None, id="empty_power_buffer"),
+            pytest.param(12, 5.0, 3.0, id="both_below_night_threshold"),
+            pytest.param(1, 500.0, 400.0, id="sun_below_horizon"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_skips_unusable_slots(self, tmp_path, hour, om_w, power):
+        now = _local_today_at(hour, 15)
+        coord = self._coord(tmp_path, {now: om_w})
+        if power is not None:
+            coord._power_buffer.append((now - timedelta(minutes=5), power))
+
+        await coord._record_current_slot(now)
+
+        assert (
+            coord._ensure_db().execute("SELECT COUNT(*) FROM readings").fetchone()[0]
+            == 0
+        )
+        coord._close_db_sync()
+
+
+class TestRefresh:
+
+    @pytest.mark.asyncio
+    async def test_tick_records_purges_recomputes_and_notifies_on_change(
+        self, tmp_path
+    ):
+        noon = _local_today_at(12, 15)
+        om_watts = {noon + timedelta(minutes=15 * i): 1000.0 for i in range(-4, 5)}
+        coord = _make_disk_coordinator(tmp_path, time_zone=_STOCKHOLM)
+        coord.hass.states.get = lambda eid: (
+            _om_state(om_watts) if eid == coord._forecast_entity else None
+        )
+        slot = coord._slot_for(noon)
+        old = (date.today() - timedelta(days=MAX_HISTORY_DAYS + 5)).isoformat()
+        history = [
+            ((date.today() - timedelta(days=d)).isoformat(), slot, 1000.0, 2000.0)
+            for d in range(1, MIN_CORRECTION_SAMPLES + 1)
+        ]
+        _insert_readings(coord._ensure_db(), history + [(old, slot, 1000.0, 1.0)])
+        coord._power_buffer.append((noon - timedelta(minutes=5), 1500.0))
+        callback_mock = MagicMock()
+        coord.register_update_callback(callback_mock)
+
+        await coord._refresh(noon)
+
+        db = coord._ensure_db()
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM readings WHERE date = ?", (old,)
+            ).fetchone()[0]
+            == 0
+        )
+        today_local = noon.astimezone(coord._local_tz).date().isoformat()
+        assert db.execute(
+            "SELECT om_w, actual_w FROM readings WHERE date = ? AND slot = ?",
+            (today_local, slot),
+        ).fetchone() == (1000.0, 1500.0)
+        assert coord.total_samples == MIN_CORRECTION_SAMPLES + 1
+        assert coord.correction_factors[slot] > 1.8
+        assert len(coord.forecast) == 2 * SLOTS_PER_DAY
+        callback_mock.assert_called_once()
+
+        # Same inputs → identical forecast → no extra notification.
+        await coord._refresh()
+        callback_mock.assert_called_once()
+
+        # Forecast source changes → sensors are notified again.
+        om_watts[noon] = 3000.0
+        await coord._refresh()
+        assert callback_mock.call_count == 2
+        coord._close_db_sync()
+
+
+class TestOnForecastUpdated:
+
+    @pytest.mark.asyncio
+    async def test_duplicate_triggers_coalesce_until_refresh_finishes(self):
+        coord = _make_coordinator()
+        coord._refresh = AsyncMock(side_effect=[RuntimeError("boom"), None])
+        tasks = []
+        coord.hass.async_create_task = MagicMock(side_effect=tasks.append)
+
+        coord._on_forecast_updated(MagicMock())
+        coord._on_forecast_updated(MagicMock())
+        assert len(tasks) == 1
+
+        # A failing refresh must still release the guard.
+        with pytest.raises(RuntimeError):
+            await tasks[0]
+        coord._on_forecast_updated(MagicMock())
+        assert len(tasks) == 2
+        await tasks[1]
+        assert coord._refresh.await_count == 2
+
+
+class TestLifecycle:
+
+    @pytest.mark.asyncio
+    async def test_setup_then_shutdown_removes_listeners_and_closes_db(self, tmp_path):
+        coord = _make_disk_coordinator(tmp_path)
+        coord.hass.config_entries.async_entries = MagicMock(return_value=[coord.entry])
+        # Forecast entity exists but has no usable data yet → immediate retry.
+        coord.hass.states.get = lambda eid: SimpleNamespace(state="0", attributes={})
+        created = []
+        coord.hass.async_create_task = MagicMock(side_effect=created.append)
+        removers = [MagicMock(name=f"remove_{i}") for i in range(4)]
+
+        with (
+            patch(
+                f"{_SFC_MODULE}.async_track_utc_time_change",
+                return_value=removers[0],
+            ),
+            patch(
+                f"{_SFC_MODULE}.async_track_state_change_event",
+                side_effect=[removers[1], removers[2]],
+            ) as mock_state_change,
+            patch(f"{_SFC_MODULE}.async_call_later", return_value=removers[3]),
+        ):
+            await coord.async_setup()
+
+        assert _db_file(tmp_path).exists()
+        assert coord._db is not None
+        mock_state_change.assert_any_call(
+            coord.hass, ["sensor.solar_power"], coord._on_power_state_change
+        )
+        assert len(created) == 1
+        for task in created:
+            task.close()
+
+        await coord.async_shutdown()
+
+        for remove in removers:
+            remove.assert_called_once()
+        assert coord._db is None
+        await coord.async_shutdown()  # idempotent
+        for remove in removers:
+            remove.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_startup_retry_refreshes_only_while_forecast_empty(self):
+        coord = _make_coordinator(power_entity="")
+        coord._cleanup_stale_dbs = AsyncMock()
+        coord.hass.async_add_executor_job = AsyncMock()
+        coord.hass.states.get = MagicMock(return_value=None)
+        coord._refresh = AsyncMock()
+
+        with (
+            patch(f"{_SFC_MODULE}.async_track_utc_time_change"),
+            patch(f"{_SFC_MODULE}.async_track_state_change_event"),
+            patch(f"{_SFC_MODULE}.async_call_later") as mock_call_later,
+        ):
+            await coord.async_setup()
+        retry = mock_call_later.call_args.args[2]
+
+        await retry()
+        assert coord._refresh.await_count == 2
+
+        coord.forecast = [{"end": "x", "pow": 1.0, "raw": 1.0}]
+        await retry()
+        assert coord._refresh.await_count == 2
+
+
+def _dev_session(status=200, payload=None, error=None):
+    resp = MagicMock(status=status)
+    resp.json = AsyncMock(return_value=payload or {})
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    session = MagicMock()
+    session.close = AsyncMock()
+    if error is not None:
+        session.get.side_effect = error
+    else:
+        session.get.return_value = ctx
+    return session
+
+
+class TestDevPollPower:
+
+    @pytest.fixture(autouse=True)
+    def _dev_mode(self):
+        with (
+            patch.object(_SFC, "_DEV_HA_URL", "http://dev-ha:8123"),
+            patch.object(_SFC, "_DEV_HA_TOKEN", "token"),
+            patch.object(_SFC, "_DEV_POWER_ENTITY", "sensor.remote_solar"),
+        ):
+            yield
+
+    @pytest.mark.parametrize(
+        "session, expected",
+        [
+            pytest.param(_dev_session(payload={"state": "1234.5"}), [1234.5], id="ok"),
+            pytest.param(
+                _dev_session(payload={"state": "unavailable"}), [], id="unavailable"
+            ),
+            pytest.param(_dev_session(status=500), [], id="http_error"),
+            pytest.param(_dev_session(error=OSError("down")), [], id="exception"),
+            pytest.param(
+                _dev_session(payload={"state": "garbage"}), [], id="non_numeric"
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_poll_buffers_valid_values_and_always_reschedules(
+        self, session, expected
+    ):
+        coord = _make_coordinator()
+        coord._dev_session = session
+        cancel = MagicMock()
+
+        with patch(
+            f"{_SFC_MODULE}.async_call_later", return_value=cancel
+        ) as mock_call_later:
+            await coord._dev_poll_power()
+
+        assert [w for _, w in coord._power_buffer] == expected
+        mock_call_later.assert_called_once_with(coord.hass, 30, coord._dev_poll_power)
+        assert coord._dev_poll_cancel is cancel
+
+    @pytest.mark.asyncio
+    async def test_dev_mode_setup_polls_instead_of_listening_and_shutdown_cleans_up(
+        self,
+    ):
+        coord = _make_coordinator()
+        coord._cleanup_stale_dbs = AsyncMock()
+        coord.hass.async_add_executor_job = AsyncMock()
+        coord.hass.states.get = MagicMock(return_value=None)
+        coord._refresh = AsyncMock()
+        session = _dev_session(payload={"state": "42"})
+        poll_cancel = MagicMock()
+
+        with (
+            patch(f"{_SFC_MODULE}.async_track_utc_time_change"),
+            patch(f"{_SFC_MODULE}.async_track_state_change_event") as mock_state_change,
+            patch(f"{_SFC_MODULE}.async_call_later", return_value=poll_cancel),
+            patch(f"{_SFC_MODULE}.aiohttp.ClientSession", return_value=session),
+        ):
+            await coord.async_setup()
+
+        # Only the forecast listener is registered; power comes from polling.
+        mock_state_change.assert_called_once()
+        assert [w for _, w in coord._power_buffer] == [42.0]
+
+        await coord.async_shutdown()
+
+        poll_cancel.assert_called()
+        session.close.assert_awaited_once()
+
+
+def test_intraday_scaling_uses_home_assistant_local_date():
+    from zoneinfo import ZoneInfo
+
+    now_utc = datetime(2024, 6, 20, 22, 0, tzinfo=UTC)  # 08:00 in Sydney
+    ha_local_today = now_utc.astimezone(ZoneInfo("Australia/Sydney")).date()
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now_utc.astimezone(tz) if tz else now_utc.replace(tzinfo=None)
+
+    coord = _make_coordinator(time_zone="Australia/Sydney")
+    coord._db = _make_in_memory_db()
+    _insert_readings(
+        coord._db,
+        [
+            (ha_local_today.isoformat(), slot, 100.0, 200.0)
+            for slot in range(INTRADAY_MIN_SAMPLES)
+        ],
+    )
+
+    # The host clock is UTC (still 2024-06-20); HA's local date is 06-21.
+    with patch.object(_SFC, "datetime", _FrozenDatetime):
+        assert coord._compute_intraday_scaling_sync() == pytest.approx(2.0)
