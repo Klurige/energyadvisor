@@ -175,6 +175,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
     current_entity_ids = {
         "price": "sensor.energy_advisor_price",
         "compactlevels": "sensor.energy_advisor_compact_levels",
+        "compactbatterymodes": "sensor.energy_advisor_compact_battery_modes",
         "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
         "waterheaterschedule": "sensor.energy_advisor_water_heater_schedule",
         "waterheaterdiagnostics": "sensor.energy_advisor_water_heater_diagnostics",

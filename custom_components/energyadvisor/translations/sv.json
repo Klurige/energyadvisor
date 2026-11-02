@@ -397,6 +397,9 @@
       "compactlevels": {
         "name": "Kompakta nivåer"
       },
+      "compactbatterymodes": {
+        "name": "Kompakta batterilägen"
+      },
       "solarforecast": {
         "name": "Solprognos"
       },

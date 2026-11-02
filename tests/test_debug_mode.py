@@ -38,6 +38,9 @@ from custom_components.energyadvisor.sensor.batterychargemodesensor import (
     BatteryChargeModeSensor,
 )
 from custom_components.energyadvisor.sensor.compactlevels import CompactLevelsSensor
+from custom_components.energyadvisor.sensor.compactbatterymodes import (
+    CompactBatteryModesSensor,
+)
 from custom_components.energyadvisor.sensor.price import PriceSensor
 from custom_components.energyadvisor.services import (
     SERVICE_DEBUG_SELECT_DATE,
@@ -264,6 +267,14 @@ async def test_sensor_setup_in_debug_mode_uses_debug_coordinator() -> None:
     nordpool_coordinator.assert_not_called()
     start.assert_called_once_with()
     add_entities.assert_called_once()
+    entities = add_entities.call_args.args[0]
+    battery = next(
+        entity for entity in entities if isinstance(entity, BatteryChargeModeSensor)
+    )
+    compact_battery = next(
+        entity for entity in entities if isinstance(entity, CompactBatteryModesSensor)
+    )
+    assert compact_battery._source_sensor is battery
 
     runtime_data = entry.runtime_data
     assert isinstance(runtime_data.debug_coordinator, ElprisDebugCoordinator)

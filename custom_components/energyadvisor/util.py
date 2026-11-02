@@ -19,6 +19,29 @@ def level_to_compact(level: str | None) -> str:
     return LEVEL_TO_COMPACT.get(level or "", "U")
 
 
+def format_compact_window(
+    levels: str, level_length: int, seconds_since_midnight: int
+) -> tuple[int, dict[str, str], int]:
+    """Format one hour of history and twelve hours starting at the current slot."""
+    minutes = seconds_since_midnight / 60
+    past = future = ""
+    next_update = 5
+    if levels and level_length > 0:
+        index = int(minutes / level_length)
+        history_length = int(60 / level_length)
+        future_length = 12 * history_length
+        past = levels[max(0, index - history_length) : index]
+        future = levels[index : index + future_length]
+        past = past.rjust(history_length, "U")
+        future = future.ljust(future_length, "U")
+        next_update = max(1, int((level_length - minutes % level_length) * 60))
+    return (
+        int(minutes),
+        {"compact": f"{int(minutes)}:{level_length}:{past}:{future}"},
+        next_update,
+    )
+
+
 def infer_level_length_minutes(rates: Sequence[Mapping[str, Any]]) -> int:
     """Infer the native slot length from the first valid rate entry."""
     for rate in rates:

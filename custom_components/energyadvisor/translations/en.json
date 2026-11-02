@@ -397,6 +397,9 @@
       "compactlevels": {
         "name": "Compact levels"
       },
+      "compactbatterymodes": {
+        "name": "Compact battery modes"
+      },
       "solarforecast": {
         "name": "Solar Forecast"
       },

@@ -58,7 +58,7 @@ import asyncio
 import logging
 import math
 import statistics
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -103,6 +103,7 @@ from ..const import (
 from ..coordinators.household_forecast_coordinator import (
     SLOT_MINUTES as FORECAST_SLOT_MINUTES,
 )
+from ..util import infer_level_length_minutes
 
 if TYPE_CHECKING:
     from ..coordinators.household_forecast_coordinator import (
@@ -141,6 +142,14 @@ MODE_ICONS = {
     MODE_DISCHARGE: "mdi:battery-arrow-down",
     MODE_SELL: "mdi:transmission-tower-export",
     MODE_MAXUSE: "mdi:battery-sync",
+}
+MODE_TO_COMPACT = {
+    MODE_STANDBY: "S",
+    MODE_CHARGE: "C",
+    MODE_PVCHARGE: "P",
+    MODE_DISCHARGE: "D",
+    MODE_SELL: "E",
+    MODE_MAXUSE: "M",
 }
 # How long the modes of ended slots are remembered; the price sensor never
 # holds older slots.
@@ -384,6 +393,7 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
         self._plan_task: asyncio.Task[None] | None = None
         self._replan_requested = False
         self._removed = False
+        self._update_listeners: list[Callable[[], None]] = []
 
         description = SensorEntityDescription(
             key="batterychargemode",
@@ -443,6 +453,50 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
             )
         )
         self._request_plan()
+
+    @callback
+    def async_add_update_listener(
+        self, listener: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Register a callback for published battery schedules."""
+        self._update_listeners.append(listener)
+
+        @callback
+        def remove_listener() -> None:
+            if listener in self._update_listeners:
+                self._update_listeners.remove(listener)
+
+        return remove_listener
+
+    def build_modes_payload(self, reference_time: datetime) -> tuple[int, str]:
+        """Return today's and tomorrow's published modes in wall-clock slots."""
+        slots = [
+            {
+                "start": datetime.fromisoformat(str(mode["from"])),
+                "end": datetime.fromisoformat(str(mode["to"])),
+            }
+            for mode in self._modes
+        ]
+        length = infer_level_length_minutes(slots)
+        if not length:
+            return 0, ""
+        midnight = reference_time.replace(
+            hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+        )
+        values = ["U"] * math.ceil(2880 / length)
+        for slot, mode in zip(slots, self._modes):
+            start = max(
+                0, int((slot["start"] - midnight).total_seconds() // (length * 60))
+            )
+            end = min(
+                len(values),
+                int((slot["end"] - midnight).total_seconds() // (length * 60)),
+            )
+            if end > start:
+                values[start:end] = [MODE_TO_COMPACT.get(str(mode["mode"]), "U")] * (
+                    end - start
+                )
+        return length, "".join(values).rstrip("U")
 
     @callback
     def _stop_worker(self) -> None:
@@ -535,6 +589,11 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
                 if start >= oldest
             }
         self.async_write_ha_state()
+        for listener in tuple(self._update_listeners):
+            try:
+                listener()
+            except Exception:
+                _LOGGER.exception("Error notifying battery schedule listeners")
 
     @property
     def extra_restore_state_data(self) -> ExtraStoredData:

@@ -11,7 +11,7 @@ This integration works particularly well with the [LevelIndicatorClock](https://
 ## Features
 - Uses electricity prices provided by the Home Assistant NordPool integration.
 - Categorizes prices into levels (e.g., low, medium, high).
-- Provides two price sensors plus a battery charge mode sensor, a water-heater schedule and diagnostic sensor, an optional household Load forecast sensor, and an optional refined solar forecast sensor.
+- Provides price and battery mode sensors with compact diagnostics, a water-heater schedule and diagnostic sensor, an optional household Load forecast sensor, and an optional refined solar forecast sensor.
 - Supports multiple languages (English, Swedish).
 - Easy configuration via the Home Assistant UI.
   - Adds support for extra fees and taxes from your grid and supplier.
@@ -157,9 +157,10 @@ Large attributes are always kept out of the recorder, regardless of any option:
 - `on_slots` on `sensor.energy_advisor_water_heater_schedule`
 
 ## Usage
-- The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor, one water-heater schedule sensor and its diagnostic sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_water_heater_schedule`, `sensor.energy_advisor_water_heater_diagnostics`, `sensor.energy_advisor_load_forecast` when the household meter is configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
+- The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor and its compact diagnostic sensor, one water-heater schedule sensor and its diagnostic sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_compact_battery_modes`, `sensor.energy_advisor_water_heater_schedule`, `sensor.energy_advisor_water_heater_diagnostics`, `sensor.energy_advisor_load_forecast` when the household meter is configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
+  - `sensor.energy_advisor_compact_battery_modes` provides the equivalent compact battery-mode string as a diagnostic sensor, disabled by default.
   - `sensor.energy_advisor_battery_charge_mode` provides a battery schedule with one entry per price slot: `charge` in the cheap slots before a price peak, `discharge` over the peak, `sell` when exporting pays, `standby` elsewhere, with the slot's `cost` and `credit` and the planned battery state of charge as `target_soc`. Its state is the mode of the current slot.
   - `sensor.energy_advisor_water_heater_schedule` provides a fixed daily 20:00→20:00 ON schedule for the water heater, using full-precision price costs and learned runtime demand (`no_shower` vs `shower` day classes). Its state is `on` when now is in a scheduled ON slot, else `off`.
   - `sensor.energy_advisor_water_heater_diagnostics` exposes the water-heater planner's diagnostic attributes.
@@ -204,6 +205,23 @@ The integration also provides `sensor.energy_advisor_compact_levels`, which expo
     * `U` for Unknown (if no price is available for that period)
 
     `history` covers up to one hour and `future` twelve hours, padded with `U` where no price is known.
+
+### `sensor.energy_advisor_compact_battery_modes`
+
+Diagnostic sensor, disabled by default in the entity registry, following the same
+format as the compact price levels sensor.
+
+- **State:** Minutes since local midnight.
+- **Attribute `compact`:** `minutes_since_midnight:slot_length:history:future`,
+  with slot length in minutes, one hour of history and twelve hours starting at
+  the current slot. Missing slots are padded with `U`; before a schedule is
+  available the format is `minutes_since_midnight:0::`.
+- **Mode characters:** `S` = standby, `C` = charge, `P` = pvcharge,
+  `D` = discharge, `E` = sell (export), `M` = maxuse, `U` = unknown.
+- **Updates:** Follows every published battery plan, including SoC and forecast
+  changes, independently of price updates. Rapid updates are coalesced to the
+  latest plan and identical compact values are not written again. A single
+  rescheduled timer advances the window at slot boundaries.
 
 ### `sensor.energy_advisor_solar_forecast`
 - **Description:** Optional refined solar production forecast learned from the difference between your forecast source and the solar's measured output. Created when both `forecast_entity` and `power_entity` are configured.

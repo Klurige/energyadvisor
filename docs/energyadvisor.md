@@ -160,6 +160,24 @@ and whenever the price sensor receives new rates. Level characters: `L`, `M`, `H
 
 ---
 
+### `sensor.energy_advisor_compact_battery_modes`
+
+Diagnostic sensor, disabled by default, with the same state and compact window
+format as the price-level diagnostic sensor. It reads the published battery
+schedule directly, not the price update stream, so SoC and forecast replans
+are reflected without waiting for new electricity prices.
+
+The `compact` attribute is
+`{minutes}:{slot_length}:{past_1h_modes}:{future_12h_modes}`. Characters are
+`S` (standby), `C` (charge), `P` (pvcharge), `D` (discharge), `E` (sell/export),
+`M` (maxuse), and `U` (unknown). Slot length is in minutes.
+Before a schedule is known it publishes `{minutes}:0::`.
+
+Battery schedule callbacks are coalesced into one event-loop refresh per burst.
+Unchanged compact values do not produce state writes. A single timer is
+cancelled and rescheduled on refresh to follow the current slot length; removal
+unsubscribes the listener and cancels both queued refreshes and the timer.
+
 ### Service: `energyadvisor.get_levels`
 
 Returns a response with `level_length` (minutes per character), `levels` (one
@@ -244,6 +262,7 @@ coordinators; see [solarforecast.md](solarforecast.md) and
 | `sensor/__init__.py` | Wires up coordinators + sensors, registers entities |
 | `sensor/price.py` | Core sensor: price calc, level, rank, rates |
 | `sensor/compactlevels.py` | Compact level string sensor |
+| `sensor/compactbatterymodes.py` | Compact battery-mode diagnostic with coalesced plan updates |
 | `sensor/batterychargemodesensor.py` | Battery charge mode sensor (schedule, triggers and worker around the planner) |
 | `battery_planner.py` | Pure-Python dynamic programme that plans the battery (no Home Assistant imports) |
 | `sensor/solarforecastsensor.py`, `sensor/householdforecastsensor.py` | Optional forecast sensors |

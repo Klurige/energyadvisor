@@ -28,6 +28,7 @@ from ..const import (
     PREFERRED_SENSOR_ENTITY_IDS,
     build_sensor_unique_id,
 )
+from ..util import format_compact_window
 
 if TYPE_CHECKING:
     from .price import PriceSensor
@@ -207,44 +208,12 @@ class CompactLevelsSensor(SensorEntity):
 
         levels_str = str(result.get("levels", ""))
         level_length = int(result.get("level_length", 0) or 0)
-        minutes_since_midnight = seconds_since_midnight / 60
-        minutes_into_period = (
-            minutes_since_midnight % level_length if level_length > 0 else 0
+        minutes_since_midnight, value, next_update_seconds = format_compact_window(
+            levels_str, level_length, seconds_since_midnight
         )
 
         if simulationLevelIndex >= 0:
             next_update_seconds = simulation_update_seconds
-        else:
-            next_update_seconds = (
-                int((level_length - minutes_into_period) * 60)
-                if levels_str and level_length > 0
-                else 5
-            )
-
-        passed_levels = ""
-        future_levels = ""
-        if levels_str and level_length > 0:
-            current_level_index = int(minutes_since_midnight / level_length)
-            levels_in_1_hour = int(60 / level_length) if level_length > 0 else 0
-            levels_in_12_hours = int(12 * levels_in_1_hour)
-
-            passed_end = current_level_index
-            passed_start = max(0, passed_end - levels_in_1_hour)
-            future_start = current_level_index
-            future_end = future_start + levels_in_12_hours
-
-            passed_levels = levels_str[passed_start:passed_end]
-            future_levels = levels_str[future_start:future_end]
-
-            if len(passed_levels) < levels_in_1_hour:
-                passed_levels = (
-                    "U" * (levels_in_1_hour - len(passed_levels)) + passed_levels
-                )
-            if len(future_levels) < levels_in_12_hours:
-                future_levels += "U" * (levels_in_12_hours - len(future_levels))
-
-        compact = f"{int(minutes_since_midnight)}:{level_length}:{passed_levels}:{future_levels}"
-        value = {"compact": compact}
 
         _LOGGER.debug(
             "Minutes: %s Compact: %s, next update in seconds: %s",

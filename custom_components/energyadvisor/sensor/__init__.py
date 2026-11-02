@@ -1,9 +1,8 @@
 """Sensor platform wiring for Energy Advisor.
 
-This package assembles the price sensor, compact level sensor, battery charge
-mode sensor, household Load forecast sensor, and solar forecast sensor. The
-compact level and battery charge mode sensors read the price sensor's rate data
-in memory; the other sensors depend on external data only.
+This package assembles the price, battery, water-heater and forecast sensors,
+including the compact price-level and battery-mode diagnostics. The compact
+battery modes follow published battery plans independently of price updates.
 """
 
 from __future__ import annotations
@@ -31,6 +30,8 @@ from ..coordinators.household_forecast_coordinator import (
 )
 from ..coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 from .compactlevels import CompactLevelsSensor
+from .compactbatterymodes import CompactBatteryModesSensor
+from .batterychargemodesensor import BatteryChargeModeSensor
 from .householdforecastsensor import HouseholdForecastSensor
 from .price import PriceSensor
 from .waterheaterschedulesensor import (
@@ -104,9 +105,10 @@ async def async_setup_entry(
 
     levels_sensor = PriceSensor(hass, entry, device_info)
     compact_levels_sensor = CompactLevelsSensor(hass, entry, device_info, levels_sensor)
-    from .batterychargemodesensor import BatteryChargeModeSensor
-
     battery_sensor = BatteryChargeModeSensor(hass, entry, device_info, levels_sensor)
+    compact_battery_sensor = CompactBatteryModesSensor(
+        hass, entry, device_info, battery_sensor
+    )
     water_heater_sensor = WaterHeaterScheduleSensor(
         hass, entry, device_info, levels_sensor
     )
@@ -117,6 +119,7 @@ async def async_setup_entry(
         levels_sensor,
         compact_levels_sensor,
         battery_sensor,
+        compact_battery_sensor,
         water_heater_sensor,
         water_heater_diagnostics_sensor,
     ]

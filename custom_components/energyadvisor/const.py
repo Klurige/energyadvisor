@@ -85,6 +85,7 @@ ATTR_INTRADAY_SCALING = "intraday_scaling"
 PREFERRED_SENSOR_ENTITY_IDS: dict[str, str] = {
     "price": "sensor.energy_advisor_price",
     "compactlevels": "sensor.energy_advisor_compact_levels",
+    "compactbatterymodes": "sensor.energy_advisor_compact_battery_modes",
     "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
     "waterheaterschedule": "sensor.energy_advisor_water_heater_schedule",
     "waterheaterdiagnostics": "sensor.energy_advisor_water_heater_diagnostics",
