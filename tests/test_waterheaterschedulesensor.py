@@ -101,7 +101,10 @@ def _live_sensor(hass, rates: list[dict] | None = None) -> WaterHeaterScheduleSe
     hass.states.async_set(POWER_ENTITY, "0")
     hass.states.async_set(HUMIDITY_ENTITY, "50")
     entry = SimpleNamespace(entry_id="test", unique_id="test", options=SCHEDULE_OPTIONS)
-    price_sensor = SimpleNamespace(_rates=rates or [])
+    price_sensor = SimpleNamespace(
+        _rates=rates or [],
+        async_add_update_listener=MagicMock(return_value=lambda: None),
+    )
     sensor = WaterHeaterScheduleSensor(hass, entry, None, price_sensor)
     sensor.async_write_ha_state = MagicMock()
     sensor.async_on_remove = MagicMock()
@@ -193,18 +196,21 @@ async def test_plan_without_prices_is_retried_but_a_real_plan_stays_fixed(
     await _add(hass, sensor)
     assert sensor._plan.selected_slots == ()
     assert sensor._plan.incomplete_reason == "insufficient_slots"
+    assert not sensor.available
 
     sensor._price_sensor._rates = _window_rates(_local(2026, 3, 1, 20, 0))
-    sensor._handle_periodic_refresh(dt_util.now())
+    price_listener = sensor._price_sensor.async_add_update_listener.call_args.args[0]
+    price_listener()
     await hass.async_block_till_done()
     plan = sensor._plan
     assert len(plan.selected_slots) == 16
+    assert sensor.available
 
     # New prices mid-window must not cause the heater to run a second time.
     sensor._price_sensor._rates = [
         {**rate, "cost": 10 - rate["cost"]} for rate in sensor._price_sensor._rates
     ]
-    sensor._handle_periodic_refresh(dt_util.now())
+    price_listener()
     await hass.async_block_till_done()
     assert sensor._plan is plan
     await _remove(sensor)

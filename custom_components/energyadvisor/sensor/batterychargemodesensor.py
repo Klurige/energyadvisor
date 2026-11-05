@@ -371,6 +371,7 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
 
     _attr_should_poll = False
     _attr_has_entity_name = True
+    _attr_available = False
     _unrecorded_attributes = frozenset({"modes"})
 
     def __init__(
@@ -412,10 +413,6 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
         await super().async_added_to_hass()
         self.async_on_remove(self._stop_worker)
         self._history = _parse_history(await self.async_get_last_extra_data())
-        default = self._default_schedule()
-        self._modes = default.modes
-        self._current_target_soc = default.current_target_soc
-
         self.async_on_remove(
             self._price_sensor.async_add_update_listener(self._handle_price_update)
         )
@@ -578,6 +575,7 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
         self._modes = schedule.modes
         self._current_mode = schedule.current_mode
         self._current_target_soc = schedule.current_target_soc
+        self._attr_available = schedule.current_target_soc is not None
         self._soc_trace = schedule.soc_trace
         current = schedule.current
         if current is not None:

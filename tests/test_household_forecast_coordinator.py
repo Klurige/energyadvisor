@@ -74,7 +74,9 @@ _COORDINATOR_MODULE = (
 )
 
 
-async def _setup_coordinator(coordinator: HouseholdForecastCoordinator) -> None:
+async def _setup_coordinator(
+    coordinator: HouseholdForecastCoordinator, *, defer_initial_rebuild: bool = False
+) -> None:
     """Run async_setup with storage and listeners stubbed out."""
     store = MagicMock()
     store.async_load = AsyncMock(return_value=None)
@@ -95,7 +97,72 @@ async def _setup_coordinator(coordinator: HouseholdForecastCoordinator) -> None:
         ),
     ):
         coordinator._store = store
-        await coordinator.async_setup()
+        await coordinator.async_setup(defer_initial_rebuild=defer_initial_rebuild)
+
+
+async def test_deferred_setup_keeps_cached_forecast_until_rebuild_finishes(
+    tmp_path: Path,
+) -> None:
+    coordinator, hass = _make_coordinator(tmp_path)
+    hass.async_create_background_task.side_effect = (
+        lambda coro, _name: asyncio.create_task(coro)
+    )
+    cached = [{"from": "2026-11-05T06:45", "load": 0.42}]
+    coordinator._forecast_slots = cached
+    coordinator._async_initialize_capture_db = AsyncMock()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    listener = MagicMock()
+    coordinator.register_update_callback(listener)
+
+    async def rebuild(_now):
+        started.set()
+        await release.wait()
+        coordinator._forecast_slots = [{"from": "2026-11-05T06:45", "load": 0.55}]
+        return True
+
+    coordinator._async_finalize_history = AsyncMock(side_effect=rebuild)
+    await _setup_coordinator(coordinator, defer_initial_rebuild=True)
+    await started.wait()
+
+    assert coordinator.forecast_slots == cached
+    assert not coordinator._initial_rebuild_task.done()
+    listener.assert_not_called()
+    release.set()
+    await coordinator._initial_rebuild_task
+    assert coordinator.forecast_slots[0]["load"] == 0.55
+    listener.assert_called_once()
+    await coordinator.async_shutdown()
+
+
+async def test_shutdown_waits_for_initial_rebuild_before_closing_sqlite(
+    tmp_path: Path,
+) -> None:
+    coordinator, hass = _make_coordinator(tmp_path)
+    hass.async_create_background_task.side_effect = (
+        lambda coro, _name: asyncio.create_task(coro)
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+    listener = MagicMock()
+    coordinator.register_update_callback(listener)
+
+    async def rebuild(_now):
+        started.set()
+        await release.wait()
+        assert coordinator._db is not None
+        return True
+
+    coordinator._async_finalize_history = AsyncMock(side_effect=rebuild)
+    await _setup_coordinator(coordinator, defer_initial_rebuild=True)
+    await started.wait()
+    shutdown = asyncio.create_task(coordinator.async_shutdown())
+    await asyncio.sleep(0)
+    assert not shutdown.done()
+    release.set()
+    await shutdown
+    assert coordinator._db is None
+    listener.assert_not_called()
 
 
 async def _capture_meter(

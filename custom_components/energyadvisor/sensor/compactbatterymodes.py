@@ -95,5 +95,9 @@ class CompactBatteryModesSensor(SensorEntity):
             self._timer = None
 
     @property
+    def available(self) -> bool:
+        return self._source_sensor.available
+
+    @property
     def extra_state_attributes(self) -> dict[str, str]:
         return self._compact

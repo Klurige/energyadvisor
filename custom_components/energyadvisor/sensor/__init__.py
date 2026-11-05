@@ -129,7 +129,7 @@ async def async_setup_entry(
     meter_entity = entry.options.get(CONF_POWER_METER_CONSUMPTION)
     if meter_entity:
         household_coordinator = HouseholdForecastCoordinator(hass, entry)
-        await household_coordinator.async_setup()
+        await household_coordinator.async_setup(defer_initial_rebuild=True)
         household_sensor = HouseholdForecastSensor(
             hass,
             entry,

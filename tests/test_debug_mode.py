@@ -24,11 +24,15 @@ from custom_components.energyadvisor.const import (
     CONF_DEBUG,
     CONF_EXCLUDE_FROM_RECORDING,
     CONF_NORDPOOL_PRICES_SENSOR,
+    CONF_POWER_METER_CONSUMPTION,
     DOMAIN,
 )
 from custom_components.energyadvisor.coordinators import elpris_debug_coordinator
 from custom_components.energyadvisor.coordinators.elpris_debug_coordinator import (
     ElprisDebugCoordinator,
+)
+from custom_components.energyadvisor.coordinators.household_forecast_coordinator import (
+    HouseholdForecastCoordinator,
 )
 from custom_components.energyadvisor.models import EnergyAdvisorRuntimeData
 from custom_components.energyadvisor.sensor import (
@@ -314,6 +318,65 @@ async def test_sensor_setup_without_debug_still_uses_nordpool() -> None:
     nordpool_coordinator.assert_called_once()
     assert entry.runtime_data.debug_coordinator is None
     nordpool_coordinator.return_value.start.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_sensor_registration_does_not_wait_for_household_history() -> None:
+    hass = _hass()
+    hass.async_create_background_task.side_effect = (
+        lambda coro, _name: asyncio.create_task(coro)
+    )
+    entry = _entry(**{CONF_POWER_METER_CONSUMPTION: "sensor.household_meter"})
+    entry.async_on_unload = MagicMock()
+    add_entities = MagicMock()
+    household = HouseholdForecastCoordinator(hass, entry)
+    household._async_load_state = AsyncMock()
+    household._async_initialize_capture_db = AsyncMock()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def rebuild(_now):
+        started.set()
+        await release.wait()
+        return False
+
+    household._async_finalize_history = AsyncMock(side_effect=rebuild)
+    module = (
+        "custom_components.energyadvisor.coordinators.household_forecast_coordinator"
+    )
+    try:
+        with (
+            patch(
+                "custom_components.energyadvisor.sensor.async_get_integration",
+                new=AsyncMock(return_value=MagicMock(version="1.0")),
+            ),
+            patch(
+                "custom_components.energyadvisor.sensor.HouseholdForecastCoordinator",
+                return_value=household,
+            ),
+            patch(
+                "custom_components.energyadvisor.sensor._resolve_nordpool_config_entry_id",
+                return_value="nordpool_entry",
+            ),
+            patch(
+                "custom_components.energyadvisor.sensor.NordpoolDataCoordinator"
+            ) as nordpool,
+            patch(f"{module}.async_track_time_change", return_value=lambda: None),
+            patch(f"{module}.async_track_time_interval", return_value=lambda: None),
+            patch(
+                f"{module}.async_track_state_change_event", return_value=lambda: None
+            ),
+        ):
+            await asyncio.wait_for(
+                sensor_async_setup_entry(hass, entry, add_entities), timeout=1
+            )
+            await started.wait()
+            add_entities.assert_called_once()
+            nordpool.return_value.start.assert_called_once()
+            assert not household._initial_rebuild_task.done()
+    finally:
+        release.set()
+        await household.async_shutdown()
 
 
 def _runtime(entity_id: str, debug_coordinator) -> SimpleNamespace:

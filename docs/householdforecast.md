@@ -106,8 +106,10 @@ Home Assistant numeric suffixes, such as `sensor.energy_advisor_load_forecast_2`
 
 The sensor is registered by the sensor platform when `power_meter_consumption`
 is set, together with the other Energy Advisor sensors (which need the
-configured Nord Pool price sensor to resolve). Setup already runs one history
-rebuild, so the first published state is not a placeholder when history exists.
+configured Nord Pool price sensor to resolve). Setup restores the cached forecast
+and starts a full history rebuild in the background, without delaying the other
+sensors. Until that rebuild finishes, the load sensor publishes the cached
+forecast, or the fixed cold-start profile when no cached forecast exists.
 
 ### State
 
@@ -305,6 +307,7 @@ compared with is kept in memory only).
   updated again.
 - The first rebuild after startup covers all retained samples. Later rebuilds
   only redo the slots from 8 slots before the last finalized slot onward.
-- On startup the latest stored forecast is restored first and then rebuilt.
+- On startup the latest stored forecast is restored first and then rebuilt in
+  the background, without holding up price or control sensor registration.
 - During a meter outage the forecast keeps publishing from stored history; the
   outage shows up in `quality_status`, `quality_warnings` and `reason`.

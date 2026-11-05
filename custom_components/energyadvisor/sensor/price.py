@@ -64,6 +64,7 @@ class PriceSensor(SensorEntity):
 
     entity_description: SensorEntityDescription
     _attr_has_entity_name = True
+    _attr_available = False
     _unrecorded_attributes = frozenset({"rates"})
 
     def __init__(
@@ -520,6 +521,7 @@ class PriceSensor(SensorEntity):
                 )
 
         if current_rate_details:
+            self._attr_available = True
             self._spot_price = current_rate_details["spot_price"]
             self._cost = current_rate_details["cost"]
             self._credit = current_rate_details["credit"]
@@ -537,6 +539,7 @@ class PriceSensor(SensorEntity):
                 f"Sensor state updated from current_rate: spot_price={self._spot_price}, cost={self._cost}, level={self._level}, rank={self._rank}. Slot ends at {current_rate_end_time_local}"
             )
         else:
+            self._attr_available = False
             # Log detailed info about why no rate was found
             if self._rates:
                 first_rate_time = self._rates[0].get("start") if self._rates else None
@@ -660,6 +663,7 @@ class PriceSensor(SensorEntity):
                 exc_info=True,
             )
             self._level = "Error Processing Data"
+            self._attr_available = False
             self._cost = 0.0
             self._spot_price = 0.0
             self._state = round(self._cost, 5)

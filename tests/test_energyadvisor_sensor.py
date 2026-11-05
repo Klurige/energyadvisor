@@ -391,6 +391,51 @@ async def test_async_update_data_48_hours_yesterday_and_today(
 
 
 @pytest.mark.asyncio
+async def test_price_waits_for_current_data_and_does_not_publish_missing_data_as_zero(
+    sensor_instance, freezer
+):
+    now = datetime.datetime.combine(
+        TODAY_DATE, datetime.time(10, 30), tzinfo=TEST_TIMEZONE
+    )
+    freezer.move_to(now)
+    assert not sensor_instance.available
+    valid = create_nordpool_raw_data(now.astimezone(datetime.timezone.utc), 1, [100])
+    await sensor_instance.async_update_data(valid)
+    assert sensor_instance.available
+    assert sensor_instance.state > 0
+
+    await sensor_instance.async_update_data({"raw": []})
+    assert not sensor_instance.available
+    await sensor_instance.async_update_data(valid)
+    assert sensor_instance.available
+
+    tomorrow = now + datetime.timedelta(days=1)
+    await sensor_instance.async_update_data(
+        create_nordpool_raw_data(tomorrow.astimezone(datetime.timezone.utc), 1, [100])
+    )
+    assert not sensor_instance.available
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_zero_price_is_available(
+    mock_hass, mock_config_entry, mock_device_info, freezer
+):
+    now = datetime.datetime.combine(
+        TODAY_DATE, datetime.time(10, 30), tzinfo=TEST_TIMEZONE
+    )
+    freezer.move_to(now)
+    mock_config_entry.options = {}
+    sensor = PriceSensor(mock_hass, mock_config_entry, mock_device_info)
+    sensor.hass = mock_hass
+    sensor.async_write_ha_state = MagicMock()
+    await sensor.async_update_data(
+        create_nordpool_raw_data(now.astimezone(datetime.timezone.utc), 1, [0])
+    )
+    assert sensor.available
+    assert sensor.state == 0
+
+
+@pytest.mark.asyncio
 async def test_async_added_to_hass_no_initial_state(sensor_instance, mock_hass):
     """Test async_added_to_hass when the tracked sensor has no state yet."""
     mock_hass.states.get.return_value = None
@@ -582,6 +627,7 @@ async def test_async_update_data_with_malformed_data(sensor_instance):
         sensor_instance._level == "Unknown"
     )  # It becomes Unknown because no rates are found
     assert sensor_instance.state == 0.0
+    assert not sensor_instance.available
 
     # Test with another type of malformed data
     malformed_nordpool_data_2 = {

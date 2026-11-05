@@ -156,6 +156,32 @@ Large attributes are always kept out of the recorder, regardless of any option:
 - `forecasts` on `sensor.energy_advisor_solar_forecast` and `sensor.energy_advisor_load_forecast`
 - `on_slots` on `sensor.energy_advisor_water_heater_schedule`
 
+#### Startup and reloads
+
+Saving options or enabling an entity can make Home Assistant reload the entire
+integration, briefly making its sensors unavailable. Household history rebuilding
+runs in the background; the load forecast uses its cached forecast (or the
+documented cold-start profile) until the rebuild finishes. Price and battery
+sensors remain unavailable until a current price or calculated plan is ready,
+rather than publishing a temporary zero price or `standby` command. The
+water-heater schedule likewise waits for a restored or calculated plan.
+Automations should ignore `unavailable` and `unknown` states instead of treating
+them as commands to switch equipment.
+
+For a battery-mode state trigger, guard both the mode and its target before
+calling a battery control service. This also permits attribute-only updates
+when the mode stays the same but `target_soc` changes:
+
+```yaml
+conditions:
+  - condition: template
+    value_template: >-
+      {{ trigger.to_state is not none
+         and trigger.to_state.state in
+           ['charge', 'discharge', 'maxuse', 'pvcharge', 'sell', 'standby']
+         and is_number(trigger.to_state.attributes.get('target_soc')) }}
+```
+
 ## Usage
 - The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor and its compact diagnostic sensor, one water-heater schedule sensor and its diagnostic sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_compact_battery_modes`, `sensor.energy_advisor_water_heater_schedule`, `sensor.energy_advisor_water_heater_diagnostics`, `sensor.energy_advisor_load_forecast` when the household meter is configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)

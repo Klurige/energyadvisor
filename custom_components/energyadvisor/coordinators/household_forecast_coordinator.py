@@ -318,6 +318,9 @@ class HouseholdForecastCoordinator:
         self._last_finalized_slot_utc: datetime | None = None
         self._last_generation_utc: datetime | None = None
         self._history_rebuilt_in_full = False
+        self._initial_rebuild_task: asyncio.Task[None] | None = None
+        self._pending_tasks: set[asyncio.Task[None]] = set()
+        self._stopping = False
 
     # -- Config helpers --------------------------------------------------
 
@@ -482,8 +485,8 @@ class HouseholdForecastCoordinator:
 
     # -- Lifecycle -------------------------------------------------------
 
-    async def async_setup(self) -> None:
-        """Register listeners and load housekeeping state."""
+    async def async_setup(self, *, defer_initial_rebuild: bool = False) -> None:
+        """Load cached forecasts, optionally rebuilding history in the background."""
         await self._async_load_state()
         if not self._meter_entity:
             _LOGGER.warning(
@@ -529,8 +532,13 @@ class HouseholdForecastCoordinator:
             "Household forecast refresh cadence set to quarter-hour for validation; "
             "the 15-minute slot grid remains day-anchored."
         )
-        self._set_status(STATIC_REASON)
         rebuild_now = dt_util.utcnow()
+        if defer_initial_rebuild:
+            self._initial_rebuild_task = self.hass.async_create_background_task(
+                self._async_refresh_forecast(rebuild_now),
+                "energyadvisor initial household history rebuild",
+            )
+            return
         if await self._async_finalize_history(rebuild_now):
             self._last_forecast_generation = dt_util.as_local(rebuild_now).strftime(
                 "%Y-%m-%dT%H:%M"
@@ -538,14 +546,27 @@ class HouseholdForecastCoordinator:
 
     async def async_shutdown(self) -> None:
         """Remove listeners and stop scheduling updates."""
+        self._stopping = True
         for remove in self._capture_listeners:
             remove()
         self._capture_listeners.clear()
         for remove in self._listeners:
             remove()
         self._listeners.clear()
-        if self._db is not None:
-            await self.hass.async_add_executor_job(self._close_db_sync)
+        tasks = set(self._pending_tasks)
+        if self._initial_rebuild_task is not None:
+            tasks.add(self._initial_rebuild_task)
+        try:
+            # Cancelling an executor await does not stop its SQLite work.
+            if tasks:
+                await asyncio.wait(tasks)
+                for task in tasks:
+                    task.result()
+        finally:
+            self._initial_rebuild_task = None
+            if self._db is not None:
+                async with self._db_write_lock:
+                    await self.hass.async_add_executor_job(self._close_db_sync)
 
     def register_update_callback(self, cb: Callable[[], None]) -> None:
         """Register a callback for state changes."""
@@ -562,6 +583,8 @@ class HouseholdForecastCoordinator:
 
     def _notify_update(self) -> None:
         """Notify listeners that public values changed."""
+        if self._stopping:
+            return
         for cb in tuple(self._update_callbacks):
             try:
                 cb()
@@ -1112,6 +1135,10 @@ class HouseholdForecastCoordinator:
             latest_generation_utc = self._parse_utc_timestamp(
                 str(latest_forecast_row[0])
             )
+            self._last_generation_utc = latest_generation_utc
+            self._last_forecast_generation = dt_util.as_local(
+                latest_generation_utc
+            ).strftime("%Y-%m-%dT%H:%M")
             forecast_rows = db.execute(
                 "SELECT slot_start_utc, load_kw FROM forecast_runs "
                 "WHERE generated_at_utc = ? ORDER BY slot_start_utc ASC",
@@ -1283,7 +1310,13 @@ class HouseholdForecastCoordinator:
 
     def _schedule_async_task(self, coro: Any) -> None:
         """Schedule a coroutine and close it if test doubles do not run tasks."""
+        if self._stopping:
+            coro.close()
+            return
         task = self.hass.async_create_task(coro)
+        if isinstance(task, asyncio.Task):
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._pending_tasks.discard)
         if task is None and hasattr(coro, "close"):
             coro.close()
 
@@ -2761,4 +2794,8 @@ class HouseholdForecastCoordinator:
     async def _async_refresh_forecast(self, now_utc: datetime | None = None) -> None:
         """Refresh the learned forecast and notify listeners when it changes."""
         if await self._async_finalize_history(now_utc):
+            if self._last_generation_utc is not None:
+                self._last_forecast_generation = dt_util.as_local(
+                    self._last_generation_utc
+                ).strftime("%Y-%m-%dT%H:%M")
             self._notify_update()

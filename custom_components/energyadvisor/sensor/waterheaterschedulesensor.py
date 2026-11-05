@@ -170,6 +170,9 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         await self._async_restore()
 
         self.async_on_remove(
+            self._price_sensor.async_add_update_listener(self._request_plan_if_needed)
+        )
+        self.async_on_remove(
             async_track_time_change(
                 self.hass,
                 self._handle_planning_time,
@@ -276,7 +279,15 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
-        return not self._missing_requirements()
+        plan = self._plan
+        return (
+            not self._missing_requirements()
+            and plan is not None
+            and not (
+                not plan.selected_slots
+                and plan.incomplete_reason == "insufficient_slots"
+            )
+        )
 
     @property
     def state(self) -> str:
@@ -859,6 +870,10 @@ class WaterHeaterDiagnosticsSensor(SensorEntity):
         self.async_on_remove(
             self._schedule_sensor.async_add_update_listener(self._handle_update)
         )
+
+    @property
+    def available(self) -> bool:
+        return self._schedule_sensor.available
 
     @property
     def native_value(self) -> str:

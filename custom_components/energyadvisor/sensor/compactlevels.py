@@ -144,6 +144,10 @@ class CompactLevelsSensor(SensorEntity):
         if self._source_sensor.has_rates:
             await self._start_levels_sensor()
 
+    @property
+    def available(self) -> bool:
+        return not self._waiting_for_first_value and self._source_sensor.available
+
     def _handle_source_update(self) -> None:
         if self.hass is None:
             return

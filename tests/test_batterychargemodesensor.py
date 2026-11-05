@@ -677,18 +677,18 @@ def test_target_soc_is_none_when_no_slot_contains_now() -> None:
     assert build_schedule(_inputs([], now=BASE)).current_target_soc is None
 
 
-async def test_target_soc_follows_the_plan_and_defaults_before_it(
-    make_sensor, hass
-) -> None:
+async def test_target_soc_is_absent_until_the_first_plan(make_sensor, hass) -> None:
     hass.states.async_set(SOC_ENTITY, "0")
     sensor = make_sensor(_valley_peak_rates(), options=SOC_OPTIONS)
     sensor._now = lambda: BASE + datetime.timedelta(minutes=15 * 3 + 1)
 
     await sensor.async_added_to_hass()
-    assert sensor.extra_state_attributes["target_soc"] == 50
+    assert sensor.extra_state_attributes["target_soc"] is None
+    assert not sensor.available
     await _settle(sensor)
 
     attributes = sensor.extra_state_attributes
+    assert sensor.available
     assert attributes["target_soc"] == attributes["modes"][3]["target_soc"]
     assert attributes["target_soc"] != 50
     assert "current_soc_pct" not in attributes
@@ -709,7 +709,7 @@ def test_modes_attribute_is_unrecorded(hass) -> None:
     assert "modes" in _make_sensor(hass, [])._unrecorded_attributes
 
 
-async def test_added_to_hass_exposes_default_modes_and_listens_to_price_updates(
+async def test_added_to_hass_waits_for_a_plan_and_listens_to_price_updates(
     make_sensor,
 ) -> None:
     sensor = make_sensor(_quarter_hour_rates(), options=BATTERY_OPTIONS)
@@ -717,9 +717,8 @@ async def test_added_to_hass_exposes_default_modes_and_listens_to_price_updates(
     await sensor.async_added_to_hass()
 
     modes = sensor.extra_state_attributes["modes"]
-    assert len(modes) == 4
-    assert {m["mode"] for m in modes} == {"standby"}
-    assert {m["target_soc"] for m in modes} == {50}
+    assert modes == []
+    assert not sensor.available
     sensor._price_sensor.async_add_update_listener.assert_called_once_with(
         sensor._handle_price_update
     )
@@ -750,6 +749,7 @@ async def test_empty_without_price_data(make_sensor) -> None:
 
     assert sensor.extra_state_attributes["modes"] == []
     assert sensor.state == "standby"
+    assert not sensor.available
 
 
 async def test_slots_without_times_are_skipped(make_sensor) -> None:
@@ -1461,7 +1461,8 @@ async def test_nothing_that_runs_on_the_loop_calls_the_planner(
     assert len(inputs.slots) == len(default_modes) == 288
     assert {m["mode"] for m in default_modes} == {"standby"}
     assert {m["target_soc"] for m in default_modes} == {50}
-    assert sensor._modes == default_modes
+    assert sensor._modes == []
+    assert not sensor.available
 
 
 def test_building_the_snapshot_is_cheap_for_a_three_day_array(hass) -> None:

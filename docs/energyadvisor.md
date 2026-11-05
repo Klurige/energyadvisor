@@ -79,6 +79,9 @@ otherwise             → "Medium"
 ```
 
 Level is `"Unknown"` until the first rate is loaded (startup / no matching slot).
+The price sensor is unavailable until a rate covers the current time; missing
+prices are not published as a numeric zero. The battery mode and compact
+diagnostics likewise wait for valid data instead of emitting startup commands.
 
 ### Ranking
 
