@@ -3,6 +3,7 @@ run-name: Release from ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: release

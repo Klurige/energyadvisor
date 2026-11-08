@@ -49,3 +49,11 @@ jobs:
           pip install -r requirements.test.txt
       - name: Run pytest
         run: pytest --maxfail=1 --disable-warnings -q
+
+  release:
+    name: Release
+    needs: [validate, style, test]
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
