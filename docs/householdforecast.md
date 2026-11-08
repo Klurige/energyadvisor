@@ -72,7 +72,9 @@ forecast.
 | Dehumidifier rated power | `dehumidifier_power_w` | Flexible loads | `1500` | currently not in use (same reason as the pool pump) |
 | Water heater worst-case refill hours | `water_heater_max_hours` | Water heater | `4` | Not read by the household forecast; used by the water-heater schedule (see [waterheater.md](waterheater.md)) |
 | Bathroom humidity sensor | `bathroom_humidity_entity` | Water heater | `sensor.bathroom_humidity` | History is recorded but not used by the household forecast; the water-heater schedule uses it to detect shower days (see [waterheater.md](waterheater.md)) |
-| Outdoor temperature sensor | `outdoor_temperature_entity` | Household load | `sensor.outdoor_temperature` | currently not in use (history is recorded but not used; the slot feature `outdoor_temp_c` is always `null`) |
+| Outdoor temperature sensor | `outdoor_temperature_entity` | Household load | `sensor.outdoor_temperature` | History is recorded but not used by the household forecast (the slot feature `outdoor_temp_c` is always `null`); the heating forecast trains on it (see [heatingforecast.md](heatingforecast.md)) |
+| Weather entity | `weather_entity` | Household load | `weather.home` | Not read by the household forecast; used by the heating forecast |
+| Wind speed sensor | `wind_speed_entity` | Household load | `sensor.wind_speed` | Not read by the household forecast; used by the heating forecast |
 | Battery state of charge sensor | `battery_soc_entity` | Battery hardware | `sensor.battery_soc` | Used by the battery charge mode sensor as the start of each plan (history is also recorded) |
 | Battery charge power sensor | `battery_charge_power_entity` | Battery hardware | `sensor.battery_charge_power` | currently not in use (history is recorded but not used) |
 | Grid import power sensor | `grid_import_entity` | Grid metering | `sensor.grid_import_power` | currently not in use (history is recorded but not used) |

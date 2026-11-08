@@ -17,14 +17,17 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.loader import async_get_integration
 
 from ..const import (
+    CONF_CENTRAL_HEATING_POWER_ENTITY,
     CONF_DEBUG,
     CONF_FORECAST_ENTITY,
     CONF_NORDPOOL_PRICES_SENSOR,
     CONF_POWER_ENTITY,
     CONF_POWER_METER_CONSUMPTION,
+    CONF_WEATHER_ENTITY,
     DOMAIN,
 )
 from ..models import EnergyAdvisorRuntimeData
+from ..coordinators.heating_forecast_coordinator import HeatingForecastCoordinator
 from ..coordinators.household_forecast_coordinator import (
     HouseholdForecastCoordinator,
 )
@@ -32,6 +35,7 @@ from ..coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 from .compactlevels import CompactLevelsSensor
 from .compactbatterymodes import CompactBatteryModesSensor
 from .batterychargemodesensor import BatteryChargeModeSensor
+from .heatingforecastsensor import HeatingForecastSensor
 from .householdforecastsensor import HouseholdForecastSensor
 from .price import PriceSensor
 from .waterheaterschedulesensor import (
@@ -138,6 +142,16 @@ async def async_setup_entry(
         )
         entities.append(household_sensor)
 
+    heating_coordinator: HeatingForecastCoordinator | None = None
+    heating_sensor: HeatingForecastSensor | None = None
+    if entry.options.get(CONF_CENTRAL_HEATING_POWER_ENTITY) and entry.options.get(
+        CONF_WEATHER_ENTITY
+    ):
+        heating_coordinator = HeatingForecastCoordinator(hass, entry)
+        await heating_coordinator.async_setup()
+        heating_sensor = HeatingForecastSensor(entry, device_info, heating_coordinator)
+        entities.append(heating_sensor)
+
     solar_coordinator: SolarForecastCoordinator | None = None
     solar_sensor: SolarForecastSensor | None = None
     forecast_entity = entry.options.get(CONF_FORECAST_ENTITY)
@@ -168,6 +182,8 @@ async def async_setup_entry(
         if nordpool_config_entry_id_to_use is None:
             if household_coordinator is not None:
                 await household_coordinator.async_shutdown()
+            if heating_coordinator is not None:
+                await heating_coordinator.async_shutdown()
             if solar_coordinator is not None:
                 await solar_coordinator.async_shutdown()
             return
@@ -185,6 +201,8 @@ async def async_setup_entry(
         coordinator=coordinator,
         household_sensor=household_sensor,
         household_coordinator=household_coordinator,
+        heating_sensor=heating_sensor,
+        heating_coordinator=heating_coordinator,
         solar_sensor=solar_sensor,
         solar_coordinator=solar_coordinator,
         debug_coordinator=debug_coordinator,
@@ -200,6 +218,8 @@ async def async_setup_entry(
         coordinator.stop()
         if household_coordinator is not None:
             hass.async_create_task(household_coordinator.async_shutdown())
+        if heating_coordinator is not None:
+            hass.async_create_task(heating_coordinator.async_shutdown())
         if solar_coordinator is not None:
             hass.async_create_task(solar_coordinator.async_shutdown())
 

@@ -181,6 +181,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
         "waterheaterdiagnostics": "sensor.energy_advisor_water_heater_diagnostics",
         "base_load": "sensor.energy_advisor_load_forecast_refined",
         "solarforecast": "sensor.energy_advisor_solar_forecast_refined",
+        "heating_forecast": "sensor.energy_advisor_heating_forecast_2",
     }
 
     for sensor_key, current_entity_id in current_entity_ids.items():

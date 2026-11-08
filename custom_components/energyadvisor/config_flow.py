@@ -72,6 +72,7 @@ from .config_flow_helpers import (
     FLEXIBLE_LOADS_ENTITY_KEYS,
     FLEXIBLE_LOADS_NUMERIC_KEYS,
     GRID_METERING_ENTITY_KEYS,
+    HEATING_FORECAST_ENTITY_KEYS,
     HOUSEHOLD_ACTIVITY_ENTITY_KEYS,
     HOUSEHOLD_LOAD_ENTITY_KEYS,
     HOUSEHOLD_NUMERIC_KEYS,
@@ -771,6 +772,10 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
                         },
                         **{
                             key: self.data.get(key)
+                            for key in HEATING_FORECAST_ENTITY_KEYS
+                        },
+                        **{
+                            key: self.data.get(key)
                             for key in ALL_OPTIMIZER_NUMERIC_KEYS
                         },
                     },
@@ -1248,6 +1253,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
                     CONF_POWER_ENTITY,
                     CONF_FORECAST_TOMORROW_ENTITY,
                     *ALL_OPTIMIZER_ENTITY_KEYS,
+                    *HEATING_FORECAST_ENTITY_KEYS,
                 ):
                     self.current_options[key] = self.current_options.get(key) or None
                 for key in (

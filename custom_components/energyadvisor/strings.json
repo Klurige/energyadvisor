@@ -130,13 +130,17 @@
           "power_meter_consumption": "Household energy meter (cumulative kWh)",
           "outdoor_temperature_entity": "Outdoor temperature sensor",
           "water_heater_active_entity": "Water heater active sensor",
-          "central_heating_active_entity": "Central heating active sensor"
+          "central_heating_active_entity": "Central heating active sensor",
+          "weather_entity": "Weather entity",
+          "wind_speed_entity": "Wind speed sensor"
         },
         "data_description": {
           "power_meter_consumption": "Cumulative energy meter for the whole house.",
-          "outdoor_temperature_entity": "Outdoor temperature sensor used for future seasonal load estimation.",
+          "outdoor_temperature_entity": "Outdoor temperature sensor with long-term statistics, used to learn the heating curve.",
           "water_heater_active_entity": "Binary sensor that is on when the water heater is actively heating. Used to filter out non-quiet nights from Load forecast learning.",
-          "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning."
+          "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning.",
+          "weather_entity": "Weather entity whose hourly forecast drives the heating forecast. Its current temperature and wind are also recorded to calibrate the forecast against the local sensors.",
+          "wind_speed_entity": "Local wind speed sensor with long-term statistics. Wind increases heat loss; without it, the weather entity's wind is recorded and learned over time."
         }
       },
       "hot_water": {
@@ -298,13 +302,17 @@
           "power_meter_consumption": "Household energy meter (cumulative kWh)",
           "outdoor_temperature_entity": "Outdoor temperature sensor",
           "water_heater_active_entity": "Water heater active sensor",
-          "central_heating_active_entity": "Central heating active sensor"
+          "central_heating_active_entity": "Central heating active sensor",
+          "weather_entity": "Weather entity",
+          "wind_speed_entity": "Wind speed sensor"
         },
         "data_description": {
           "power_meter_consumption": "Cumulative energy meter for the whole house.",
-          "outdoor_temperature_entity": "Outdoor temperature sensor used for future seasonal load estimation.",
+          "outdoor_temperature_entity": "Outdoor temperature sensor with long-term statistics, used to learn the heating curve.",
           "water_heater_active_entity": "Binary sensor that is on when the water heater is actively heating. Used to filter out non-quiet nights from Load forecast learning.",
-          "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning."
+          "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning.",
+          "weather_entity": "Weather entity whose hourly forecast drives the heating forecast. Its current temperature and wind are also recorded to calibrate the forecast against the local sensors.",
+          "wind_speed_entity": "Local wind speed sensor with long-term statistics. Wind increases heat loss; without it, the weather entity's wind is recorded and learned over time."
         }
       },
       "hot_water": {
@@ -390,6 +398,9 @@
       },
       "learning_nights": {
         "name": "Learning Nights"
+      },
+      "heating_forecast": {
+        "name": "Heating forecast"
       }
     }
   },

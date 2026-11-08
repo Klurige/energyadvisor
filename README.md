@@ -122,14 +122,16 @@ All of these are optional sensors. Only `power_meter_consumption` enables a feat
 | `grid_import_entity`       | Grid import power sensor | `sensor.grid_import_power` | currently not in use (history is recorded but not used) |
 | `grid_export_entity`       | Grid export power sensor | `sensor.grid_export_power` | currently not in use (history is recorded but not used) |
 | `power_meter_consumption`  | Whole-house energy meter (cumulative kWh) or power sensor. Creates the Load forecast sensor | `sensor.household_energy_total` | In use |
-| `outdoor_temperature_entity` | Outdoor temperature sensor | `sensor.outdoor_temperature` | currently not in use (history is recorded but not used) |
+| `outdoor_temperature_entity` | Outdoor temperature sensor | `sensor.outdoor_temperature` | In use (heating forecast training; the household forecast only records its history) |
+| `weather_entity` | Weather entity with temperature and wind forecast. Together with `central_heating_power_entity` it creates the Heating forecast sensor | `weather.home` | In use (heating forecast) |
+| `wind_speed_entity` | Wind speed sensor; used to learn how wind increases the heating need | `sensor.wind_speed` | In use (heating forecast) |
 | `water_heater_power_entity` | Water heater power sensor; its measured power is subtracted from the meter, and the water-heater schedule learns the heater's runtime from it | `sensor.water_heater_power` | In use (load forecast, water-heater schedule) |
 | `water_heater_power_w`     | Water heater rated power in W; fallback for the load forecast when the power sensor has no history, and used for the schedule's expected cost | `3500` | In use (load forecast fallback, water-heater schedule) |
 | `water_heater_active_entity` | Water heater active sensor; used with the rated power as fallback | `binary_sensor.water_heater_active` | In use (fallback) |
 | `water_heater_max_hours`   | Worst-case water heater refill time in hours; the most the schedule plans per day | `4` | In use (water-heater schedule) |
 | `bathroom_humidity_entity` | Bathroom humidity sensor; a day that reaches 100 % counts as a shower day | `sensor.bathroom_humidity` | In use (water-heater schedule; the household forecast only records its history) |
-| `central_heating_power_entity` | Central heating power sensor; its measured power is subtracted from the meter | `sensor.central_heating_power` | In use |
-| `central_heating_power_w`  | Central heating rated power in W; fallback when the power sensor has no history | `2200` | In use (fallback) |
+| `central_heating_power_entity` | Central heating power or energy sensor; its measured power is subtracted from the meter, and the heating forecast learns from it | `sensor.central_heating_power` | In use (load forecast, heating forecast) |
+| `central_heating_power_w`  | Central heating rated power in W; fallback when the power sensor has no history, and the heating forecast's cold-start fallback | `2200` | In use (fallback) |
 | `central_heating_active_entity` | Central heating active sensor; used with the rated power as fallback | `binary_sensor.central_heating_active` | In use (fallback) |
 | `pool_pump_power_entity`   | Pool pump power sensor; its measured power is subtracted from the meter | `sensor.pool_pump_power` | In use |
 | `pool_pump_power_w`        | Pool pump rated power in W | `500` | currently not in use |
@@ -141,6 +143,12 @@ When `power_meter_consumption` is configured, Energy Advisor also creates
 15-minute slots. See [sensor.energy_advisor_load_forecast](#sensorenergy_advisor_load_forecast)
 below and [docs/householdforecast.md](docs/householdforecast.md) for how the
 inputs are used, the SQLite history file and the quality warnings.
+
+When both `central_heating_power_entity` and `weather_entity` are configured,
+Energy Advisor also creates `sensor.energy_advisor_heating_forecast`, a 48-hour
+heating power forecast learned from outdoor temperature and wind. See
+[sensor.energy_advisor_heating_forecast](#sensorenergy_advisor_heating_forecast)
+below and [docs/heatingforecast.md](docs/heatingforecast.md).
 
 #### Recorder and history
 
@@ -183,7 +191,7 @@ conditions:
 ```
 
 ## Usage
-- The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor and its compact diagnostic sensor, one water-heater schedule sensor and its diagnostic sensor, one optional household Load forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_compact_battery_modes`, `sensor.energy_advisor_water_heater_schedule`, `sensor.energy_advisor_water_heater_diagnostics`, `sensor.energy_advisor_load_forecast` when the household meter is configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
+- The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor and its compact diagnostic sensor, one water-heater schedule sensor and its diagnostic sensor, one optional household Load forecast sensor, one optional Heating forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_compact_battery_modes`, `sensor.energy_advisor_water_heater_schedule`, `sensor.energy_advisor_water_heater_diagnostics`, `sensor.energy_advisor_load_forecast` when the household meter is configured, `sensor.energy_advisor_heating_forecast` when the heating power sensor and the weather entity are configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
   - `sensor.energy_advisor_compact_battery_modes` provides the equivalent compact battery-mode string as a diagnostic sensor, disabled by default.
@@ -282,6 +290,13 @@ See [docs/solarforecast.md](docs/solarforecast.md) for the full solar forecast d
 - **Update Frequency:** Refreshed on every quarter-hour boundary. History is kept in `.storage/energyadvisor_household_forecast_<entry_id>.db`.
 
 See [docs/householdforecast.md](docs/householdforecast.md) for the model, quality warnings and database tables.
+
+### `sensor.energy_advisor_heating_forecast`
+- **Description:** Optional space-heating power forecast. A change-point regression on outdoor temperature and wind, with a second slope for direct-electric backup, is trained on the recorder statistics and applied to the weather forecast. Created when `central_heating_power_entity` and `weather_entity` are configured.
+- **State:** Forecast heating power in `kW` for the current 15-minute slot.
+- **Attributes:** `forecasts` (192 slots with `from` and `load`), `energy_today_kwh`, `energy_tomorrow_kwh`, `quality_status`, `quality_warnings`, `reason`, `model` and calibration diagnostics.
+
+See [docs/heatingforecast.md](docs/heatingforecast.md) for the model, the inputs and the quality warnings.
 
 ### `sensor.energy_advisor_battery_charge_mode`
 - **Description:** Battery schedule built from the linked `sensor.energy_advisor_price` entry. A planner decides for every price slot whether the battery should charge from the grid, discharge into the household, sell to the grid or stand by, from the prices, the household load forecast and the battery state of charge (see [Planner](#planner)).

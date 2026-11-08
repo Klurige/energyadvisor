@@ -136,11 +136,15 @@
         "description": "Link the main sensors used to learn the household load forecast automatically.",
         "data": {
           "power_meter_consumption": "Household energy meter (cumulative kWh)",
-          "outdoor_temperature_entity": "Outdoor temperature sensor"
+          "outdoor_temperature_entity": "Outdoor temperature sensor",
+          "weather_entity": "Weather entity",
+          "wind_speed_entity": "Wind speed sensor"
         },
         "data_description": {
           "power_meter_consumption": "Cumulative energy meter for the whole house.",
-          "outdoor_temperature_entity": "Outdoor temperature sensor used for future seasonal load estimation."
+          "outdoor_temperature_entity": "Outdoor temperature sensor with long-term statistics, used to learn the heating curve.",
+          "weather_entity": "Weather entity whose hourly forecast drives the heating forecast. Its current temperature and wind are also recorded to calibrate the forecast against the local sensors.",
+          "wind_speed_entity": "Local wind speed sensor with long-term statistics. Wind increases heat loss; without it, the weather entity's wind is recorded and learned over time."
         }
       },
       "household_activity": {
@@ -332,11 +336,15 @@
         "description": "Link the main sensors used to learn the household load forecast automatically.",
         "data": {
           "power_meter_consumption": "Household energy meter (cumulative kWh)",
-          "outdoor_temperature_entity": "Outdoor temperature sensor"
+          "outdoor_temperature_entity": "Outdoor temperature sensor",
+          "weather_entity": "Weather entity",
+          "wind_speed_entity": "Wind speed sensor"
         },
         "data_description": {
           "power_meter_consumption": "Cumulative energy meter for the whole house.",
-          "outdoor_temperature_entity": "Outdoor temperature sensor used for future seasonal load estimation."
+          "outdoor_temperature_entity": "Outdoor temperature sensor with long-term statistics, used to learn the heating curve.",
+          "weather_entity": "Weather entity whose hourly forecast drives the heating forecast. Its current temperature and wind are also recorded to calibrate the forecast against the local sensors.",
+          "wind_speed_entity": "Local wind speed sensor with long-term statistics. Wind increases heat loss; without it, the weather entity's wind is recorded and learned over time."
         }
       },
       "household_activity": {
@@ -447,6 +455,9 @@
       },
       "battery_soc_forecast": {
         "name": "Battery SoC Forecast"
+      },
+      "heating_forecast": {
+        "name": "Heating forecast"
       }
     }
   }

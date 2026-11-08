@@ -60,6 +60,8 @@ CONF_BATTERY_CHARGE_POWER_ENTITY = "battery_charge_power_entity"
 CONF_GRID_IMPORT_ENTITY = "grid_import_entity"
 CONF_GRID_EXPORT_ENTITY = "grid_export_entity"
 CONF_OUTDOOR_TEMPERATURE_ENTITY = "outdoor_temperature_entity"
+CONF_WEATHER_ENTITY = "weather_entity"
+CONF_WIND_SPEED_ENTITY = "wind_speed_entity"
 CONF_POWER_METER_CONSUMPTION = "power_meter_consumption"
 CONF_WATER_HEATER_ACTIVE_ENTITY = "water_heater_active_entity"
 CONF_CENTRAL_HEATING_ACTIVE_ENTITY = "central_heating_active_entity"
@@ -92,6 +94,7 @@ PREFERRED_SENSOR_ENTITY_IDS: dict[str, str] = {
     # Keep the existing entity_id for backward compatibility with automations.
     "load_forecast": "sensor.energy_advisor_load_forecast",
     "solarforecast": "sensor.energy_advisor_solar_forecast",
+    "heating_forecast": "sensor.energy_advisor_heating_forecast",
 }
 
 

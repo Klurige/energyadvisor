@@ -56,6 +56,8 @@ from .const import (
     CONF_WATER_HEATER_MAX_HOURS,
     CONF_WATER_HEATER_POWER_ENTITY,
     CONF_WATER_HEATER_POWER_W,
+    CONF_WEATHER_ENTITY,
+    CONF_WIND_SPEED_ENTITY,
     DEV_DEFAULTS,
     DEV_DEFAULTS_ENABLED,
     parse_unit_of_measurement,
@@ -103,9 +105,16 @@ HOUSEHOLD_BINARY_ENTITY_KEYS: tuple[str, ...] = (
     CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
 )
 HOUSEHOLD_NUMERIC_KEYS: tuple[str, ...] = (CONF_CENTRAL_HEATING_POWER_W,)
+# Heating-forecast inputs are kept out of ALL_OPTIMIZER_ENTITY_KEYS because
+# the household forecast raw-captures those as numeric samples.
+HEATING_FORECAST_ENTITY_KEYS: tuple[str, ...] = (
+    CONF_WEATHER_ENTITY,
+    CONF_WIND_SPEED_ENTITY,
+)
 HOUSEHOLD_LOAD_ENTITY_KEYS: tuple[str, ...] = (
     CONF_POWER_METER_CONSUMPTION,
     CONF_OUTDOOR_TEMPERATURE_ENTITY,
+    *HEATING_FORECAST_ENTITY_KEYS,
 )
 HOUSEHOLD_ACTIVITY_ENTITY_KEYS: tuple[str, ...] = (
     *HOUSEHOLD_BINARY_ENTITY_KEYS,
@@ -335,6 +344,16 @@ def _build_household_load_schema(values: dict[str, Any]) -> dict[Any, Any]:
             description={
                 "suggested_value": values.get(CONF_OUTDOOR_TEMPERATURE_ENTITY)
             },
+        ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
+        vol.Optional(
+            CONF_WEATHER_ENTITY,
+            default=_schema_default(values.get(CONF_WEATHER_ENTITY)),
+            description={"suggested_value": values.get(CONF_WEATHER_ENTITY)},
+        ): EntitySelector(EntitySelectorConfig(domain="weather")),
+        vol.Optional(
+            CONF_WIND_SPEED_ENTITY,
+            default=_schema_default(values.get(CONF_WIND_SPEED_ENTITY)),
+            description={"suggested_value": values.get(CONF_WIND_SPEED_ENTITY)},
         ): EntitySelector(EntitySelectorConfig(domain=SENSOR_DOMAIN)),
     }
 

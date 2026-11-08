@@ -15,6 +15,10 @@ if TYPE_CHECKING:
         HouseholdForecastCoordinator,
     )
     from .sensor.solarforecastsensor import SolarForecastSensor
+    from .sensor.heatingforecastsensor import HeatingForecastSensor
+    from .coordinators.heating_forecast_coordinator import (
+        HeatingForecastCoordinator,
+    )
     from .coordinators.solar_forecast_coordinator import SolarForecastCoordinator
 
 
@@ -27,6 +31,8 @@ class EnergyAdvisorRuntimeData:
     coordinator: NordpoolDataCoordinator | ElprisDebugCoordinator
     household_sensor: HouseholdForecastSensor | None = None
     household_coordinator: HouseholdForecastCoordinator | None = None
+    heating_sensor: HeatingForecastSensor | None = None
+    heating_coordinator: HeatingForecastCoordinator | None = None
     solar_sensor: SolarForecastSensor | None = None
     solar_coordinator: SolarForecastCoordinator | None = None
     debug_coordinator: ElprisDebugCoordinator | None = None

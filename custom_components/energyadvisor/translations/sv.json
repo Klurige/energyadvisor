@@ -136,11 +136,15 @@
         "description": "Koppla huvudsensorerna för automatisk inlärning av hushållets lastprognos.",
         "data": {
           "power_meter_consumption": "Hushållets energimätare (kumulativ kWh)",
-          "outdoor_temperature_entity": "Utetemperatursensor"
+          "outdoor_temperature_entity": "Utomhustemperatursensor",
+          "weather_entity": "Väderentitet",
+          "wind_speed_entity": "Vindhastighetssensor"
         },
         "data_description": {
           "power_meter_consumption": "Kumulativ energimätare för hela huset.",
-          "outdoor_temperature_entity": "Utetemperatursensor för framtida säsongsbaserad lastberäkning."
+          "outdoor_temperature_entity": "Utomhustemperatursensor med långtidsstatistik, används för att lära in värmekurvan.",
+          "weather_entity": "Väderentitet vars timprognos styr värmeprognosen. Aktuell temperatur och vind sparas också för att kalibrera prognosen mot de lokala sensorerna.",
+          "wind_speed_entity": "Lokal vindhastighetssensor med långtidsstatistik. Vind ökar värmeförlusterna; utan den sparas väderentitetens vind och lärs in över tid."
         }
       },
       "household_activity": {
@@ -197,8 +201,8 @@
       "low_threshold_higher_than_high_threshold": "Det nedre gränsvärdet måste vara lägre än det övre gränsvärdet.",
       "entity_not_found": "Enheten hittades inte – kontrollera enhets-ID och försök igen.",
       "solar_entity_required": "Både prognosenhet och effektenhet måste anges tillsammans.",
-      "battery_setting_required": "Batterikapacitet och maximal laddningseffekt måste anges tillsammans."
-      ,"battery_soc_bounds_invalid": "Det lägsta SoC-värdet måste vara lägre än det högsta."
+      "battery_setting_required": "Batterikapacitet och maximal laddningseffekt måste anges tillsammans.",
+      "battery_soc_bounds_invalid": "Det lägsta SoC-värdet måste vara lägre än det högsta."
     }
   },
   "options": {
@@ -332,11 +336,15 @@
         "description": "Koppla huvudsensorerna för automatisk inlärning av hushållets lastprognos.",
         "data": {
           "power_meter_consumption": "Hushållets energimätare (kumulativ kWh)",
-          "outdoor_temperature_entity": "Utetemperatursensor"
+          "outdoor_temperature_entity": "Utomhustemperatursensor",
+          "weather_entity": "Väderentitet",
+          "wind_speed_entity": "Vindhastighetssensor"
         },
         "data_description": {
           "power_meter_consumption": "Kumulativ energimätare för hela huset.",
-          "outdoor_temperature_entity": "Utetemperatursensor för framtida säsongsbaserad lastberäkning."
+          "outdoor_temperature_entity": "Utomhustemperatursensor med långtidsstatistik, används för att lära in värmekurvan.",
+          "weather_entity": "Väderentitet vars timprognos styr värmeprognosen. Aktuell temperatur och vind sparas också för att kalibrera prognosen mot de lokala sensorerna.",
+          "wind_speed_entity": "Lokal vindhastighetssensor med långtidsstatistik. Vind ökar värmeförlusterna; utan den sparas väderentitetens vind och lärs in över tid."
         }
       },
       "household_activity": {
@@ -447,6 +455,9 @@
       },
       "battery_soc_forecast": {
         "name": "Batteri SoC-prognos"
+      },
+      "heating_forecast": {
+        "name": "Värmeprognos"
       }
     }
   }
