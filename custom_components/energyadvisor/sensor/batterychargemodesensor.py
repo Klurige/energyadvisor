@@ -2,8 +2,8 @@
 
 The schedule mirrors the price sensor's slots (same start and end times) and
 copies each slot's cost and credit. The mode and target SoC of each slot come
-from the battery planner (``battery_planner``), an exact dynamic programme
-over the battery's state of charge that minimises the grid cost.
+from the battery planner (``battery_planner``), a dynamic programme over the
+battery's state of charge that balances grid cost and a charge margin.
 
 Every price slot that has not ended is planned, however many the price sensor
 holds (about a day, or two once tomorrow's prices are known). The plan is rolled
@@ -28,6 +28,8 @@ daylight is published as ``maxuse``: the battery then covers the household load,
 which leaves any solar surplus for charging the battery. A ``sell`` is never
 turned into ``maxuse``, which would stop the export. Solar production is not
 modelled beyond the solar forecast's load offset and surplus.
+Grid-charge periods aim to fill the battery, and 30% of its usable capacity is
+reserved from selling (but remains available for household discharge).
 
 Costs are the price sensor's ``cost`` and credits its ``credit`` (fees, taxes
 and VAT included), not the raw spot price, and the battery's wear cost is in the
@@ -47,9 +49,8 @@ thread. A single worker task serves every trigger (new prices, a new household
 load forecast, a clearly changed battery SoC and every quarter hour). Triggers
 that arrive while a plan is being calculated are coalesced into one more run.
 
-Solar and the water heater are not modelled. The household load forecast
-already leaves out the water heater, and it is always on in the cheapest hours
-of the day, so planning for it would not change the savings.
+The water heater is not modelled. The household load forecast already leaves
+it out, and it is always on in the cheapest hours of the day.
 """
 
 from __future__ import annotations
@@ -118,6 +119,7 @@ DEFAULT_TARGET_SOC_PCT = 50
 DEFAULT_LOAD_KW = 1.0
 DEFAULT_MIN_SOC_PCT = 5.0
 DEFAULT_MAX_SOC_PCT = 100.0
+SELL_RESERVE_FRACTION = 0.3
 # The SoC entity only triggers a new plan when it moved this far since the
 # last plan; smaller changes are picked up at the next quarter hour.
 SOC_REPLAN_DELTA_PCT = 2.0
@@ -155,6 +157,7 @@ MODE_TO_COMPACT = {
 # holds older slots.
 HISTORY_KEEP = timedelta(days=2)
 HISTORY_RESTORE_KEY = "history"
+CHARGE_COMMITMENTS_RESTORE_KEY = "charge_commitments"
 
 
 @dataclass(frozen=True)
@@ -193,6 +196,8 @@ class ScheduleInputs:
     timestamp windows; a planned discharge in the middle of a window becomes
     ``maxuse``, a planned sell stays a sell. ``params.terminal_value_per_kwh`` is
     what the energy left in the battery after the last slot is worth.
+    ``charge_commitments`` keeps an ongoing grid-charge period across replans,
+    unless its prices increase.
     """
 
     slots: tuple[ScheduleSlot, ...]
@@ -201,6 +206,7 @@ class ScheduleInputs:
     now: datetime
     history: tuple[SlotRecord, ...] = ()
     daylight: tuple[tuple[float, float], ...] = ()
+    charge_commitments: tuple[tuple[float, float, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -221,6 +227,7 @@ class Schedule:
     soc_trace: tuple[tuple[float, float], ...]
     current: SlotRecord | None = None
     current_target_soc: float | None = None
+    charge_commitments: tuple[tuple[float, float, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -228,14 +235,20 @@ class _StoredHistory(ExtraStoredData):
     """The slot records saved with the entity's restore state."""
 
     records: tuple[SlotRecord, ...]
+    charge_commitments: tuple[tuple[float, float, float], ...] = ()
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        stored: dict[str, object] = {
             HISTORY_RESTORE_KEY: [
                 [record.start, record.mode, record.target_soc]
                 for record in self.records
             ]
         }
+        if self.charge_commitments:
+            stored[CHARGE_COMMITMENTS_RESTORE_KEY] = [
+                list(commitment) for commitment in self.charge_commitments
+            ]
+        return stored
 
 
 def build_schedule(inputs: ScheduleInputs) -> Schedule:
@@ -308,7 +321,26 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
                 )
             )
 
-        result = plan_battery(plan_slots, params, start_soc)
+        commitments = {
+            (start, end): cost for start, end, cost in inputs.charge_commitments
+        }
+        continuing: set[int] = set()
+        if current_index is not None:
+            previous_end = None
+            for position, index in enumerate(planned):
+                if index < current_index:
+                    continue
+                if previous_end is not None and bounds[index][0] != previous_end:
+                    break
+                old_cost = commitments.get(bounds[index])
+                if old_cost is None or not math.isfinite(slots[index].cost):
+                    break
+                if slots[index].cost > old_cost:
+                    break
+                continuing.add(position)
+                previous_end = bounds[index][1]
+
+        result = plan_battery(plan_slots, params, start_soc, frozenset(continuing))
         plan_position = {index: pos for pos, index in enumerate(planned)}
         end_socs = list(result.end_soc_pct)
 
@@ -326,6 +358,7 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
 
         targets = []
         soc = start_soc
+        previous_planned_soc = start_soc
         for index, (start_ts, end_ts) in enumerate(bounds):
             position = plan_position.get(index)
             if position is not None:
@@ -338,6 +371,18 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
                 modes[index] = mode
                 moved = 0.0 if index == current_index else shift
                 soc = clamp(end_socs[position] + moved)
+                if mode == MODE_SELL:
+                    reserve = (
+                        params.min_soc_pct
+                        + (params.max_soc_pct - params.min_soc_pct)
+                        * params.sell_reserve_fraction
+                    )
+                    protected = max(soc, min(previous_planned_soc, reserve))
+                    shift += protected - soc
+                    soc = protected
+                    if soc >= previous_planned_soc:
+                        modes[index] = MODE_STANDBY
+                previous_planned_soc = soc
             elif (record := history.get(start_ts)) is not None:
                 modes[index] = record.mode
                 soc = clamp(record.target_soc)
@@ -363,7 +408,14 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
     current_target = (
         None if current_index is None else entries[current_index]["target_soc"]
     )
-    return Schedule(entries, current_mode, soc_trace, current, current_target)
+    charge_commitments = tuple(
+        (start_ts, end_ts, slot.cost)
+        for slot, (start_ts, end_ts), mode in zip(slots, bounds, modes)
+        if mode == MODE_CHARGE and end_ts > now_ts
+    )
+    return Schedule(
+        entries, current_mode, soc_trace, current, current_target, charge_commitments
+    )
 
 
 class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
@@ -387,6 +439,7 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
         self._modes: list[dict[str, str | float]] = []
         self._current_mode = MODE_STANDBY
         self._soc_trace: tuple[tuple[float, float], ...] = ()
+        self._charge_commitments: tuple[tuple[float, float, float], ...] = ()
         self._history: dict[float, SlotRecord] = {}
         self._current_target_soc: float | None = None
         self._last_planned_soc_pct: float | None = None
@@ -412,7 +465,9 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.async_on_remove(self._stop_worker)
-        self._history = _parse_history(await self.async_get_last_extra_data())
+        stored = await self.async_get_last_extra_data()
+        self._history = _parse_history(stored)
+        self._charge_commitments = _parse_charge_commitments(stored)
         self.async_on_remove(
             self._price_sensor.async_add_update_listener(self._handle_price_update)
         )
@@ -577,6 +632,7 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
         self._current_target_soc = schedule.current_target_soc
         self._attr_available = schedule.current_target_soc is not None
         self._soc_trace = schedule.soc_trace
+        self._charge_commitments = schedule.charge_commitments
         current = schedule.current
         if current is not None:
             self._history[current.start] = current
@@ -597,7 +653,8 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
     def extra_restore_state_data(self) -> ExtraStoredData:
         """Save the modes of the slots that have run, for the next start."""
         return _StoredHistory(
-            tuple(sorted(self._history.values(), key=lambda record: record.start))
+            tuple(sorted(self._history.values(), key=lambda record: record.start)),
+            self._charge_commitments,
         )
 
     def _now(self) -> datetime:
@@ -633,6 +690,7 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
             now,
             history=tuple(self._history.values()),
             daylight=self._daylight_windows(slots),
+            charge_commitments=self._charge_commitments,
         )
 
     def _daylight_windows(
@@ -762,6 +820,8 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
             max_charge_power_kw=charge_w / 1000,
             max_discharge_power_kw=discharge_w / 1000,
             wear_cost_per_kwh=max(wear or 0.0, 0.0),
+            charge_to_max=True,
+            sell_reserve_fraction=SELL_RESERVE_FRACTION,
         )
 
     def _read_soc_pct(self) -> float | None:
@@ -846,6 +906,26 @@ def _parse_history(data: ExtraStoredData | None) -> dict[float, SlotRecord]:
             continue
         history[start] = SlotRecord(start, mode, target)
     return history
+
+
+def _parse_charge_commitments(
+    data: ExtraStoredData | None,
+) -> tuple[tuple[float, float, float], ...]:
+    """Restore valid charge-period slots, ignoring malformed records."""
+    stored = data.as_dict() if data is not None else None
+    raw = (
+        stored.get(CHARGE_COMMITMENTS_RESTORE_KEY)
+        if isinstance(stored, Mapping)
+        else None
+    )
+    commitments = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, (list, tuple)) or len(item) != 3:
+            continue
+        start, end, cost = (_as_float(value) for value in item)
+        if start is not None and end is not None and cost is not None and end > start:
+            commitments.append((start, end, cost))
+    return tuple(commitments)
 
 
 def _as_float(value: object) -> float | None:

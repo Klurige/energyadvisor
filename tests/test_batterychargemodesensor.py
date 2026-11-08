@@ -324,6 +324,69 @@ def test_target_soc_is_the_planned_end_soc_rounded_up_to_whole_percent() -> None
     assert len(schedule.soc_trace) == 24
 
 
+def test_charge_window_continues_across_replans_until_full() -> None:
+    params = BatteryParams(
+        4.0,
+        0.0,
+        100.0,
+        1.0,
+        1.0,
+        1.0,
+        charge_to_max=True,
+        sell_reserve_fraction=0.3,
+    )
+    slots = _schedule_slots(_rates([1.0] * 4 + [4.0], minutes=60), load_kw=0.25)
+    schedule = build_schedule(ScheduleInputs(slots, params, 0.0, BASE))
+
+    for hour in range(1, 4):
+        schedule = build_schedule(
+            ScheduleInputs(
+                slots,
+                params,
+                hour * 25.0,
+                BASE + datetime.timedelta(hours=hour),
+                charge_commitments=schedule.charge_commitments,
+            )
+        )
+        assert schedule.current_mode == "charge"
+    assert schedule.current_target_soc == 100
+
+
+def test_charge_commitment_is_dropped_when_the_price_increases() -> None:
+    params = BatteryParams(4.0, 0.0, 100.0, 1.0, 1.0, 1.0, charge_to_max=True)
+    slots = _schedule_slots(_rates([1.0] * 4 + [4.0], minutes=60), load_kw=0.25)
+    first = build_schedule(ScheduleInputs(slots, params, 0.0, BASE))
+    changed = list(slots)
+    changed[1] = dataclasses.replace(changed[1], cost=10.0)
+
+    replanned = build_schedule(
+        ScheduleInputs(
+            tuple(changed),
+            params,
+            25.0,
+            BASE + datetime.timedelta(hours=1),
+            charge_commitments=first.charge_commitments,
+        )
+    )
+
+    assert replanned.current_mode != "charge"
+
+
+def test_current_slot_scaling_does_not_reduce_the_sell_reserve() -> None:
+    params = BatteryParams(10.0, 20.0, 80.0, 5.0, 5.0, 1.0, sell_reserve_fraction=0.3)
+    rates = _rates([1.0, 1.0], minutes=60)
+    rates[1]["credit"] = 10.0
+    slots = _schedule_slots(rates, load_kw=0.0)
+
+    schedule = build_schedule(
+        ScheduleInputs(slots, params, 30.0, BASE + datetime.timedelta(minutes=30))
+    )
+
+    assert schedule.modes[0]["mode"] == "charge"
+    assert schedule.modes[1]["mode"] == "sell"
+    assert schedule.modes[1]["target_soc"] >= 38
+
+
 def test_start_soc_is_clamped_into_the_battery_window() -> None:
     flat = _rates([1.0] * 4)
     params = BatteryParams(15.0, 10.0, 90.0, 5.0, 5.0)
@@ -565,6 +628,7 @@ def test_planned_inputs_do_not_have_a_horizon() -> None:
         "now",
         "history",
         "daylight",
+        "charge_commitments",
     }
     assert not hasattr(batterychargemodesensor, "DEFAULT_HORIZON_HOURS")
     assert not hasattr(
@@ -805,6 +869,8 @@ def test_battery_params_use_defaults_and_convert_watts(hass) -> None:
         max_charge_power_kw=4.0,
         max_discharge_power_kw=4.0,
         wear_cost_per_kwh=0.7,
+        charge_to_max=True,
+        sell_reserve_fraction=0.3,
     )
 
 
@@ -819,7 +885,17 @@ def test_battery_params_read_every_option(hass) -> None:
 
     params = _make_sensor(hass, [], options=options)._battery_params()
 
-    assert params == BatteryParams(15.0, 10.0, 90.0, 5.0, 3.0, 0.9, 0.25)
+    assert params == BatteryParams(
+        15.0,
+        10.0,
+        90.0,
+        5.0,
+        3.0,
+        0.9,
+        0.25,
+        charge_to_max=True,
+        sell_reserve_fraction=0.3,
+    )
 
 
 @pytest.mark.parametrize("value", [None, "abc", -1.0, float("nan")])
@@ -841,12 +917,11 @@ async def test_state_and_icon_follow_the_current_slot(make_sensor, hass) -> None
     await sensor.async_added_to_hass()
     await _settle(sensor)
     modes = _modes(sensor)
-    assert modes[0] == "standby"
     charge_index = modes.index("charge")
     discharge_index = modes.index("discharge")
     cases = [
-        ("standby", "0", 0, "mdi:battery-off"),
         ("charge", "0", charge_index, "mdi:battery-arrow-up"),
+        ("standby", "95", charge_index + 1, "mdi:battery-off"),
         # The battery has been charged by the time the peak starts.
         ("discharge", "95", discharge_index, "mdi:battery-arrow-down"),
     ]
@@ -1316,7 +1391,7 @@ async def test_time_trigger_rolls_the_plan_forward(make_sensor, hass) -> None:
     sensor = make_sensor(_valley_peak_valley_rates(), options=options)
     await sensor.async_added_to_hass()
     await _settle(sensor)
-    assert sensor.state == "standby"
+    assert sensor.state == "charge"
     # Three hours later the battery is full and the peak has started.
     sensor._now = lambda: BASE + datetime.timedelta(hours=3, minutes=1)
     hass.states.async_set(SOC_ENTITY, "94")
@@ -1927,6 +2002,34 @@ async def test_the_history_is_planned_with_and_survives_a_restart(
 
     assert second._history.keys() >= {_ts(rates, charge_index)}
     assert _modes(second)[charge_index] == "charge"
+
+
+async def test_an_ongoing_charge_window_survives_a_restart(make_sensor, hass) -> None:
+    rates = _rates([1.0] * 12 + [5.0] + [1.0] * 12)
+    hass.states.async_set(SOC_ENTITY, "0")
+    first = make_sensor(rates, options=SOC_OPTIONS)
+    await first.async_added_to_hass()
+    await _settle(first)
+    saved = json.loads(json.dumps(first.extra_restore_state_data.as_dict()))
+    assert first.state == "charge"
+
+    hass.states.async_set(SOC_ENTITY, "60")
+    now = BASE + datetime.timedelta(hours=2)
+    second = make_sensor(rates, options=SOC_OPTIONS, now=now)
+    second.async_get_last_extra_data = AsyncMock(return_value=RestoredExtraData(saved))
+    await second.async_added_to_hass()
+    await _settle(second)
+
+    assert second.state == "charge"
+    assert second.extra_state_attributes["target_soc"] > 60
+
+
+def test_restoring_charge_commitments_ignores_invalid_records() -> None:
+    data = RestoredExtraData(
+        {"charge_commitments": [[1, 2, 0.5], [2, 1, 0.5], [3, 4, "bad"], None]}
+    )
+
+    assert batterychargemodesensor._parse_charge_commitments(data) == ((1, 2, 0.5),)
 
 
 async def test_the_current_slot_is_saved_for_the_next_start(make_sensor) -> None:

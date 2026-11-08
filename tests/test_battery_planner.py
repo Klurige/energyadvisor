@@ -226,6 +226,57 @@ def test_charge_window_is_limited_by_the_charge_power() -> None:
     assert max(result.end_soc_pct) == pytest.approx(95.0)
 
 
+def test_charge_margin_fills_in_the_available_cheap_window() -> None:
+    params = _params(
+        capacity_kwh=4.0,
+        max_soc_pct=100.0,
+        max_charge_power_kw=1.0,
+        round_trip_efficiency=1.0,
+    )
+    slots = _slots([1.0] * 4 + [4.0], load_kwh=0.25, hours=1.0)
+
+    baseline = plan_battery(slots, params, 0.0)
+    buffered = plan_battery(slots, dataclasses.replace(params, charge_to_max=True), 0.0)
+
+    assert baseline.end_soc_pct[3] < 100
+    assert buffered.modes[:4] == [MODE_CHARGE] * 4
+    assert buffered.end_soc_pct[3] == 100
+    assert buffered.end_soc_pct[4] > baseline.end_soc_pct[4]
+
+
+def test_charge_margin_respects_power_and_does_not_create_uneconomic_charging() -> None:
+    params = _params(
+        capacity_kwh=4.0,
+        max_soc_pct=100.0,
+        max_charge_power_kw=1.0,
+        round_trip_efficiency=1.0,
+        charge_to_max=True,
+    )
+    short = plan_battery(_slots([1.0, 1.0, 4.0], 0.25, 1.0), params, 0.0)
+    flat = plan_battery(_slots([1.0] * 4, 0.25, 1.0), params, 0.0)
+
+    assert short.end_soc_pct[1] == 50
+    assert flat.modes == [MODE_STANDBY] * 4
+
+
+def test_sell_reserve_remains_available_to_cover_household_load() -> None:
+    params = _params(
+        capacity_kwh=10.0,
+        min_soc_pct=20.0,
+        max_soc_pct=80.0,
+        max_discharge_power_kw=5.0,
+        round_trip_efficiency=1.0,
+        sell_reserve_fraction=0.3,
+    )
+    slots = [PlanSlot(1, 1, 0, 10), PlanSlot(1, 4, 3)]
+
+    result = plan_battery(slots, params, 80.0)
+
+    assert result.modes == [MODE_SELL, MODE_DISCHARGE]
+    assert result.end_soc_pct[0] == pytest.approx(38.75)
+    assert result.end_soc_pct[1] < 38
+
+
 def test_discharge_is_limited_by_the_load_and_never_exports() -> None:
     slots = _slots(_valley_peak_prices(cheap=1.0, dear=3.0, count=40))
 

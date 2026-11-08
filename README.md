@@ -99,7 +99,7 @@ See [docs/solarforecast.md](docs/solarforecast.md) for details.
 
 #### Battery
 
-Battery capacity and max charge power must be set together. Min SoC must be lower than max SoC. The battery charge mode sensor plans with these options (see [Planner](#planner)); without a capacity and a max charge power it keeps every slot on `standby`. Solar production is not used by the planner. Selling battery energy to the grid is part of the planning whenever a battery is configured; it needs no option of its own.
+Battery capacity and max charge power must be set together. Min SoC must be lower than max SoC. The battery charge mode sensor plans with these options (see [Planner](#planner)); without a capacity and a max charge power it keeps every slot on `standby`. Selling battery energy to the grid is part of the planning whenever a battery is configured; it needs no option of its own.
 
 | Key                        | Description                  | Example Value | Status |
 |----------------------------|------------------------------|---------------|--------|
@@ -351,12 +351,11 @@ a min SoC that is not below the max SoC, the sensor stays on `standby` with a
 
 #### Planner
 
-The planner calculates the cheapest way to run the battery over all the price
-slots it knows. It is an exact dynamic programme over the battery state of
-charge, written in plain Python: it does not use a solver or any extra package.
-A plan takes about 15 ms for 192 slots (48 hours) and about 25 ms for 288 slots
-(72 hours) on a desktop computer. It is calculated in an executor job, so it
-never blocks Home Assistant.
+The planner optimizes the battery over all known price slots, then increases the
+charge margin to protect against underestimated household demand. It uses a
+dynamic programme over the battery state of charge, written in plain Python
+without a solver or extra package. It runs in an executor job, so it never
+blocks Home Assistant.
 
 How far ahead it plans:
 - Every price slot of the price sensor that has not ended is planned. There is no
@@ -386,7 +385,7 @@ What it works with:
 - **Household load:** The base load from the household Load forecast, matched to
   the price slots by start time (a longer price slot averages the forecast slots
   it covers). Slots without a forecast, or without the household inputs
-  configured, use 1.5 kW. The load forecast leaves out the water heater. It runs
+  configured, use 1.0 kW. The load forecast leaves out the water heater. It runs
   in the day's cheapest hours regardless, and a simulation showed that planning
   for it does not change the savings, so the heater is not modelled.
 - **Battery:** Usable window between min and max SoC, max charge and discharge
@@ -409,29 +408,29 @@ How it decides:
   exports. `sell` discharges for more than the household uses, so that the rest
   is exported to the grid, and nothing is imported in the slot. `standby` leaves
   the battery alone. `charge` and `sell` never share a slot.
-- The battery only moves when the price difference pays for the losses and the
-  wear cost, so flat prices, or a spread that is too small, give `standby`.
+- The initial plan moves the battery when the price difference pays for the
+  losses and wear cost. It then fills more aggressively in selected grid-charge
+  periods, so the extra energy may cost more than its forecast savings.
 - Selling is part of the same optimisation, with the slot's `credit` as the
   revenue for every exported kWh. The `credit` already includes all taxes and
   fees of selling, so there is no sell margin to set. Only the battery limits
   the export: there is no export limit to the grid, so a `sell` slot can export
-  at the max discharge power, and the min SoC is the floor. A slot whose
-  `credit` is unknown, `0` or negative never sells.
+  at the max discharge power. Selling retains 30% of the usable capacity
+  between configured min and max SoC; household discharge can use that reserve.
+  A slot whose `credit` is unknown, `0` or negative never sells.
 - A kWh is worth selling when the `credit` is higher than the cost it was
   charged at, adjusted for the round-trip losses, plus the wear cost. With the
   90 % round-trip efficiency that is `credit > cost at charge / 0.9 + wear
   cost`. Energy charged at 1.00 with a wear cost of 0.70 is therefore sold at a
   `credit` above 1.81. In a `sell` slot the battery covers the household load
   first, which saves the slot's `cost`, and exports the rest.
-- Without selling, the energy worth charging is capped by what the household
-  uses in the expensive slots. Selling has no such cap, since the grid takes
-  whatever the battery can deliver, so the battery is charged as far as the SoC
-  bounds and the power allow whenever a later `credit` pays for it. The wear
-  cost is then the main brake on cycling the battery.
-- Charging is spread over as many cheap slots as the charge power requires, and
-  discharging over the expensive slots, limited by how much the household uses
-  in each slot. Selling is spread over the slots with the highest credit, up to
-  the max discharge power.
+- Once the cost-optimized plan selects grid charging, the planner also uses
+  immediately preceding standby slots at the same or a lower price and charges
+  at the maximum available power, aiming for the configured max SoC. A short
+  window or limited power may prevent a full charge. An ongoing charge period
+  continues across replans and restarts unless its price increases. Discharging
+  is limited by forecast household use; selling is limited by discharge power
+  and the reserve.
 - The plan is made from now. The current slot is planned as a whole slot from
   the state of charge now, so its mode stays the same until the slot ends; its
   `target_soc` is the state of charge expected at the end of the slot. Slots
@@ -444,9 +443,8 @@ How it decides:
   so that any solar surplus charges the battery. The battery is used the same
   way, so the plan does not change. At night it stays `discharge`. `sell` is
   never changed to `maxuse`, because `maxuse` never exports.
-- Solar production is not used or modelled. It is small in winter, and the
-  planner does not take it into account. There is no export limit, so selling
-  is allowed in daylight as well.
+- Forecast solar offsets household load and can charge the battery or be
+  exported. There is no export limit, so selling is allowed in daylight.
 
 #### When it is calculated
 

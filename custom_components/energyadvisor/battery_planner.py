@@ -1,10 +1,11 @@
-"""Battery schedule planner: an exact dynamic programme over state of charge.
+"""Battery schedule planner: a dynamic programme over state of charge.
 
 The planner has no Home Assistant dependency and is pure Python. It takes a
 chronological list of slots (duration, grid price, household load and solar
 surplus) and decides for each slot whether the battery should charge from the
 grid or solar, discharge into the household, sell to the grid or stay idle, so
-that the total grid cost (net of exported energy) is as low as possible.
+that the total grid cost (net of exported energy) is as low as possible, subject
+to any selected charging margin and export reserve.
 
 Model:
 - The usable energy window is ``capacity * (max_soc - min_soc)``. The state of
@@ -73,6 +74,10 @@ class BatteryParams:
     of each kWh the battery delivers, in the same currency as the slot prices.
     ``terminal_value_per_kwh`` is what each kWh stored in the battery above the
     min SoC is worth after the last slot (0: it is worth nothing).
+    ``charge_to_max`` extends selected grid-charge periods into preceding
+    standby slots at no higher price and charges at full available power.
+    ``sell_reserve_fraction`` protects that fraction of the usable SoC window
+    from export; household discharge can still use it.
     """
 
     capacity_kwh: float
@@ -83,6 +88,8 @@ class BatteryParams:
     round_trip_efficiency: float = DEFAULT_ROUND_TRIP_EFFICIENCY
     wear_cost_per_kwh: float = 0.0
     terminal_value_per_kwh: float = 0.0
+    charge_to_max: bool = False
+    sell_reserve_fraction: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -119,15 +126,20 @@ class PlanResult:
 
 
 def plan_battery(
-    slots: Sequence[PlanSlot], params: BatteryParams, start_soc_pct: float
+    slots: Sequence[PlanSlot],
+    params: BatteryParams,
+    start_soc_pct: float,
+    continuing_charge_slots: frozenset[int] = frozenset(),
 ) -> PlanResult:
-    """Return the cheapest battery plan for ``slots``.
+    """Return a battery plan for ``slots``.
 
     Inputs:
         - ``slots`` in chronological order.
         - Battery ``params`` and the state of charge at the start of the first
           slot (clamped into the allowed window and snapped to the nearest
           step).
+        - ``continuing_charge_slots`` identifies an already-started charging
+          period that should be completed when ``charge_to_max`` is enabled.
     Outputs:
         - A ``PlanResult`` with one entry per slot. No slots give an empty
           result.
@@ -138,8 +150,59 @@ def plan_battery(
     the efficiency is clamped into 0.01..1 and a negative or non-finite wear
     cost or terminal value counts as zero. A slot whose export credit is not
     finite or not positive never sells. When the battery has no usable energy
-    window every slot is ``standby`` and the SoC stays where it is.
+    window every slot is ``standby`` and the SoC stays where it is. With
+    ``charge_to_max``, the cheapest plan identifies charging periods, then a
+    second plan fills the battery in those periods when power and time allow.
     """
+    result = _plan_battery(slots, params, start_soc_pct, frozenset())
+    if not params.charge_to_max:
+        return result
+
+    capacity = _finite(params.capacity_kwh, 0.0)
+    usable_kwh = (
+        capacity
+        * (_finite(params.max_soc_pct, 0.0) - _finite(params.min_soc_pct, 0.0))
+        / 100.0
+    )
+    if capacity <= 0 or usable_kwh <= 0:
+        return result
+    states = min(MAX_STATES, max(1, round(usable_kwh / MIN_STEP_KWH)))
+    step = usable_kwh / states
+    charge_kw = max(_finite(params.max_charge_power_kw, 0.0), 0.0)
+
+    def can_charge(index: int) -> bool:
+        return (
+            0 <= index < len(slots)
+            and math.isfinite(_finite(slots[index].import_cost, math.nan))
+            and charge_kw * _finite(slots[index].duration_h, 0.0) / step + LIMIT_EPSILON
+            >= 1
+        )
+
+    forced = {i for i, mode in enumerate(result.modes) if mode == MODE_CHARGE}
+    forced.update(i for i in continuing_charge_slots if can_charge(i))
+    for index in sorted(forced):
+        price = _finite(slots[index].import_cost, math.nan)
+        previous = index - 1
+        while (
+            previous >= 0
+            and result.modes[previous] == MODE_STANDBY
+            and can_charge(previous)
+            and _finite(slots[previous].import_cost, math.inf) <= price
+        ):
+            forced.add(previous)
+            previous -= 1
+    if not forced:
+        return result
+    return _plan_battery(slots, params, start_soc_pct, frozenset(forced))
+
+
+def _plan_battery(
+    slots: Sequence[PlanSlot],
+    params: BatteryParams,
+    start_soc_pct: float,
+    forced_charge: frozenset[int],
+) -> PlanResult:
+    """Solve the plan, optionally charging at maximum power in selected slots."""
     count = len(slots)
     if not count:
         return PlanResult([], [], 0.0)
@@ -183,6 +246,10 @@ def plan_battery(
     terminal_value = max(_finite(params.terminal_value_per_kwh, 0.0), 0.0)
     max_charge_kw = max(_finite(params.max_charge_power_kw, 0.0), 0.0)
     max_discharge_kw = max(_finite(params.max_discharge_power_kw, 0.0), 0.0)
+    sell_reserve = math.ceil(
+        states * min(max(_finite(params.sell_reserve_fraction, 0.0), 0.0), 1.0)
+        - LIMIT_EPSILON
+    )
 
     start_soc = min(max(_finite(start_soc_pct, low), low), high)
     start_state = round((start_soc - low) / pct_per_state)
@@ -231,6 +298,8 @@ def plan_battery(
         surplus = solar_surplus[t]
         export_credit = solar_export_credit[t]
         value = [price * load - export_credit * surplus + v for v in next_value]
+        if t in forced_charge:
+            value[:-1] = [math.inf] * states
         choice = [0] * (states + 1)
         pvcharged = [False] * (states + 1)
 
@@ -241,6 +310,8 @@ def plan_battery(
             grid_charge = charge_input - surplus
             cost = price * (load + grid_charge)
             for s, future in enumerate(next_value[k:]):
+                if t in forced_charge and k != min(charge_steps[t], states - s):
+                    continue
                 total = cost + future
                 if total + TIE_EPSILON < value[s]:
                     value[s] = total
@@ -254,13 +325,15 @@ def plan_battery(
             credited_export = exported + solar_used * (1 - SOLAR_EXPORT_CREDIT_FACTOR)
             cost = price * load - export_credit * credited_export
             for s, future in enumerate(next_value[k:]):
+                if t in forced_charge and k != min(charge_steps[t], states - s):
+                    continue
                 total = cost + future
                 if total + TIE_EPSILON < value[s]:
                     value[s] = total
                     choice[s] = k
                     pvcharged[s] = True
 
-        for k in range(1, discharge_steps[t] + 1):
+        for k in range(1, 1 if t in forced_charge else discharge_steps[t] + 1):
             delivered = min(k * step * eta, load)
             cost = (
                 price * (load - delivered) + wear * delivered - export_credit * surplus
@@ -274,10 +347,12 @@ def plan_battery(
 
         credit = credits[t]
         sell = [False] * (states + 1)
-        for k in range(sell_min_steps[t], sell_max_steps[t] + 1):
+        for k in range(
+            sell_min_steps[t], 1 if t in forced_charge else sell_max_steps[t] + 1
+        ):
             out = k * step * eta
             cost = wear * out - credit * (out - load) - export_credit * surplus
-            for s in range(k, states + 1):
+            for s in range(k + sell_reserve, states + 1):
                 total = cost + next_value[s - k]
                 if total + TIE_EPSILON < value[s]:
                     value[s] = total
