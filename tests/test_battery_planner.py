@@ -196,6 +196,29 @@ def test_solar_export_value_is_discounted_for_forecast_uncertainty() -> None:
     assert result.modes[0] == MODE_PVCHARGE
 
 
+@pytest.mark.parametrize("credit, allowed", [(2.39, True), (2.41, False)])
+def test_solar_charging_permission_values_future_use_with_losses_and_wear(
+    credit: float, allowed: bool
+) -> None:
+    slots = [
+        PlanSlot(1.0, 10.0, 0.5, credit),
+        PlanSlot(1.0, 4.0, 0.5),
+    ]
+    params = _params(
+        capacity_kwh=2.0,
+        max_soc_pct=100.0,
+        round_trip_efficiency=0.64,
+        wear_cost_per_kwh=1.0,
+        sell_reserve_fraction=1.0,
+    )
+
+    result = plan_battery(slots, params, 50.0)
+
+    assert result.modes == [MODE_DISCHARGE, MODE_DISCHARGE]
+    # Future household use values solar at (4 - 1) * 0.64 = 1.92 per kWh.
+    assert result.allow_solar_charging[0] is allowed
+
+
 def test_efficiency_and_wear_shift_the_decision() -> None:
     slots = _slots(_valley_peak_prices(cheap=1.0, dear=1.5), load_kwh=1.0)
 

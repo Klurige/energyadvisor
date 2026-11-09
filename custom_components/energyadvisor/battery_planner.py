@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 MODE_STANDBY = "standby"
 MODE_CHARGE = "charge"
@@ -117,12 +117,15 @@ class PlanResult:
 
     ``total_cost`` is the grid cost plus wear minus the revenue of the exported
     energy over all slots, minus the terminal value of the energy left in the
-    battery at the end.
+    battery at the end. ``allow_solar_charging`` identifies household-discharge
+    slots where storing an extra solar energy step at the planned end SoC is
+    worth at least its discounted export credit, using the remaining plan.
     """
 
     modes: list[str]
     end_soc_pct: list[float]
     total_cost: float
+    allow_solar_charging: list[bool] = field(default_factory=list)
 
 
 def plan_battery(
@@ -236,6 +239,7 @@ def _plan_battery(
                     prices, loads, solar_export_credit, solar_surplus
                 )
             ),
+            [False] * count,
         )
 
     states = min(MAX_STATES, max(1, round(usable_kwh / MIN_STEP_KWH)))
@@ -291,6 +295,7 @@ def _plan_battery(
     choices: list[list[int]] = [[]] * count
     sold: list[list[bool]] = [[]] * count
     pv_charged: list[list[bool]] = [[]] * count
+    solar_charging: list[list[bool]] = [[]] * count
     next_value = [0.0 - terminal_value * s * step for s in range(states + 1)]
     for t in range(count - 1, -1, -1):
         price = prices[t]
@@ -363,13 +368,32 @@ def _plan_battery(
         choices[t] = choice
         sold[t] = sell
         pv_charged[t] = pvcharged
+        allowed = [False] * (states + 1)
+        for s, k in enumerate(choice):
+            if k >= 0 or sell[s]:
+                continue
+            end_state = s + k
+            storage_value = (
+                eta * (next_value[end_state] - next_value[end_state + 1]) / step
+                if end_state < states
+                else 0.0
+            )
+            allowed[s] = (
+                export_credit * SOLAR_EXPORT_CREDIT_FACTOR
+                <= storage_value + TIE_EPSILON
+            )
+        solar_charging[t] = allowed
         next_value = value
 
     modes: list[str] = []
     end_soc_pct: list[float] = []
+    allow_solar_charging: list[bool] = []
     state = start_state
-    for choice, sell, pvcharge in zip(choices, sold, pv_charged):
+    for choice, sell, pvcharge, allowed in zip(
+        choices, sold, pv_charged, solar_charging
+    ):
         k = choice[state]
+        allow_solar_charging.append(allowed[state])
         if k > 0:
             modes.append(MODE_PVCHARGE if pvcharge[state] else MODE_CHARGE)
         elif k < 0:
@@ -378,7 +402,7 @@ def _plan_battery(
             modes.append(MODE_STANDBY)
         state += k
         end_soc_pct.append(min(low + state * pct_per_state, high))
-    return PlanResult(modes, end_soc_pct, next_value[start_state])
+    return PlanResult(modes, end_soc_pct, next_value[start_state], allow_solar_charging)
 
 
 def _finite(value: float, default: float) -> float:

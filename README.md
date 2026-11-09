@@ -301,9 +301,9 @@ See [docs/heatingforecast.md](docs/heatingforecast.md) for the model, the inputs
 ### `sensor.energy_advisor_battery_charge_mode`
 - **Description:** Battery schedule built from the linked `sensor.energy_advisor_price` entry. A planner decides for every price slot whether the battery should charge from the grid, discharge into the household, sell to the grid or stand by, from the prices, the household load forecast and the battery state of charge (see [Planner](#planner)).
 - **Default Entity ID:** `sensor.energy_advisor_battery_charge_mode` for the first config entry.
-- **State:** The mode of the slot that contains the current time (`standby`, `charge`, `discharge`, `sell`, or `maxuse` in place of `discharge` in daylight); `standby` when no slot contains it. The icon follows the mode: `mdi:battery-off`, `mdi:battery-arrow-up`, `mdi:battery-arrow-down`, `mdi:transmission-tower-export` or `mdi:battery-sync`.
+- **State:** The mode of the slot that contains the current time (`standby`, `charge`, `discharge`, `sell`, or `maxuse` in place of daytime `discharge` when solar storage beats export); `standby` when no slot contains it. The icon follows the mode: `mdi:battery-off`, `mdi:battery-arrow-up`, `mdi:battery-arrow-down`, `mdi:transmission-tower-export` or `mdi:battery-sync`.
 - **Attributes:**
-  - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; the planner assigns `standby`, `charge`, `discharge` and `sell`, and `maxuse` in place of `discharge` in daylight), `target_soc` (the planned battery state of charge at the end of the slot in whole percent, always rounded up so the battery keeps the higher level; `50` for every slot while the battery is not configured), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
+  - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; `maxuse` replaces daytime `discharge` only when solar storage beats export), `target_soc` (the planned battery state of charge at the end of the slot in whole percent, always rounded up so the battery keeps the higher level; `50` for every slot while the battery is not configured), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
   - `target_soc`: The `target_soc` of the slot that contains the current time, in whole percent (rounded up): the planned battery state of charge at the end of the current slot (`50` while the battery is not configured). It is always present, and `null` only when no slot contains the current time. It is not the measured state of charge; that stays available from the `battery_soc_entity` itself.
 
 ### `sensor.energy_advisor_water_heater_schedule`
@@ -455,9 +455,13 @@ How it decides:
   started from as `target_soc`.
 - A planned `discharge` in daylight (the middle of the slot lies between
   sunrise and sunset, from Home Assistant's location) is published as `maxuse`
-  so that any solar surplus charges the battery. The battery is used the same
-  way, so the plan does not change. At night it stays `discharge`. `sell` is
-  never changed to `maxuse`, because `maxuse` never exports.
+  only when storing an extra solar energy step at the planned end SoC is worth
+  at least its export credit, discounted by 20% for forecast uncertainty.
+  The storage value comes from the remaining plan, including future prices,
+  charging opportunities, losses, wear and the value after the known prices.
+  Otherwise it stays `discharge`, so surplus solar can be exported rather than
+  stored. This also applies when no surplus is forecast but unexpected solar
+  arrives. At night it stays `discharge`. `sell` is never changed to `maxuse`.
 - Forecast solar offsets household load and can charge the battery or be
   exported. There is no export limit, so selling is allowed in daylight.
 
@@ -490,7 +494,8 @@ Each slot in `modes` has exactly one of these six modes. They are mutually
 exclusive within a slot. Only `maxuse`, `discharge`, `charge`, `sell` and
 `standby` are assigned so far, by the [planner](#planner); `pvcharge` is not
 used yet because solar is not part of the planning. `maxuse` is used in place of
-`discharge` during daylight, never in place of `sell`.
+`discharge` during daylight when solar storage beats export, never in place of
+`sell`.
 
 | Mode | Meaning |
 |------|---------|

@@ -24,8 +24,9 @@ The planner knows ``standby``, ``charge``, ``pvcharge``, ``discharge`` and
 ``discharge`` covers the household load and never exports; ``sell`` also
 exports to the grid when the slot's credit makes that profitable. Selling is
 always part of the plan when a battery is configured. A planned ``discharge`` in
-daylight is published as ``maxuse``: the battery then covers the household load,
-which leaves any solar surplus for charging the battery. A ``sell`` is never
+daylight is published as ``maxuse`` only when the remaining plan values stored
+solar at least as highly as its discounted export credit. Otherwise it stays
+``discharge``, leaving surplus solar available for export. A ``sell`` is never
 turned into ``maxuse``, which would stop the export. Solar production is not
 modelled beyond the solar forecast's load offset and surplus.
 Grid-charge periods aim to fill the battery, and 30% of its usable capacity is
@@ -194,8 +195,9 @@ class ScheduleInputs:
     ``history`` holds the records of slots that have run; slots that ended
     without a record are ``standby``. ``daylight`` holds ``(sunrise, sunset)``
     timestamp windows; a planned discharge in the middle of a window becomes
-    ``maxuse``, a planned sell stays a sell. ``params.terminal_value_per_kwh`` is
-    what the energy left in the battery after the last slot is worth.
+    ``maxuse`` only when solar storage beats export; a planned sell stays a
+    sell. ``params.terminal_value_per_kwh`` is what the energy left in the
+    battery after the last slot is worth.
     ``charge_commitments`` keeps an ongoing grid-charge period across replans,
     unless its prices increase.
     """
@@ -265,8 +267,9 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
           all the slots given. The slot that contains ``now`` is planned as a
           whole slot starting from the SoC at ``now``; the mode then does not
           change as the slot runs out, and its target SoC is scaled to the time
-          that is left. A planned discharge in daylight is ``maxuse``; a planned
-          sell is never changed. Without
+          that is left. A planned discharge in daylight is ``maxuse`` only when
+          storing solar is worth at least its discounted export credit; a
+          planned sell is never changed. Without
           a battery every slot is ``standby`` with a fixed target of 50 %.
           ``current_target_soc`` is the target of the slot that contains
           ``now``.
@@ -364,8 +367,10 @@ def build_schedule(inputs: ScheduleInputs) -> Schedule:
             if position is not None:
                 mode = result.modes[position]
                 # Only a discharge becomes maxuse: maxuse never exports.
-                if mode == MODE_DISCHARGE and _in_daylight(
-                    start_ts, end_ts, inputs.daylight
+                if (
+                    mode == MODE_DISCHARGE
+                    and result.allow_solar_charging[position]
+                    and _in_daylight(start_ts, end_ts, inputs.daylight)
                 ):
                     mode = MODE_MAXUSE
                 modes[index] = mode

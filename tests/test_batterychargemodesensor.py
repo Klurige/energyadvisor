@@ -1775,6 +1775,72 @@ def _all_day_windows() -> tuple[tuple[float, float], ...]:
     return ((BASE.timestamp(), (BASE + datetime.timedelta(days=1)).timestamp()),)
 
 
+@pytest.mark.parametrize(
+    "credit, expected",
+    [
+        (0.0, "maxuse"),
+        (-1.0, "maxuse"),
+        (math.nan, "maxuse"),
+        (2.99, "maxuse"),
+        (3.0, "maxuse"),
+        (3.01, "discharge"),
+    ],
+)
+def test_daytime_discharge_allows_solar_charging_only_when_storage_beats_export(
+    credit: float, expected: str
+) -> None:
+    params = BatteryParams(
+        2.0,
+        0.0,
+        100.0,
+        1.0,
+        1.0,
+        round_trip_efficiency=0.64,
+        terminal_value_per_kwh=3.0,
+        sell_reserve_fraction=1.0,
+    )
+    slot = ScheduleSlot(BASE, BASE + datetime.timedelta(hours=1), 10.0, credit, 0.5)
+    inputs = ScheduleInputs((slot,), params, 50.0, BASE)
+
+    night = build_schedule(inputs)
+    day = build_schedule(dataclasses.replace(inputs, daylight=_all_day_windows()))
+
+    assert night.current_mode == "discharge"
+    assert day.current_mode == expected
+    assert day.current is not None and day.current.mode == expected
+    assert day.soc_trace == night.soc_trace
+
+
+@pytest.mark.parametrize(
+    "later_cost, expected",
+    [(-1.0, "discharge"), (0.5, "discharge"), (4.0, "maxuse")],
+)
+@pytest.mark.parametrize("charge_to_max", [False, True])
+def test_daytime_solar_charging_permission_accounts_for_later_grid_charging(
+    later_cost: float, expected: str, charge_to_max: bool
+) -> None:
+    params = dataclasses.replace(
+        PARAMS,
+        capacity_kwh=2.0,
+        max_soc_pct=100.0,
+        round_trip_efficiency=1.0,
+        terminal_value_per_kwh=5.0,
+        sell_reserve_fraction=1.0,
+        charge_to_max=charge_to_max,
+    )
+    middle = BASE + datetime.timedelta(hours=1)
+    slots = (
+        ScheduleSlot(BASE, middle, 10.0, 2.0, 0.5),
+        ScheduleSlot(middle, middle + datetime.timedelta(hours=1), later_cost, 0, 0),
+    )
+    inputs = ScheduleInputs(slots, params, 50.0, BASE, daylight=_all_day_windows())
+
+    schedule = build_schedule(inputs)
+
+    assert schedule.current_mode == expected
+    assert schedule.modes[1]["mode"] == "charge"
+
+
 def test_a_credit_spike_is_planned_as_sell_after_charging_before_it() -> None:
     schedule = build_schedule(_inputs(_credit_spike_rates(), soc=0.0))
 

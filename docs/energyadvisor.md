@@ -242,8 +242,9 @@ CompactLevelsSensor            BatteryChargeModeSensor
     internal rates, builds         price slot from the same rates;
     the level string               plans charge / discharge / standby
                                    for every slot that has not ended
-                                   (discharge by day is published as
-                                   maxuse; ended slots keep their
+                                   (discharge by day becomes maxuse
+                                   when solar storage beats export;
+                                   ended slots keep their
                                    mode), in an executor job with the
                                    DP in
                                    battery_planner.py (also triggered
