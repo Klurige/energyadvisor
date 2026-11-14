@@ -53,7 +53,7 @@ _LOGGER = logging.getLogger(__name__)
 
 STORE_VERSION = 1
 STORE_MODE = "static"
-DB_SCHEMA_VERSION = 1
+DB_SCHEMA_VERSION = 2
 SLOT_MINUTES = 15
 FORECAST_HOURS = 48
 FORECAST_SLOT_COUNT = int((FORECAST_HOURS * 60) / SLOT_MINUTES)
@@ -197,6 +197,9 @@ class _SlotAccumulator:
     slot_start_utc: datetime
     slot_energy_kwh: float = 0.0
     subtracted_energy_kwh: float = 0.0
+    water_heater_energy_kwh: float = 0.0
+    central_heating_energy_kwh: float = 0.0
+    other_appliance_energy_kwh: float = 0.0
     observed_seconds: float = 0.0
     sample_count: int = 0
     sparse_interval_count: int = 0
@@ -260,6 +263,9 @@ class _HistoricalSlotRow:
     slot_index: int
     day_type: str
     is_holiday: bool
+    water_heater_kw: float = 0.0
+    central_heating_kw: float = 0.0
+    has_component_history: bool = False
     # The meter reported no energy while the slot was observed, so it was not
     # counting and the slot says nothing about the household.
     stalled: bool = False
@@ -392,8 +398,8 @@ class HouseholdForecastCoordinator:
 
     @property
     def household_load_forecast_w(self) -> float:
-        """Return the current-slot household load forecast in watts."""
-        return self.current_load_kw * 1000.0
+        """Return the current-slot household-only forecast in watts."""
+        return self.current_household_only_kw * 1000.0
 
     @property
     def household_base_load_w(self) -> float:
@@ -402,30 +408,56 @@ class HouseholdForecastCoordinator:
 
     @property
     def forecast_slots(self) -> list[dict[str, object]]:
-        """Return 15-minute load slots for the 48-hour horizon."""
+        """Return 15-minute component and total forecasts for the 48-hour horizon."""
         if self._forecast_slots:
             return [dict(slot) for slot in self._forecast_slots]
         return self._build_constant_forecast_slots(self._load_forecast_kw)
 
     @property
     def current_load_kw(self) -> float:
-        """Return the load for the slot covering the current local time.
+        """Return the household-only load for the current local-time slot."""
+        value = self._current_slot_load_kw(self.forecast_slots)
+        if value is not None:
+            return value
+        return round(self._load_forecast_kw, 3)
+
+    @property
+    def current_household_only_kw(self) -> float:
+        """Return the household-only load for the slot covering now."""
+        return self.current_load_kw
+
+    @property
+    def current_total_kw(self) -> float:
+        """Return total forecast consumption for the slot covering now."""
+        value = self._current_slot_value(self.forecast_slots, "total")
+        if value is not None:
+            return value
+        return self.current_load_kw
+
+    def _current_slot_value(
+        self, slots: list[dict[str, object]], key: str
+    ) -> float | None:
+        """Return a forecast field for the slot covering the current local time.
 
         The ``forecasts`` array is anchored to local midnight (slot 0), so the
         current in-progress slot is not always index 0. This looks up the
         slot that actually covers "now" rather than assuming index 0.
         """
-        current_load_kw = self._current_slot_load_kw(self.forecast_slots)
-        if current_load_kw is not None:
-            return current_load_kw
-        return round(self._load_forecast_kw, 3)
-
-    def _current_slot_load_kw(self, slots: list[dict[str, object]]) -> float | None:
-        """Return the load of the slot covering the current local time."""
         index = self._current_slot_index_local()
         if slots and 0 <= index < len(slots):
             try:
-                return round(float(slots[index]["load"]), 3)
+                return round(float(slots[index][key]), 3)
+            except (KeyError, TypeError, ValueError):
+                pass
+        return None
+
+    def _current_slot_load_kw(self, slots: list[dict[str, object]]) -> float | None:
+        """Return the household-only load of the slot covering the current time."""
+        index = self._current_slot_index_local()
+        if slots and 0 <= index < len(slots):
+            try:
+                slot = slots[index]
+                return round(float(slot["household_only"]), 3)
             except (KeyError, TypeError, ValueError):
                 pass
         return None
@@ -812,9 +844,22 @@ class HouseholdForecastCoordinator:
                 generated_at_utc TEXT NOT NULL,
                 slot_start_utc TEXT NOT NULL,
                 load_kw REAL NOT NULL,
+                water_heater_kw REAL NOT NULL DEFAULT 0,
+                central_heating_kw REAL NOT NULL DEFAULT 0,
+                total_kw REAL NOT NULL DEFAULT 0,
                 PRIMARY KEY (generated_at_utc, slot_start_utc)
             )
             """)
+        forecast_columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(forecast_runs)")
+        }
+        for column in ("water_heater_kw", "central_heating_kw", "total_kw"):
+            if column not in forecast_columns:
+                conn.execute(
+                    f"ALTER TABLE forecast_runs ADD COLUMN {column} "
+                    "REAL NOT NULL DEFAULT 0"
+                )
+        conn.execute("UPDATE forecast_runs SET total_kw = load_kw WHERE total_kw = 0")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_forecast_runs_generated "
             "ON forecast_runs(generated_at_utc DESC)"
@@ -1140,7 +1185,8 @@ class HouseholdForecastCoordinator:
                 latest_generation_utc
             ).strftime("%Y-%m-%dT%H:%M")
             forecast_rows = db.execute(
-                "SELECT slot_start_utc, load_kw FROM forecast_runs "
+                "SELECT slot_start_utc, load_kw, water_heater_kw, "
+                "central_heating_kw, total_kw FROM forecast_runs "
                 "WHERE generated_at_utc = ? ORDER BY slot_start_utc ASC",
                 (self._format_utc_timestamp(latest_generation_utc),),
             ).fetchall()
@@ -1149,7 +1195,10 @@ class HouseholdForecastCoordinator:
                     "from": dt_util.as_local(
                         self._parse_utc_timestamp(str(row[0]))
                     ).strftime("%Y-%m-%dT%H:%M"),
-                    "load": round(float(row[1]), 3),
+                    "household_only": round(float(row[1]), 3),
+                    "water_heater": round(float(row[2]), 3),
+                    "central_heating": round(float(row[3]), 3),
+                    "total": round(float(row[4]), 3),
                 }
                 for row in forecast_rows
             ]
@@ -1536,9 +1585,22 @@ class HouseholdForecastCoordinator:
             "day_type": self._slot_day_type(slot_start_utc),
             "is_holiday": False,
             "gross_load_kwh": round(accumulator.slot_energy_kwh, 6),
-            "known_load_kwh": round(accumulator.subtracted_energy_kwh, 6),
+            "known_load_kwh": round(
+                accumulator.water_heater_energy_kwh
+                + accumulator.central_heating_energy_kwh
+                + accumulator.other_appliance_energy_kwh,
+                6,
+            ),
+            "water_heater_kwh": round(accumulator.water_heater_energy_kwh, 6),
+            "central_heating_kwh": round(accumulator.central_heating_energy_kwh, 6),
             "known_load_kw": round(
-                accumulator.subtracted_energy_kwh / (SLOT_MINUTES / 60.0), 3
+                (
+                    accumulator.water_heater_energy_kwh
+                    + accumulator.central_heating_energy_kwh
+                    + accumulator.other_appliance_energy_kwh
+                )
+                / (SLOT_MINUTES / 60.0),
+                3,
             ),
             "interval_count": accumulator.sample_count,
             "sparse_interval_count": accumulator.sparse_interval_count,
@@ -1571,18 +1633,24 @@ class HouseholdForecastCoordinator:
         """
         slot_duration_seconds = SLOT_MINUTES * 60
         gross_slot_energy_kwh = accumulator.slot_energy_kwh
-        net_slot_energy_kwh = max(
-            0.0, gross_slot_energy_kwh - accumulator.subtracted_energy_kwh
+        household_only_energy_kwh = max(
+            0.0,
+            gross_slot_energy_kwh
+            - accumulator.water_heater_energy_kwh
+            - accumulator.central_heating_energy_kwh,
         )
         load_kw = 0.0
         if accumulator.observed_seconds > 0:
-            # Extrapolate the measured gross energy to the whole slot before the
-            # known appliance energy, which is tracked per slot, is removed.
+            # Keep water heating and central heating out of household-only,
+            # while leaving other household appliances in that component.
             full_slot_gross_kwh = gross_slot_energy_kwh * (
                 slot_duration_seconds / accumulator.observed_seconds
             )
             load_kw = max(
-                0.0, full_slot_gross_kwh - accumulator.subtracted_energy_kwh
+                0.0,
+                full_slot_gross_kwh
+                - accumulator.water_heater_energy_kwh
+                - accumulator.central_heating_energy_kwh,
             ) / (SLOT_MINUTES / 60.0)
         coverage_fraction = min(
             1.0, accumulator.observed_seconds / slot_duration_seconds
@@ -1597,7 +1665,7 @@ class HouseholdForecastCoordinator:
                 quality_score *= max(0.0, 1.0 - (0.5 * sparse_fraction))
         return (
             self._format_utc_timestamp(slot_start_utc),
-            net_slot_energy_kwh,
+            household_only_energy_kwh,
             load_kw,
             accumulator.sample_count,
             quality_score,
@@ -1796,11 +1864,10 @@ class HouseholdForecastCoordinator:
 
     def _build_appliance_subtraction_rows_sync(
         self, since_utc: datetime | None = None
-    ) -> list[_IntervalEnergyRow]:
-        """Collect all known appliance interval rows to subtract from the meter."""
-        rows: list[_IntervalEnergyRow] = []
-        rows.extend(
-            self._load_appliance_interval_rows_sync(
+    ) -> dict[str, list[_IntervalEnergyRow]]:
+        """Collect appliance interval rows, separated by forecast component."""
+        return {
+            "water_heater": self._load_appliance_interval_rows_sync(
                 CONF_WATER_HEATER_POWER_ENTITY,
                 active_key=CONF_WATER_HEATER_ACTIVE_ENTITY,
                 fallback_kw=(
@@ -1809,10 +1876,8 @@ class HouseholdForecastCoordinator:
                     else None
                 ),
                 since_utc=since_utc,
-            )
-        )
-        rows.extend(
-            self._load_appliance_interval_rows_sync(
+            ),
+            "central_heating": self._load_appliance_interval_rows_sync(
                 CONF_CENTRAL_HEATING_POWER_ENTITY,
                 active_key=CONF_CENTRAL_HEATING_ACTIVE_ENTITY,
                 fallback_kw=(
@@ -1821,31 +1886,28 @@ class HouseholdForecastCoordinator:
                     else None
                 ),
                 since_utc=since_utc,
-            )
-        )
-        rows.extend(
-            self._load_appliance_interval_rows_sync(
-                CONF_POOL_PUMP_POWER_ENTITY,
-                fallback_kw=(
-                    self._pool_pump_power_w / 1000.0
-                    if self._pool_pump_power_w is not None
-                    else None
+            ),
+            "other": [
+                *self._load_appliance_interval_rows_sync(
+                    CONF_POOL_PUMP_POWER_ENTITY,
+                    fallback_kw=(
+                        self._pool_pump_power_w / 1000.0
+                        if self._pool_pump_power_w is not None
+                        else None
+                    ),
+                    since_utc=since_utc,
                 ),
-                since_utc=since_utc,
-            )
-        )
-        rows.extend(
-            self._load_appliance_interval_rows_sync(
-                CONF_DEHUMIDIFIER_POWER_ENTITY,
-                fallback_kw=(
-                    self._dehumidifier_power_w / 1000.0
-                    if self._dehumidifier_power_w is not None
-                    else None
+                *self._load_appliance_interval_rows_sync(
+                    CONF_DEHUMIDIFIER_POWER_ENTITY,
+                    fallback_kw=(
+                        self._dehumidifier_power_w / 1000.0
+                        if self._dehumidifier_power_w is not None
+                        else None
+                    ),
+                    since_utc=since_utc,
                 ),
-                since_utc=since_utc,
-            )
-        )
-        return rows
+            ],
+        }
 
     def _build_constant_forecast_slots(
         self,
@@ -1861,7 +1923,10 @@ class HouseholdForecastCoordinator:
             slots.append(
                 {
                     "from": slot_start.strftime("%Y-%m-%dT%H:%M"),
-                    "load": round(load_kw, 3),
+                    "household_only": round(load_kw, 3),
+                    "water_heater": 0.0,
+                    "central_heating": 0.0,
+                    "total": round(load_kw, 3),
                 }
             )
         return slots
@@ -1910,6 +1975,18 @@ class HouseholdForecastCoordinator:
             load_kw = float(row[1])
         except (TypeError, ValueError):
             load_kw = math.nan
+        water_heater_kwh = features.get("water_heater_kwh", 0.0)
+        central_heating_kwh = features.get("central_heating_kwh", 0.0)
+        try:
+            water_heater_kw = max(0.0, float(water_heater_kwh)) / (SLOT_MINUTES / 60.0)
+        except (TypeError, ValueError):
+            water_heater_kw = 0.0
+        try:
+            central_heating_kw = max(0.0, float(central_heating_kwh)) / (
+                SLOT_MINUTES / 60.0
+            )
+        except (TypeError, ValueError):
+            central_heating_kw = 0.0
         quality_score = float(row[3] or 0.0)
         sample_count = int(row[2] or 0)
 
@@ -1938,6 +2015,11 @@ class HouseholdForecastCoordinator:
             slot_index=slot_index,
             day_type=day_type,
             is_holiday=is_holiday,
+            water_heater_kw=water_heater_kw,
+            central_heating_kw=central_heating_kw,
+            has_component_history=(
+                "water_heater_kwh" in features and "central_heating_kwh" in features
+            ),
             stalled=stalled,
         )
 
@@ -2179,7 +2261,9 @@ class HouseholdForecastCoordinator:
             if not isinstance(slot_from, str) or not slot_from:
                 continue
             try:
-                previous_forecast_by_from[slot_from] = float(slot.get("load", 0.0))
+                previous_forecast_by_from[slot_from] = float(
+                    slot.get("household_only", 0.0)
+                )
             except (TypeError, ValueError):
                 continue
         if not previous_forecast_by_from:
@@ -2242,7 +2326,7 @@ class HouseholdForecastCoordinator:
         corrected_slots: list[dict[str, object]] = []
         for slot, slot_start_utc in zip(forecast_slots, slot_starts_utc):
             try:
-                base_load_kw = float(slot["load"])
+                base_load_kw = float(slot["household_only"])
             except (TypeError, ValueError, KeyError):
                 corrected_slots.append(dict(slot))
                 continue
@@ -2262,12 +2346,15 @@ class HouseholdForecastCoordinator:
                     0.0,
                     base_load_kw + correction_kw * (RESIDUAL_DECAY_FACTOR**slots_ahead),
                 )
-            corrected_slots.append(
-                {
-                    "from": slot.get("from"),
-                    "load": round(corrected_load_kw, 3),
-                }
+            updated_slot = dict(slot)
+            updated_slot["household_only"] = round(corrected_load_kw, 3)
+            updated_slot["total"] = round(
+                corrected_load_kw
+                + float(slot.get("water_heater", 0.0))
+                + float(slot.get("central_heating", 0.0)),
+                3,
             )
+            corrected_slots.append(updated_slot)
         return corrected_slots
 
     def _build_forecast_slots_from_history_sync(
@@ -2329,7 +2416,15 @@ class HouseholdForecastCoordinator:
         weighted_stats: dict[tuple[str, int], _WeightedStats] = {}
         slot_stats: dict[int, _WeightedStats] = {}
         day_type_stats: dict[str, _WeightedStats] = {}
+        water_heater_stats: dict[tuple[str, int], _WeightedStats] = {}
+        water_heater_slot_stats: dict[int, _WeightedStats] = {}
+        water_heater_day_stats: dict[str, _WeightedStats] = {}
+        central_heating_stats: dict[tuple[str, int], _WeightedStats] = {}
+        central_heating_slot_stats: dict[int, _WeightedStats] = {}
+        central_heating_day_stats: dict[str, _WeightedStats] = {}
         global_stats = _WeightedStats()
+        water_heater_global_stats = _WeightedStats()
+        central_heating_global_stats = _WeightedStats()
 
         for row in model_rows:
             age_days = max(
@@ -2355,6 +2450,30 @@ class HouseholdForecastCoordinator:
                 weight,
             )
             global_stats.add(row.load_kw, weight)
+            if not row.has_component_history:
+                continue
+            for value, exact, by_slot, by_day, overall in (
+                (
+                    row.water_heater_kw,
+                    water_heater_stats,
+                    water_heater_slot_stats,
+                    water_heater_day_stats,
+                    water_heater_global_stats,
+                ),
+                (
+                    row.central_heating_kw,
+                    central_heating_stats,
+                    central_heating_slot_stats,
+                    central_heating_day_stats,
+                    central_heating_global_stats,
+                ),
+            ):
+                exact.setdefault((row.day_type, row.slot_index), _WeightedStats()).add(
+                    value, weight
+                )
+                by_slot.setdefault(row.slot_index, _WeightedStats()).add(value, weight)
+                by_day.setdefault(row.day_type, _WeightedStats()).add(value, weight)
+                overall.add(value, weight)
 
         global_mean = global_stats.mean()
         if global_mean is None:
@@ -2375,6 +2494,29 @@ class HouseholdForecastCoordinator:
                     if fallback_mean is not None:
                         return fallback_mean
             return global_mean
+
+        def component_baseline(
+            exact_stats: dict[tuple[str, int], _WeightedStats],
+            component_slot_stats: dict[int, _WeightedStats],
+            component_day_stats: dict[str, _WeightedStats],
+            component_global_stats: _WeightedStats,
+            day_type: str,
+            slot_index: int,
+        ) -> float:
+            exact = exact_stats.get((day_type, slot_index))
+            if learned and exact is not None and exact.count >= 2:
+                mean = exact.mean()
+                if mean is not None:
+                    return mean
+            for stats in (
+                component_slot_stats.get(slot_index),
+                component_day_stats.get(day_type),
+            ):
+                if stats is not None:
+                    mean = stats.mean()
+                    if mean is not None:
+                        return mean
+            return component_global_stats.mean() or 0.0
 
         current_slot_start_utc = self._floor_to_slot_start_utc(now_utc)
         trend_delta = 0.0
@@ -2417,10 +2559,46 @@ class HouseholdForecastCoordinator:
                     * math.exp(-slots_ahead / FORECAST_TREND_DECAY_SLOTS)
                 )
 
+            household_only_kw = round(max(0.0, base_load_kw), 3)
+            day_type = self._slot_day_type(slot_start_utc)
+            slot_index = self._slot_index(slot_start_utc)
+            water_heater_kw = round(
+                max(
+                    0.0,
+                    component_baseline(
+                        water_heater_stats,
+                        water_heater_slot_stats,
+                        water_heater_day_stats,
+                        water_heater_global_stats,
+                        day_type,
+                        slot_index,
+                    ),
+                ),
+                3,
+            )
+            central_heating_kw = round(
+                max(
+                    0.0,
+                    component_baseline(
+                        central_heating_stats,
+                        central_heating_slot_stats,
+                        central_heating_day_stats,
+                        central_heating_global_stats,
+                        day_type,
+                        slot_index,
+                    ),
+                ),
+                3,
+            )
             forecast_slots.append(
                 {
                     "from": slot_start_local.strftime("%Y-%m-%dT%H:%M"),
-                    "load": round(max(0.0, base_load_kw), 3),
+                    "household_only": household_only_kw,
+                    "water_heater": water_heater_kw,
+                    "central_heating": central_heating_kw,
+                    "total": round(
+                        household_only_kw + water_heater_kw + central_heating_kw, 3
+                    ),
                 }
             )
 
@@ -2664,10 +2842,19 @@ class HouseholdForecastCoordinator:
     def _persist_forecast_runs_sync(self, generated_at_utc: datetime) -> None:
         """Store the current shell forecast in the forecast history table."""
         db = self._ensure_db()
-        forecast_rows: list[tuple[str, str, float]] = []
+        forecast_rows: list[tuple[str, str, float, float, float, float]] = []
         for forecast_slot in self._forecast_slots:
             slot_from_text = str(forecast_slot.get("from", ""))
-            slot_load = float(forecast_slot.get("load", self.load_forecast_kw))
+            slot_load = float(
+                forecast_slot.get("household_only", self.load_forecast_kw)
+            )
+            water_heater_kw = float(forecast_slot.get("water_heater", 0.0))
+            central_heating_kw = float(forecast_slot.get("central_heating", 0.0))
+            total_kw = float(
+                forecast_slot.get(
+                    "total", slot_load + water_heater_kw + central_heating_kw
+                )
+            )
             slot_from_local = datetime.fromisoformat(slot_from_text)
             if slot_from_local.tzinfo is None:
                 slot_from_local = slot_from_local.replace(
@@ -2679,12 +2866,16 @@ class HouseholdForecastCoordinator:
                     self._format_utc_timestamp(generated_at_utc),
                     self._format_utc_timestamp(slot_start_utc),
                     slot_load,
+                    water_heater_kw,
+                    central_heating_kw,
+                    total_kw,
                 )
             )
 
         db.executemany(
             "INSERT OR REPLACE INTO forecast_runs "
-            "(generated_at_utc, slot_start_utc, load_kw) VALUES (?, ?, ?)",
+            "(generated_at_utc, slot_start_utc, load_kw, water_heater_kw, "
+            "central_heating_kw, total_kw) VALUES (?, ?, ?, ?, ?, ?)",
             forecast_rows,
         )
 
@@ -2746,18 +2937,31 @@ class HouseholdForecastCoordinator:
                     latest_closed_slot_utc,
                 )
                 if slot_accumulators:
-                    if appliance_rows:
-                        slot_lookup = {
-                            accumulator.slot_start_utc: accumulator
-                            for accumulator in slot_accumulators
-                        }
+                    slot_lookup = {
+                        accumulator.slot_start_utc: accumulator
+                        for accumulator in slot_accumulators
+                    }
+                    for component, rows in appliance_rows.items():
+                        if not rows:
+                            continue
+                        energy_attr = {
+                            "water_heater": "water_heater_energy_kwh",
+                            "central_heating": "central_heating_energy_kwh",
+                            "other": "other_appliance_energy_kwh",
+                        }[component]
                         self._allocate_interval_rows_to_slots(
-                            appliance_rows,
+                            rows,
                             slot_lookup,
                             rebuild_start_slot_utc,
                             latest_closed_slot_utc,
-                            energy_attr="subtracted_energy_kwh",
+                            energy_attr=energy_attr,
                             track_sample_counts=False,
+                        )
+                    for accumulator in slot_accumulators:
+                        accumulator.subtracted_energy_kwh = (
+                            accumulator.water_heater_energy_kwh
+                            + accumulator.central_heating_energy_kwh
+                            + accumulator.other_appliance_energy_kwh
                         )
                     self._persist_slot_rows_sync(
                         slot_accumulators,

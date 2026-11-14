@@ -64,13 +64,13 @@ class HouseholdForecastSensor(SensorEntity):
 
     @property
     def native_value(self) -> float:
-        """Return the current in-progress slot's load forecast in kW.
+        """Return the current in-progress slot's total forecast in kW.
 
         The ``forecasts`` attribute is anchored to local midnight (slot 0),
         so the current slot is not always the first array entry; the
         coordinator looks up the slot that actually covers "now".
         """
-        return self._coordinator.current_load_kw
+        return round(self._coordinator.current_total_kw, 3)
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
@@ -93,6 +93,9 @@ class HouseholdForecastSensor(SensorEntity):
                 round(household_load_forecast_w, 1)
                 if household_load_forecast_w is not None
                 else None
+            ),
+            "total_load_forecast_w": round(
+                self._coordinator.current_total_kw * 1000.0, 1
             ),
             # Backward-compatible attribute alias.
             "household_base_load_w": (

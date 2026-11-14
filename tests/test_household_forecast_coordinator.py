@@ -107,7 +107,7 @@ async def test_deferred_setup_keeps_cached_forecast_until_rebuild_finishes(
     hass.async_create_background_task.side_effect = (
         lambda coro, _name: asyncio.create_task(coro)
     )
-    cached = [{"from": "2026-11-05T06:45", "load": 0.42}]
+    cached = [{"from": "2026-11-05T06:45", "household_only": 0.42, "total": 0.42}]
     coordinator._forecast_slots = cached
     coordinator._async_initialize_capture_db = AsyncMock()
     started = asyncio.Event()
@@ -118,7 +118,9 @@ async def test_deferred_setup_keeps_cached_forecast_until_rebuild_finishes(
     async def rebuild(_now):
         started.set()
         await release.wait()
-        coordinator._forecast_slots = [{"from": "2026-11-05T06:45", "load": 0.55}]
+        coordinator._forecast_slots = [
+            {"from": "2026-11-05T06:45", "household_only": 0.55, "total": 0.55}
+        ]
         return True
 
     coordinator._async_finalize_history = AsyncMock(side_effect=rebuild)
@@ -130,7 +132,7 @@ async def test_deferred_setup_keeps_cached_forecast_until_rebuild_finishes(
     listener.assert_not_called()
     release.set()
     await coordinator._initial_rebuild_task
-    assert coordinator.forecast_slots[0]["load"] == 0.55
+    assert coordinator.forecast_slots[0]["household_only"] == 0.55
     listener.assert_called_once()
     await coordinator.async_shutdown()
 
@@ -191,6 +193,8 @@ def _insert_slot_row(
     *,
     quality: float = 1.0,
     gross_kwh: float | None = None,
+    water_heater_kwh: float = 0.0,
+    central_heating_kwh: float = 0.0,
 ) -> None:
     """Insert one slot row; ``gross_kwh`` mimics the stored gross energy feature."""
     local_start = dt_util.as_local(slot_start)
@@ -201,6 +205,8 @@ def _insert_slot_row(
     }
     if gross_kwh is not None:
         features["gross_load_kwh"] = gross_kwh
+    features["water_heater_kwh"] = water_heater_kwh
+    features["central_heating_kwh"] = central_heating_kwh
     db.execute(
         "INSERT OR REPLACE INTO slot_rows "
         "(slot_start_utc, slot_energy_kwh, load_kw, sample_count, "
@@ -220,6 +226,32 @@ def _local_midnight_utc(moment: datetime) -> datetime:
     """Return the UTC time of local midnight on the local day of ``moment``."""
     local = dt_util.as_local(moment)
     return dt_util.as_utc(local.replace(hour=0, minute=0, second=0, microsecond=0))
+
+
+def test_forecast_runs_schema_migrates_existing_rows(tmp_path: Path) -> None:
+    coordinator, _hass = _make_coordinator(tmp_path)
+    with sqlite3.connect(coordinator._db_path()) as conn:
+        conn.execute(
+            "CREATE TABLE forecast_runs (generated_at_utc TEXT NOT NULL, "
+            "slot_start_utc TEXT NOT NULL, load_kw REAL NOT NULL, "
+            "PRIMARY KEY (generated_at_utc, slot_start_utc))"
+        )
+        conn.execute(
+            "INSERT INTO forecast_runs VALUES (?, ?, ?)",
+            ("2026-09-01T00:00:00+00:00", "2026-09-01T00:00:00+00:00", 0.8),
+        )
+        conn.execute("PRAGMA user_version = 1")
+
+    conn = coordinator._open_db()
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(forecast_runs)")}
+    row = conn.execute(
+        "SELECT load_kw, water_heater_kw, central_heating_kw, total_kw "
+        "FROM forecast_runs"
+    ).fetchone()
+    assert {"water_heater_kw", "central_heating_kw", "total_kw"} <= columns
+    assert row == pytest.approx((0.8, 0.0, 0.0, 0.8))
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
+    conn.close()
 
 
 @pytest.mark.asyncio
@@ -501,7 +533,7 @@ async def test_coordinator_restarts_with_cold_start_forecast(tmp_path: Path) -> 
         await coordinator.async_setup()
 
     assert coordinator.load_forecast_kw == pytest.approx(STATIC_LOAD_FORECAST_KW)
-    assert coordinator.forecast_slots[0]["load"] == pytest.approx(
+    assert coordinator.forecast_slots[0]["household_only"] == pytest.approx(
         STATIC_LOAD_FORECAST_KW
     )
     assert coordinator.reason == STATIC_REASON
@@ -537,7 +569,7 @@ async def test_coordinator_restarts_with_cold_start_forecast(tmp_path: Path) -> 
     assert restart_coordinator.load_forecast_kw == pytest.approx(
         STATIC_LOAD_FORECAST_KW
     )
-    assert restart_coordinator.forecast_slots[0]["load"] == pytest.approx(
+    assert restart_coordinator.forecast_slots[0]["household_only"] == pytest.approx(
         STATIC_LOAD_FORECAST_KW
     )
     assert restart_coordinator.reason == STATIC_REASON
@@ -804,14 +836,16 @@ async def test_coordinator_subtracts_known_appliance_loads_from_slot_rows(
             "SELECT slot_energy_kwh, load_kw, sample_count, quality_score, "
             "features_json FROM slot_rows ORDER BY slot_start_utc"
         ).fetchone()
-        assert slot_row[0] == pytest.approx(0.4375)
-        assert slot_row[1] == pytest.approx(1.75)
+        assert slot_row[0] == pytest.approx(0.625)
+        assert slot_row[1] == pytest.approx(2.5)
         assert slot_row[2] == 1
         assert slot_row[3] == pytest.approx(0.5)
         features = json.loads(slot_row[4])
         assert features["gross_load_kwh"] == pytest.approx(1.0)
         assert features["known_load_kwh"] == pytest.approx(0.5625)
         assert features["known_load_kw"] == pytest.approx(2.25)
+        assert features["water_heater_kwh"] == pytest.approx(0.25)
+        assert features["central_heating_kwh"] == pytest.approx(0.125)
         assert features["event_flags"]["water_heater_active"] == 1
         assert features["event_flags"]["central_heating_active"] == 1
 
@@ -1031,10 +1065,11 @@ async def test_coordinator_builds_learned_forecast_from_slot_history(
         fresh_meter_sample
     ).strftime("%Y-%m-%dT%H:%M")
     assert "seasonal baseline" in coordinator.reason
-    assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.72)
-    assert coordinator.forecast_slots[1]["load"] == pytest.approx(1.28)
+    assert coordinator.forecast_slots[0]["household_only"] == pytest.approx(0.72)
+    assert coordinator.forecast_slots[1]["household_only"] == pytest.approx(1.28)
     assert (
-        coordinator.forecast_slots[0]["load"] != coordinator.forecast_slots[1]["load"]
+        coordinator.forecast_slots[0]["household_only"]
+        != coordinator.forecast_slots[1]["household_only"]
     )
 
 
@@ -1330,11 +1365,11 @@ def test_coordinator_applies_residual_correction_to_step_change(
 
     baseline_slots, corrected_slots = asyncio.run(_exercise())
     baseline_future = [
-        float(slot["load"])
+        float(slot["household_only"])
         for slot in baseline_slots[current_slot_index : current_slot_index + 4]
     ]
     corrected_future = [
-        float(slot["load"])
+        float(slot["household_only"])
         for slot in corrected_slots[current_slot_index : current_slot_index + 4]
     ]
     actual_future_kw = 2.6
@@ -1366,14 +1401,16 @@ def test_coordinator_keeps_historical_forecast_slots_stable_on_refresh(
     coordinator._forecast_slots = [
         {
             "from": dt_util.as_local(slot_start_utc).strftime("%Y-%m-%dT%H:%M"),
-            "load": float(index),
+            "household_only": float(index),
+            "total": float(index),
         }
         for index, slot_start_utc in enumerate(slot_starts_utc)
     ]
     fresh_slots = [
         {
             "from": dt_util.as_local(slot_start_utc).strftime("%Y-%m-%dT%H:%M"),
-            "load": float(1000 + index),
+            "household_only": float(1000 + index),
+            "total": float(1000 + index),
         }
         for index, slot_start_utc in enumerate(slot_starts_utc)
     ]
@@ -1385,19 +1422,19 @@ def test_coordinator_keeps_historical_forecast_slots_stable_on_refresh(
     )
 
     assert len(merged_slots) == FORECAST_SLOT_COUNT
-    assert [slot["load"] for slot in merged_slots[:historical_count]] == [
+    assert [slot["household_only"] for slot in merged_slots[:historical_count]] == [
         float(index) for index in range(historical_count)
     ]
-    assert merged_slots[historical_count]["load"] == pytest.approx(
+    assert merged_slots[historical_count]["household_only"] == pytest.approx(
         float(1000 + historical_count)
     )
-    assert merged_slots[-1]["load"] == pytest.approx(
+    assert merged_slots[-1]["household_only"] == pytest.approx(
         float(1000 + FORECAST_SLOT_COUNT - 1)
     )
 
     snapshot = coordinator.forecast_slots
-    snapshot[0]["load"] = -1.0
-    assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.0)
+    snapshot[0]["household_only"] = -1.0
+    assert coordinator.forecast_slots[0]["household_only"] == pytest.approx(0.0)
 
 
 def test_coordinator_current_load_kw_uses_current_slot_not_first_slot(
@@ -1411,7 +1448,8 @@ def test_coordinator_current_load_kw_uses_current_slot_not_first_slot(
     coordinator._forecast_slots = [
         {
             "from": dt_util.as_local(slot_start_utc).strftime("%Y-%m-%dT%H:%M"),
-            "load": float(index),
+            "household_only": float(index),
+            "total": float(index),
         }
         for index, slot_start_utc in enumerate(slot_starts_utc)
     ]
@@ -1431,8 +1469,8 @@ def test_coordinator_current_load_kw_uses_current_slot_not_first_slot(
     assert legacy_value == pytest.approx(current_value)
     assert legacy_watts == pytest.approx(current_value * 1000.0)
     # forecasts[0] still reflects the frozen midnight slot, distinct from state.
-    assert coordinator.forecast_slots[0]["load"] == pytest.approx(0.0)
-    assert current_value != coordinator.forecast_slots[0]["load"]
+    assert coordinator.forecast_slots[0]["household_only"] == pytest.approx(0.0)
+    assert current_value != coordinator.forecast_slots[0]["household_only"]
 
 
 @pytest.mark.asyncio
@@ -1732,7 +1770,7 @@ async def test_forecast_ignores_counter_glitch_and_outlier_slots(
 
     assert await coordinator._async_finalize_history(now)
 
-    loads = [float(slot["load"]) for slot in coordinator.forecast_slots]
+    loads = [float(slot["household_only"]) for slot in coordinator.forecast_slots]
     assert max(loads) == pytest.approx(0.5, abs=0.01)
 
 
@@ -1756,7 +1794,7 @@ async def test_forecast_trains_on_the_last_56_days_only(tmp_path: Path) -> None:
 
     assert await coordinator._async_finalize_history(now)
 
-    assert float(coordinator.forecast_slots[0]["load"]) == pytest.approx(1.0)
+    assert float(coordinator.forecast_slots[0]["household_only"]) == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio
@@ -1781,7 +1819,7 @@ async def test_forecast_trend_is_anchored_at_now_and_fades(tmp_path: Path) -> No
 
     assert await coordinator._async_finalize_history(now)
 
-    slots = [float(slot["load"]) for slot in coordinator.forecast_slots]
+    slots = [float(slot["household_only"]) for slot in coordinator.forecast_slots]
     # The same slot tomorrow is far enough ahead to show the plain baseline.
     lift_now = slots[current_index] - slots[current_index + 96]
     assert 0.25 < lift_now < 0.4
@@ -1790,6 +1828,37 @@ async def test_forecast_trend_is_anchored_at_now_and_fades(tmp_path: Path) -> No
     assert slots[current_index - 1] == pytest.approx(
         slots[current_index + 95], abs=0.02
     )
+
+
+@pytest.mark.asyncio
+async def test_forecast_exposes_components_and_their_total(tmp_path: Path) -> None:
+    coordinator, _hass = _make_coordinator(tmp_path)
+    await _setup_coordinator(coordinator)
+    db = coordinator._ensure_db()
+    now = datetime(2026, 9, 9, 12, 0, tzinfo=UTC)
+    midnight = _local_midnight_utc(now)
+    step = timedelta(minutes=15)
+
+    for day in range(1, 9):
+        for index in range(96):
+            _insert_slot_row(
+                db,
+                midnight - timedelta(days=day) + step * index,
+                0.5,
+                water_heater_kwh=0.0625,
+                central_heating_kwh=0.125,
+            )
+    db.commit()
+
+    assert await coordinator._async_finalize_history(now)
+
+    current_index = coordinator._current_slot_index_local(now)
+    slot = coordinator.forecast_slots[current_index]
+    assert slot["household_only"] == pytest.approx(0.5)
+    assert slot["water_heater"] == pytest.approx(0.25)
+    assert slot["central_heating"] == pytest.approx(0.5)
+    assert slot["total"] == pytest.approx(1.25)
+    assert coordinator.current_total_kw == pytest.approx(1.25)
 
 
 def test_residual_correction_compares_against_uncorrected_forecast(
@@ -1808,9 +1877,11 @@ def test_residual_correction_compares_against_uncorrected_forecast(
         dt_util.as_local(slot_start).strftime("%Y-%m-%dT%H:%M")
         for slot_start in closed_slots
     ]
-    coordinator._base_forecast_slots = [{"from": key, "load": 0.6} for key in keys]
+    coordinator._base_forecast_slots = [
+        {"from": key, "household_only": 0.6} for key in keys
+    ]
     # The published forecast already contains the correction and nearly matches.
-    coordinator._forecast_slots = [{"from": key, "load": 2.1} for key in keys]
+    coordinator._forecast_slots = [{"from": key, "household_only": 2.1} for key in keys]
 
     correction_kw = coordinator._compute_residual_correction_kw_sync(
         now, learning_nights=8

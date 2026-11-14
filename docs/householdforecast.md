@@ -6,11 +6,10 @@ An optional sensor that publishes a 48-hour household Load forecast in 15-minute
 slots. The forecast is learned from the household meter history and is a
 seasonal profile by slot-of-day and day type (workday / Saturday / Sunday).
 
-**Target.** The forecast is the household's own base load, not the net grid
-import/export. When appliance power sensors are configured, their measured power
-is subtracted from the metered signal before the model is fitted, so the
-water heater, central heating, pool pump and dehumidifier are not part of the
-forecast. Each `load` value is the average power in kW over its 15-minute slot.
+**Target.** Each forecast slot separates `household_only`, `water_heater` and
+`central_heating`; `total` is their sum. The household-only component includes
+other household appliances such as a pool pump or dehumidifier. Each value is
+the average power in kW over its 15-minute slot.
 
 **Fallback.** While there is not enough usable history, the sensor publishes a
 fixed 0.60 kW profile, so the full 192-slot `forecasts` list is always
@@ -41,9 +40,10 @@ must report the gross household consumption. Accepted units are energy counters
 integrated over time. `mW`/`mWh` are treated as milli-units. If no sensor
 reports gross household demand, use a derived/template sensor.
 
-### Optional configuration that influences the forecast
+### Optional configuration that separates forecast components
 
-These inputs are subtracted from the meter signal.
+These inputs are forecast as separate components and excluded from
+`household_only`.
 
 | Option (label) | Key | Step | Example | Role |
 |---|---|---|---|---|
@@ -53,12 +53,13 @@ These inputs are subtracted from the meter signal.
 | Central heating power sensor | `central_heating_power_entity` | Household activity filters | `sensor.central_heating_power` | Measured power, subtracted from the meter signal |
 | Central heating rated power | `central_heating_power_w` | Household activity filters | `2200` | Fallback power in W; used only together with the active sensor when the power sensor has no usable history |
 | Central heating active sensor | `central_heating_active_entity` | Household activity filters | `binary_sensor.central_heating_active` | Fallback timing, as for the water heater |
-| Pool pump power sensor | `pool_pump_power_entity` | Flexible loads | `sensor.pool_pump_power` | Measured power, subtracted from the meter signal |
-| Dehumidifier power sensor | `dehumidifier_power_entity` | Flexible loads | `sensor.dehumidifier_power` | Measured power, subtracted from the meter signal |
 
 Appliance power sensors accept the same units as the meter. The fallback only
 applies to the water heater and the central heating, because only they have an
 active sensor. Rated-power values must be at least 1 W.
+
+Pool-pump and dehumidifier power sensors are captured for diagnostics but stay
+included in `household_only`; they are not separately forecast.
 
 ### Optional configuration that is currently not in use
 
@@ -68,8 +69,8 @@ forecast.
 
 | Option (label) | Key | Step | Example | Status |
 |---|---|---|---|---|
-| Pool pump rated power | `pool_pump_power_w` | Flexible loads | `500` | currently not in use (the value is read, but it is only a fallback for an active sensor, which the pool pump does not have) |
-| Dehumidifier rated power | `dehumidifier_power_w` | Flexible loads | `1500` | currently not in use (same reason as the pool pump) |
+| Pool pump power sensor / rated power | `pool_pump_power_entity` / `pool_pump_power_w` | Flexible loads | `sensor.pool_pump_power` / `500` | Captured, but not separated from `household_only` |
+| Dehumidifier power sensor / rated power | `dehumidifier_power_entity` / `dehumidifier_power_w` | Flexible loads | `sensor.dehumidifier_power` / `1500` | Captured, but not separated from `household_only` |
 | Water heater worst-case refill hours | `water_heater_max_hours` | Water heater | `4` | Not read by the household forecast; used by the water-heater schedule (see [waterheater.md](waterheater.md)) |
 | Bathroom humidity sensor | `bathroom_humidity_entity` | Water heater | `sensor.bathroom_humidity` | History is recorded but not used by the household forecast; the water-heater schedule uses it to detect shower days (see [waterheater.md](waterheater.md)) |
 | Outdoor temperature sensor | `outdoor_temperature_entity` | Household load | `sensor.outdoor_temperature` | History is recorded but not used by the household forecast (the slot feature `outdoor_temp_c` is always `null`); the heating forecast trains on it (see [heatingforecast.md](heatingforecast.md)) |
@@ -115,7 +116,7 @@ forecast, or the fixed cold-start profile when no cached forecast exists.
 
 ### State
 
-The `load` of the slot that covers the current local time, in `kW`, rounded to
+The `total` of the slot that covers the current local time, in `kW`, rounded to
 3 decimals. This is not always `forecasts[0]`, because the list starts at local
 midnight. During cold start it is `0.6`.
 
@@ -129,12 +130,13 @@ Recorder: the `forecasts` attribute is never stored by the recorder. The
 
 | Attribute | Type | Description |
 |---|---|---|
-| `forecasts` | list[dict] | 192 entries (48 h in 15-minute slots) from local midnight today to the end of tomorrow; each item is `{"from": "YYYY-MM-DDTHH:MM", "load": kW}` with `from` in local time without a timezone suffix |
+| `forecasts` | list[dict] | 192 entries (48 h in 15-minute slots) from local midnight today to the end of tomorrow; each item contains `from`, `household_only`, `water_heater`, `central_heating` and `total` (kW), with `from` in local time without a timezone suffix. |
 | `last_forecast_generation` | str | Local `YYYY-MM-DDTHH:MM` time of the latest quarter-hour refresh |
 | `quality_status` | str | `ok`, `degraded`, `stale` or `fallback` (see below) |
 | `quality_warnings` | list[str] | Sorted warning codes; empty when the forecast is healthy |
 | `last_valid_required_sample` | str \| null | Local `YYYY-MM-DDTHH:MM` time of the latest stored meter sample; `null` if none |
-| `household_load_forecast_w` | float | Current-slot forecast in W, rounded to 0.1 (`600.0` during cold start) |
+| `household_load_forecast_w` | float | Current-slot household-only forecast in W, rounded to 0.1 (`600.0` during cold start) |
+| `total_load_forecast_w` | float | Current-slot total forecast in W, rounded to 0.1 |
 | `household_base_load_w` | float | Backward-compatible alias for `household_load_forecast_w` |
 | `learning_nights` | int | Number of distinct local days with usable slot history (up to 180 days); `0` during cold start |
 | `data_since` | str \| null | Local date (`YYYY-MM-DD`) of the oldest usable slot |
@@ -150,8 +152,10 @@ start.
 - 192 physical 15-minute slots; slot 0 starts at local midnight of the current
   day, slot 191 at 23:45 tomorrow. The anchor moves to the new day at midnight.
 - Slots before the current one are frozen: refreshes within the same day keep
-  their published `load` values and only rewrite the current and future slots.
-- `load` is never negative and is rounded to 3 decimals.
+  their published component values and only rewrite the current and future
+  slots.
+- Components and `total` are never negative and are rounded to 3 decimals.
+- The battery charge-mode planner uses `total`.
 
 ### Quality status
 
@@ -206,7 +210,7 @@ created in that case.
 
 Raw samples are written to a SQLite file next to the Home Assistant storage:
 `<config>/.storage/energyadvisor_household_forecast_<entry_id>.db` (WAL mode,
-schema version 1).
+schema version 2).
 
 | Table | Content | Retention |
 |---|---|---|
@@ -240,10 +244,11 @@ because the new entity has an unrelated counter. Appliance samples are kept.
    energy.
 3. The energy of an interval is split proportionally over the 15-minute slots it
    overlaps. The same is done for the appliance intervals.
-4. For each closed slot,
-   `load_kw = max(0, gross_kwh * 900 / observed_seconds - appliance_kwh) / 0.25`,
-   so a partly observed slot keeps its true average power. `slot_energy_kwh` is
-   the measured net energy.
+4. For each closed slot, household-only load is
+   `max(0, gross_kwh * 900 / observed_seconds - water_heater_kwh - central_heating_kwh) / 0.25`,
+   so a partly observed slot keeps its true average power. The water-heater
+   and central-heating energies are forecast as separate components; other
+   known appliance energy remains in household-only load.
 5. `quality_score` is the observed share of the slot (0-1), reduced by up to
    50 % when sparse intervals contributed. A slot without samples scores 0.
 

@@ -1121,9 +1121,9 @@ def _household(slots: list[dict]) -> SimpleNamespace:
 
 def test_load_comes_from_the_household_forecast_slots(hass) -> None:
     forecast = [
-        {"from": "2026-08-15T00:00", "load": 2.0},
-        {"from": "2026-08-15T00:15", "load": 0.5},
-        {"from": "2026-08-15T00:30", "load": 4.0},
+        {"from": "2026-08-15T00:00", "total": 2.0},
+        {"from": "2026-08-15T00:15", "total": 0.5},
+        {"from": "2026-08-15T00:30", "total": 4.0},
     ]
     sensor = _make_sensor(hass, _rates([1.0] * 4), household=_household(forecast))
 
@@ -1132,18 +1132,34 @@ def test_load_comes_from_the_household_forecast_slots(hass) -> None:
     assert loads == [2.0, 0.5, 4.0, DEFAULT_LOAD_KW]
 
 
+def test_total_forecast_is_used_for_battery_planning(hass) -> None:
+    forecast = [
+        {
+            "from": "2026-08-15T00:00",
+            "household_only": 1.0,
+            "household_only": 1.0,
+            "water_heater": 2.0,
+            "central_heating": 3.0,
+            "total": 6.0,
+        }
+    ]
+    sensor = _make_sensor(hass, _rates([1.0]), household=_household(forecast))
+
+    assert sensor._build_inputs(BASE).slots[0].load_kw == 6.0
+
+
 def test_quarter_hour_price_slots_use_the_matching_forecast_load(hass) -> None:
     forecast = [
-        {"from": "2026-08-15T00:00", "load": 1.0},
-        {"from": "2026-08-15T00:15", "load": 2.0},
-        {"from": "2026-08-15T00:30", "load": 3.0},
-        {"from": "2026-08-15T00:45", "load": 4.0},
-        {"from": "2026-08-15T01:00", "load": 6.0},
-        {"from": "2026-08-15T01:15", "load": 8.0},
+        {"from": "2026-08-15T00:00", "total": 1.0},
+        {"from": "2026-08-15T00:15", "total": 2.0},
+        {"from": "2026-08-15T00:30", "total": 3.0},
+        {"from": "2026-08-15T00:45", "total": 4.0},
+        {"from": "2026-08-15T01:00", "total": 6.0},
+        {"from": "2026-08-15T01:15", "total": 8.0},
         # 02:00 is missing: the fallback applies.
-        {"from": "bad", "load": 9.0},
-        {"from": "2026-08-15T03:00", "load": "junk"},
-        {"from": "2026-08-15T03:15", "load": float("nan")},
+        {"from": "bad", "total": 9.0},
+        {"from": "2026-08-15T03:00", "total": "junk"},
+        {"from": "2026-08-15T03:15", "total": float("nan")},
     ]
     sensor = _make_sensor(hass, _rates([1.0] * 12), household=_household(forecast))
 
@@ -1172,7 +1188,7 @@ def test_fallback_load_is_1_0_kw_without_a_household_coordinator(hass) -> None:
 
 
 def test_negative_forecast_load_counts_as_zero(hass) -> None:
-    forecast = [{"from": "2026-08-15T00:00", "load": -2.0}]
+    forecast = [{"from": "2026-08-15T00:00", "total": -2.0}]
     sensor = _make_sensor(hass, _rates([1.0]), household=_household(forecast))
 
     assert sensor._build_inputs(BASE).slots[0].load_kw == 0.0
@@ -1218,7 +1234,7 @@ async def test_the_forecast_load_limits_the_discharge(make_sensor, hass) -> None
     options = {**BATTERY_OPTIONS, CONF_BATTERY_SOC_ENTITY: SOC_ENTITY}
     rates = _rates([1.0] * 4 + [3.0] * 4)
     forecast = [
-        {"from": slot["start"].strftime("%Y-%m-%dT%H:%M"), "load": load}
+        {"from": slot["start"].strftime("%Y-%m-%dT%H:%M"), "total": load}
         for slot, load in zip(rates, [0.0] * 4 + [4.0] * 4)
     ]
     sensor = make_sensor(rates, options=options, household=_household(forecast))
@@ -1514,7 +1530,7 @@ async def test_nothing_that_runs_on_the_loop_calls_the_planner(
     make_sensor, hass
 ) -> None:
     hass.states.async_set(SOC_ENTITY, "30")
-    household = _household([{"from": "2026-08-15T00:00", "load": 2.0}])
+    household = _household([{"from": "2026-08-15T00:00", "total": 2.0}])
     sensor = make_sensor(
         _long_rates(288),
         options=SOC_OPTIONS,
@@ -1542,7 +1558,7 @@ async def test_nothing_that_runs_on_the_loop_calls_the_planner(
 
 def test_building_the_snapshot_is_cheap_for_a_three_day_array(hass) -> None:
     forecast = [
-        {"from": slot["start"].strftime("%Y-%m-%dT%H:%M"), "load": 1.0}
+        {"from": slot["start"].strftime("%Y-%m-%dT%H:%M"), "total": 1.0}
         for slot in _long_rates(192)
     ]
     sensor = _make_sensor(
@@ -1564,7 +1580,7 @@ def test_building_the_snapshot_is_cheap_for_a_three_day_array(hass) -> None:
 
 def test_the_snapshot_is_immutable_and_detached_from_its_sources(hass) -> None:
     rates = _long_rates(96)
-    forecast = [{"from": "2026-08-15T00:00", "load": 2.0}]
+    forecast = [{"from": "2026-08-15T00:00", "total": 2.0}]
     household = _household(forecast)
     hass.states.async_set(SOC_ENTITY, "30")
     sensor = _make_sensor(hass, rates, options=SOC_OPTIONS, household=household)

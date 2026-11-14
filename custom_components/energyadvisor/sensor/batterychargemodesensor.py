@@ -961,7 +961,7 @@ def _load_by_start(forecast_slots: list[dict]) -> dict[str, list[float]]:
         if not isinstance(slot, Mapping):
             continue
         start = slot.get("from")
-        load_kw = _as_float(slot.get("load"))
+        load_kw = _as_float(slot.get("total"))
         if isinstance(start, str) and load_kw is not None:
             loads.setdefault(start, []).append(max(load_kw, 0.0))
     return loads

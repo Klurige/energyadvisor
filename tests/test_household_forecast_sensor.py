@@ -53,6 +53,7 @@ def _make_sensor(
         load_forecast_kw=load_forecast_kw,
         base_load_kw=load_forecast_kw,
         current_load_kw=round(load_forecast_kw, 3),
+        current_total_kw=round(load_forecast_kw, 3),
         household_load_forecast_w=load_forecast_kw * 1000.0,
         household_base_load_w=load_forecast_kw * 1000.0,
         learning_nights=learning_nights,
@@ -113,6 +114,7 @@ def test_sensor_uses_preferred_entity_id_and_exposes_static_values() -> None:
     attrs = sensor.extra_state_attributes
     assert attrs[ATTR_FORECASTS] == []
     assert attrs["household_load_forecast_w"] == STATIC_LOAD_FORECAST_W
+    assert attrs["total_load_forecast_w"] == STATIC_LOAD_FORECAST_W
     assert attrs["household_base_load_w"] == STATIC_LOAD_FORECAST_W
     assert attrs["learning_nights"] == 0
     assert attrs["data_since"] is None
@@ -130,7 +132,10 @@ def test_sensor_rounds_values_from_coordinator() -> None:
     forecast_slots = [
         {
             "from": "2026-09-01T00:00",
-            "load": 0.8765,
+            "household_only": 0.8765,
+            "water_heater": 0.2,
+            "central_heating": 0.2999,
+            "total": 1.3764,
         }
     ]
     sensor = _make_sensor(
@@ -145,12 +150,14 @@ def test_sensor_rounds_values_from_coordinator() -> None:
         last_valid_required_sample="2026-08-31T23:45",
         reason="Static placeholder value.",
     )
+    sensor._coordinator.current_total_kw = 1.3764
 
     attrs = sensor.extra_state_attributes
 
-    assert sensor.native_value == 0.876
+    assert sensor.native_value == 1.376
     assert attrs[ATTR_FORECASTS] == forecast_slots
     assert attrs["household_load_forecast_w"] == 876.5
+    assert attrs["total_load_forecast_w"] == 1376.4
     assert attrs["household_base_load_w"] == 876.5
     assert attrs["learning_nights"] == 4
     assert attrs["data_since"] == "2024-06-01"
@@ -185,8 +192,19 @@ def test_coordinator_exposes_static_placeholder_values() -> None:
     assert first_start.hour == 0
     assert first_start.minute == 0
     assert first_start.second == 0
-    assert all(set(slot) == {"from", "load"} for slot in slots)
-    assert all(slot["load"] == STATIC_LOAD_FORECAST_KW for slot in slots)
+    assert all(
+        set(slot)
+        == {
+            "from",
+            "household_only",
+            "water_heater",
+            "central_heating",
+            "total",
+        }
+        for slot in slots
+    )
+    assert all(slot["household_only"] == STATIC_LOAD_FORECAST_KW for slot in slots)
+    assert all(slot["total"] == STATIC_LOAD_FORECAST_KW for slot in slots)
     assert all(
         slot_starts[index + 1] - slot_starts[index] == timedelta(minutes=SLOT_MINUTES)
         for index in range(len(slot_starts) - 1)
