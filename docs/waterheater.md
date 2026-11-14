@@ -1,12 +1,11 @@
-# Water-Heater Schedule Sensor
+# Water-Heater Schedule Binary Sensor
 
 ## Purpose
 
-`sensor.energy_advisor_water_heater_schedule` tells you when to run the water
+`binary_sensor.energy_advisor_waterheater` tells you when to run the water
 heater. Once a day it picks the cheapest 15-minute price slots for the next 24
 hours and keeps that plan fixed. Its state is `on` during a planned slot and
-`off` otherwise. The sensor only recommends; an automation has to switch the
-heater.
+`off` otherwise. It only recommends; an automation has to switch the heater.
 
 `sensor.energy_advisor_water_heater_diagnostics` shows how the plan was made
 (see the attribute table in the [README](../README.md#sensorenergy_advisor_water_heater_diagnostics)).

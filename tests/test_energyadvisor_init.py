@@ -3,10 +3,11 @@
 from types import SimpleNamespace
 import sys
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from homeassistant.const import Platform
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 
@@ -177,7 +178,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
         "compactlevels": "sensor.energy_advisor_compact_levels",
         "compactbatterymodes": "sensor.energy_advisor_compact_battery_modes",
         "batterychargemode": "sensor.energy_advisor_battery_charge_mode",
-        "waterheaterschedule": "sensor.energy_advisor_water_heater_schedule",
+        "waterheater": "binary_sensor.energy_advisor_water_heater_schedule",
         "waterheaterdiagnostics": "sensor.energy_advisor_water_heater_diagnostics",
         "base_load": "sensor.energy_advisor_load_forecast_refined",
         "solarforecast": "sensor.energy_advisor_solar_forecast_refined",
@@ -185,8 +186,9 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
     }
 
     for sensor_key, current_entity_id in current_entity_ids.items():
+        domain = "binary_sensor" if sensor_key == "waterheater" else "sensor"
         created = registry.async_get_or_create(
-            "sensor",
+            domain,
             DOMAIN,
             f"{entry.entry_id}_{sensor_key}",
             config_entry=entry,
@@ -199,6 +201,20 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
             new_entity_id=current_entity_id,
         )
 
+    legacy = registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        "legacy_waterheaterschedule",
+        config_entry=entry,
+        translation_key="waterheaterschedule",
+        has_entity_name=True,
+        original_name="waterheaterschedule",
+    )
+    registry.async_update_entity(
+        legacy.entity_id,
+        new_entity_id="sensor.energy_advisor_water_heater_schedule",
+    )
+
     hass.states.async_set(
         "sensor.energy_advisor_solar_forecast",
         "restored-placeholder",
@@ -209,6 +225,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
     )
     await _async_migrate_entity_registry(hass, entry)
 
+    assert registry.async_get("sensor.energy_advisor_water_heater_schedule") is None
     for sensor_key, preferred_entity_id in PREFERRED_SENSOR_ENTITY_IDS.items():
         migrated = registry.async_get(preferred_entity_id)
         assert migrated is not None
@@ -247,9 +264,10 @@ async def test_async_setup_entry_stores_runtime_data_and_registers_reload_listen
 
     mock_services.assert_called_once_with(hass)
     mock_migrate.assert_awaited_once_with(hass, entry)
-    hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
-        entry, PLATFORMS
-    )
+    assert hass.config_entries.async_forward_entry_setups.await_args_list == [
+        call(entry, [Platform.SENSOR]),
+        call(entry, [Platform.BINARY_SENSOR]),
+    ]
     assert hass.data[DOMAIN][entry.entry_id] is runtime_data
     entry.add_update_listener.assert_called_once()
     assert len(unload_callbacks) == 1

@@ -19,6 +19,10 @@ import math
 from typing import TYPE_CHECKING
 from typing import Any
 
+from homeassistant.components.binary_sensor import (
+    BinarySensorEntity,
+    BinarySensorEntityDescription,
+)
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -104,7 +108,7 @@ class _StoredData(ExtraStoredData):
         return self.payload
 
 
-class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
+class WaterHeaterScheduleSensor(RestoreEntity, BinarySensorEntity):
     """Publishes a fixed daily water-heater ON/OFF recommendation plan."""
 
     _attr_should_poll = False
@@ -126,9 +130,9 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
             CONF_EXCLUDE_FROM_RECORDING, True
         )
 
-        description = SensorEntityDescription(
-            key="waterheaterschedule",
-            translation_key="waterheaterschedule",
+        description = BinarySensorEntityDescription(
+            key="waterheater",
+            translation_key="waterheater",
             icon="mdi:water-boiler",
         )
         self.entity_description = description
@@ -290,8 +294,8 @@ class WaterHeaterScheduleSensor(RestoreEntity, SensorEntity):
         )
 
     @property
-    def state(self) -> str:
-        return self._state
+    def is_on(self) -> bool:
+        return self._state == "on"
 
     @property
     def extra_restore_state_data(self) -> ExtraStoredData:

@@ -15,12 +15,13 @@ from .services import (
     async_setup_services,
 )
 
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 _OLD_CONF_NORDPOOL_AREA_ID = "nordpool_area_id"
 _NEW_CONF_NORDPOOL_PRICES_SENSOR = "nordpool_prices_sensor"
 _LEGACY_SENSOR_KEYS: dict[str, str] = {
     "base_load": "load_forecast",
+    "waterheaterschedule": "waterheater",
 }
 
 
@@ -113,6 +114,11 @@ async def _async_migrate_entity_registry(
         return updates or None
 
     for entity_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        sensor_key = _registry_entry_sensor_key(entity_entry)
+        if sensor_key == "waterheater" and entity_entry.domain == "sensor":
+            registry.async_remove(entity_entry.entity_id)
+            continue
+
         updates = _update_entry(entity_entry)
         if not updates:
             continue
@@ -133,7 +139,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_setup_services(hass)
     await _async_migrate_entity_registry(hass, entry)
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # The binary schedule entity is created by the sensor platform and shared
+    # with its diagnostics sensor, so set up the platforms in dependency order.
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
+    await hass.config_entries.async_forward_entry_setups(
+        entry, [Platform.BINARY_SENSOR]
+    )
     runtime_data = getattr(entry, "runtime_data", None)
     if isinstance(runtime_data, EnergyAdvisorRuntimeData):
         hass.data[DOMAIN][entry.entry_id] = runtime_data

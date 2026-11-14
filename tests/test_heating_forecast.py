@@ -296,7 +296,9 @@ def _register_forecast_service(hass, temp_c: float, wind_kmh: float):
     )
 
 
-async def test_forecast_uses_model_weather_forecast_and_residual(hass):
+async def test_forecast_uses_model_weather_forecast_and_residual(hass, freezer):
+    hass.config.time_zone = "UTC"
+    freezer.move_to(datetime(2026, 2, 2, 10, 0, tzinfo=UTC))
     _set_weather_state(hass)
     _register_forecast_service(hass, temp_c=-5.0, wind_kmh=36.0)
     coordinator = HeatingForecastCoordinator(hass, _entry(_FULL_OPTIONS))
@@ -330,9 +332,13 @@ async def test_forecast_uses_model_weather_forecast_and_residual(hass):
     assert coordinator.diagnostics["residual_correction_kw"] == pytest.approx(0.6)
     assert slots[-1]["load"] == pytest.approx(expected_kw, abs=0.01)
     assert coordinator.current_heating_kw == pytest.approx(expected_kw + 0.6, abs=0.01)
-    assert coordinator.energy_for_local_date_kwh(1) == pytest.approx(
-        24 * expected_kw, abs=0.5
+    tomorrow = (dt_util.now() + timedelta(days=1)).date().isoformat()
+    tomorrow_slots = [slot for slot in slots if str(slot["from"]).startswith(tomorrow)]
+    assert len(tomorrow_slots) == 96
+    expected_energy = round(
+        sum(float(slot["load"]) * 0.25 for slot in tomorrow_slots), 2
     )
+    assert coordinator.energy_for_local_date_kwh(1) == pytest.approx(expected_energy)
 
 
 async def test_cold_start_uses_rated_power_fallback(hass):

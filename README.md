@@ -162,7 +162,7 @@ Large attributes are always kept out of the recorder, regardless of any option:
 - `rates` on `sensor.energy_advisor_price`
 - `modes` on `sensor.energy_advisor_battery_charge_mode`
 - `forecasts` on `sensor.energy_advisor_solar_forecast` and `sensor.energy_advisor_load_forecast`
-- `on_slots` on `sensor.energy_advisor_water_heater_schedule`
+- `on_slots` on `binary_sensor.energy_advisor_waterheater`
 
 #### Startup and reloads
 
@@ -191,12 +191,12 @@ conditions:
 ```
 
 ## Usage
-- The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor and its compact diagnostic sensor, one water-heater schedule sensor and its diagnostic sensor, one optional household Load forecast sensor, one optional Heating forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_compact_battery_modes`, `sensor.energy_advisor_water_heater_schedule`, `sensor.energy_advisor_water_heater_diagnostics`, `sensor.energy_advisor_load_forecast` when the household meter is configured, `sensor.energy_advisor_heating_forecast` when the heating power sensor and the weather entity are configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
+- The integration adds the price sensor, the compact levels sensor, one battery charge mode sensor and its compact diagnostic sensor, one water-heater schedule binary sensor and its diagnostic sensor, one optional household Load forecast sensor, one optional Heating forecast sensor, one optional solar forecast sensor, and one service. The default entity ids for the first config entry are `sensor.energy_advisor_price`, `sensor.energy_advisor_compact_levels`, `sensor.energy_advisor_battery_charge_mode`, `sensor.energy_advisor_compact_battery_modes`, `binary_sensor.energy_advisor_waterheater`, `sensor.energy_advisor_water_heater_diagnostics`, `sensor.energy_advisor_load_forecast` when the household meter is configured, `sensor.energy_advisor_heating_forecast` when the heating power sensor and the weather entity are configured, and `sensor.energy_advisor_solar_forecast` when both solar forecast inputs are configured. Additional config entries receive numeric suffixes such as `sensor.energy_advisor_price_2`.
   - `sensor.energy_advisor_price` provides the current electricity price with all fees and taxes included, and a list of all known upcoming prices. (Nordpool gets the next day prices around 14:00 CET)
   - `sensor.energy_advisor_compact_levels` provides a compact level string intended for integrations such as Level Indicator Clock.
   - `sensor.energy_advisor_compact_battery_modes` provides the equivalent compact battery-mode string as a diagnostic sensor, disabled by default.
   - `sensor.energy_advisor_battery_charge_mode` provides a battery schedule with one entry per price slot: `charge` in the cheap slots before a price peak, `discharge` over the peak, `sell` when exporting pays, `standby` elsewhere, with the slot's `cost` and `credit` and the planned battery state of charge as `target_soc`. Its state is the mode of the current slot.
-  - `sensor.energy_advisor_water_heater_schedule` provides a fixed daily 20:00→20:00 ON schedule for the water heater, using full-precision price costs and learned runtime demand (`no_shower` vs `shower` day classes). Its state is `on` when now is in a scheduled ON slot, else `off`.
+  - `binary_sensor.energy_advisor_waterheater` provides a fixed daily 20:00→20:00 ON schedule for the water heater, using full-precision price costs and learned runtime demand (`no_shower` vs `shower` day classes). Its state is `on` when now is in a scheduled ON slot, else `off`; `on_slots` lists the scheduled intervals.
   - `sensor.energy_advisor_water_heater_diagnostics` exposes the water-heater planner's diagnostic attributes.
   - `sensor.energy_advisor_load_forecast` provides a learned household load forecast in 15-minute slots for today and tomorrow. It publishes a fixed `0.60 kW` profile until enough meter history has been collected.
   - `sensor.energy_advisor_solar_forecast` provides a bias-corrected 15-minute solar production forecast based on your configured forecast and solar power sensors. The forecast inputs must be the raw 15-minute forecast sensors with `watts`, `wh_period`, or `forecasts` data; when a tomorrow forecast sensor is configured, updates from either forecast sensor rebuild the solar forecast.
@@ -306,7 +306,7 @@ See [docs/heatingforecast.md](docs/heatingforecast.md) for the model, the inputs
   - `modes`: One entry per price slot, in the same order and with the same start and end times as the `rates` attribute of `sensor.energy_advisor_price`. Each entry has the local slot start `from`, the slot end `to`, `mode` (one of the [modes](#battery-charge-modes) below; `maxuse` replaces daytime `discharge` only when solar storage beats export), `target_soc` (the planned battery state of charge at the end of the slot in whole percent, always rounded up so the battery keeps the higher level; `50` for every slot while the battery is not configured), and `cost` and `credit` copied from the same price slot (rounded to 2 decimals).
   - `target_soc`: The `target_soc` of the slot that contains the current time, in whole percent (rounded up): the planned battery state of charge at the end of the current slot (`50` while the battery is not configured). It is always present, and `null` only when no slot contains the current time. It is not the measured state of charge; that stays available from the `battery_soc_entity` itself.
 
-### `sensor.energy_advisor_water_heater_schedule`
+### `binary_sensor.energy_advisor_waterheater`
 - **Description:** Fixed plan generated once per day at local 20:00 for the next 24 hours (to next 20:00), minimizing expected electricity cost from valid 15-minute price slots. When there is no plan for the current window (first start, or Home Assistant was not running at 20:00), a plan for the time left in the window is made right away. A plan that found no prices is retried every 5 minutes; a plan with slots is never changed before the window ends.
 - **State:** `on` if now falls in a planned ON slot, otherwise `off`.
 - **Required config:** `water_heater_power_entity`, `bathroom_humidity_entity`, `water_heater_power_w` (rated power), `water_heater_max_hours`.
@@ -351,7 +351,7 @@ See [docs/heatingforecast.md](docs/heatingforecast.md) for the model, the inputs
 | `plan_available` | Whether a schedule plan is available. |
 | `updated_at` | Local time when these diagnostic values were read. |
 
-The schedule sensor itself retains only `on_slots`, the selected slots with local
+The schedule binary sensor itself retains only `on_slots`, the selected slots with local
 `start` and `end`, expected `cost`, and `duration` in minutes. This table is the
 complete attribute reference for both water-heater sensors.
 

@@ -18,6 +18,10 @@ from custom_components.energyadvisor.const import (
     DOMAIN,
     PREFERRED_SENSOR_ENTITY_IDS,
 )
+from custom_components.energyadvisor.binary_sensor import (
+    async_setup_entry as async_setup_binary_sensor,
+)
+from custom_components.energyadvisor.models import EnergyAdvisorRuntimeData
 from custom_components.energyadvisor.sensor import waterheaterschedulesensor
 from custom_components.energyadvisor.sensor.waterheaterschedulesensor import (
     PLAN_KEY,
@@ -40,6 +44,27 @@ def test_schedule_attributes_only_include_on_slots():
     schedule_sensor, _entry = _schedule_sensor()
 
     assert schedule_sensor.extra_state_attributes == {"on_slots": []}
+    assert schedule_sensor.entity_description.key == "waterheater"
+    assert schedule_sensor.entity_id == "binary_sensor.energy_advisor_waterheater"
+    assert not schedule_sensor.is_on
+    schedule_sensor._state = "on"
+    assert schedule_sensor.is_on
+
+
+async def test_binary_sensor_platform_registers_schedule():
+    schedule_sensor, _entry = _schedule_sensor()
+    runtime_data = EnergyAdvisorRuntimeData(
+        levels_sensor=MagicMock(),
+        compact_sensor=MagicMock(),
+        coordinator=MagicMock(),
+        water_heater_sensor=schedule_sensor,
+    )
+    entry = SimpleNamespace(runtime_data=runtime_data)
+    add_entities = MagicMock()
+
+    await async_setup_binary_sensor(MagicMock(), entry, add_entities)
+
+    add_entities.assert_called_once_with([schedule_sensor], True)
 
 
 def test_diagnostics_sensor_contains_schedule_diagnostics():
@@ -127,7 +152,7 @@ def _restore(hass, payload: dict) -> None:
         hass,
         [
             (
-                State(PREFERRED_SENSOR_ENTITY_IDS["waterheaterschedule"], "off"),
+                State(PREFERRED_SENSOR_ENTITY_IDS["waterheater"], "off"),
                 {"version": 1, RESTORE_KEY: payload},
             )
         ],

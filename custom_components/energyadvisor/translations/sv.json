@@ -421,9 +421,6 @@
           "sell": "Sälj"
         }
       },
-      "waterheaterschedule": {
-        "name": "Varmvattenberedarschema"
-      },
       "waterheaterdiagnostics": {
         "name": "Diagnostik för varmvattenberedare",
         "state": {
@@ -458,6 +455,11 @@
       },
       "heating_forecast": {
         "name": "Värmeprognos"
+      }
+    },
+    "binary_sensor": {
+      "waterheater": {
+        "name": "Varmvattenberedare"
       }
     }
   }

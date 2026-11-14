@@ -373,9 +373,6 @@
           "sell": "Sell"
         }
       },
-      "waterheaterschedule": {
-        "name": "Water heater schedule"
-      },
       "waterheaterdiagnostics": {
         "name": "Water heater diagnostics",
         "state": {
@@ -401,6 +398,11 @@
       },
       "heating_forecast": {
         "name": "Heating forecast"
+      },
+      "binary_sensor": {
+        "waterheater": {
+          "name": "Water heater"
+        }
       }
     }
   },

@@ -124,7 +124,6 @@ async def async_setup_entry(
         compact_levels_sensor,
         battery_sensor,
         compact_battery_sensor,
-        water_heater_sensor,
         water_heater_diagnostics_sensor,
     ]
 
@@ -199,6 +198,7 @@ async def async_setup_entry(
         levels_sensor=levels_sensor,
         compact_sensor=compact_levels_sensor,
         coordinator=coordinator,
+        water_heater_sensor=water_heater_sensor,
         household_sensor=household_sensor,
         household_coordinator=household_coordinator,
         heating_sensor=heating_sensor,
