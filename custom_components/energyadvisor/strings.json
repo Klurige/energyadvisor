@@ -404,6 +404,11 @@
           "name": "Water heater"
         }
       }
+    },
+    "binary_sensor": {
+      "waterheater": {
+        "name": "Water heater"
+      }
     }
   },
   "services": {
