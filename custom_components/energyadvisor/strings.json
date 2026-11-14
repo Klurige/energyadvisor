@@ -398,11 +398,6 @@
       },
       "heating_forecast": {
         "name": "Heating forecast"
-      },
-      "binary_sensor": {
-        "waterheater": {
-          "name": "Water heater"
-        }
       }
     },
     "binary_sensor": {
