@@ -78,3 +78,96 @@ slot, at full precision).
   them in the restore state; they are moved to the store on the first start.
 - The plan, the daily humidity maxima and the daily observations are kept in
   the restore state.
+
+## Graph
+The following graph shows the water heater schedule and power consumption:
+
+    type: custom:apexcharts-card
+    header:
+      show: true
+      title: Varmvattenberedare idag
+    graph_span: 24h
+    span:
+      start: day
+    yaxis:
+      - id: percent
+        opposite: true
+        min: 0
+        max: 100
+        decimals: 0
+      - id: power
+        min: 0
+        max: 2500
+        decimals: 0
+        apex_config:
+          tickAmount: 10
+    series:
+        - entity: binary_sensor.energy_advisor_waterheater
+          yaxis_id: percent
+          type: line
+          curve: stepline
+          stroke_width: 2
+          data_generator: |
+            const slots = entity.attributes.on_slots || [];
+    
+            const startOfDay = new Date();
+            startOfDay.setHours(0, 0, 0, 0);
+    
+            const data = [];
+    
+            for (let i = 0; i < 96; i++) {
+              const ts = startOfDay.getTime() + i * 15 * 60 * 1000;
+    
+              const on = slots.some(slot =>
+                ts >= new Date(slot.start).getTime() &&
+                ts < new Date(slot.end).getTime()
+              );
+    
+              data.push([ts, on ? 100 : 0]);
+            }
+    
+            return data;
+        - entity: sensor.varmvatten_effekt
+          yaxis_id: power
+          stroke_width: 2
+          float_precision: 0
+          transform: return Math.round(x);
+        - entity: sensor.badrum_klimat_humidity
+          yaxis_id: percent
+          type: line
+          stroke_width: 2
+
+
+## Automation
+This automation can be used to control the water heater switch. Replace the
+entity IDs with those in your installation. It also synchronizes the switch
+when Home Assistant starts or automations are reloaded. After enabling it
+manually, use **Run actions** once to apply the current schedule immediately.
+If the schedule is unknown or unavailable, the switch is turned off.
+
+        alias: Styr varmvattenbrytare från Energy Advisor
+        description: ''
+        triggers:
+            - trigger: state
+              entity_id: binary_sensor.energy_advisor_waterheater
+            - trigger: homeassistant
+              event: start
+            - trigger: event
+              event_type: automation_reloaded
+        conditions: []
+        actions:
+            - choose:
+                - conditions:
+                    - condition: state
+                      entity_id: binary_sensor.energy_advisor_waterheater
+                      state:
+                        - 'on'
+                  sequence:
+                    - action: switch.turn_on
+                      target:
+                        entity_id: switch.teknik_varmvatten_brytare
+              default:
+                - action: switch.turn_off
+                  target:
+                    entity_id: switch.teknik_varmvatten_brytare
+        mode: single
