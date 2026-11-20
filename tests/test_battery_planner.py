@@ -512,7 +512,8 @@ def _brute_force_cost(
             max_sell = math.floor(
                 params.max_discharge_power_kw * slot.duration_h / step + 1e-9
             )
-            for k in range(1, max_sell + 1):
+            min_sell = math.ceil(slot.load_kwh / (step * eta) - 1e-9) + 1
+            for k in range(min_sell, max_sell + 1):
                 out = k * step * eta
                 if out > slot.load_kwh + 1e-9:
                     revenue = slot.export_credit * (out - slot.load_kwh)
@@ -689,6 +690,33 @@ def test_a_sell_slot_imports_nothing_and_exports_what_the_load_leaves() -> None:
         0.1 * stored / ETA + 0.1 * out - 4.0 * exported
     )
     assert _execute(slots, params, 0.0, result) == pytest.approx(result.total_cost)
+
+
+def test_a_discharge_rounding_remainder_is_not_a_sell() -> None:
+    # 0.33 kWh is not a whole number of steps, so covering it leaves a little
+    # over; that must stay a discharge, not a sell that exports at full power.
+    params = _params(terminal_value_per_kwh=3.0)
+    slots = [PlanSlot(SLOT_H, 4.0, 0.33, 2.0)]
+
+    result = plan_battery(slots, params, 95.0)
+
+    assert result.modes == [MODE_DISCHARGE]
+
+
+def test_charge_to_max_never_sells_the_forced_top_up() -> None:
+    params = _params(
+        capacity_kwh=4.0,
+        max_soc_pct=100.0,
+        max_charge_power_kw=1.0,
+        round_trip_efficiency=1.0,
+        charge_to_max=True,
+    )
+    # The peak needs 0.25 kWh; the top-up to 1 kWh would only sell below cost.
+    slots = [PlanSlot(1.0, 1.0, 0.0), PlanSlot(1.0, 4.0, 0.25, 0.9)]
+
+    result = plan_battery(slots, params, 0.0)
+
+    assert result.modes == [MODE_CHARGE, MODE_DISCHARGE]
 
 
 def test_sell_is_limited_by_the_discharge_power_not_the_charge_power() -> None:

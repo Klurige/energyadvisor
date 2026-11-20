@@ -196,7 +196,12 @@ def plan_battery(
             previous -= 1
     if not forced:
         return result
-    return _plan_battery(slots, params, start_soc_pct, frozenset(forced))
+    # The forced top-up is a reserve, not stock for export: only the slots the
+    # cost-optimal plan sells in may sell.
+    sell_slots = frozenset(
+        i for i, mode in enumerate(result.modes) if mode == MODE_SELL
+    )
+    return _plan_battery(slots, params, start_soc_pct, frozenset(forced), sell_slots)
 
 
 def _plan_battery(
@@ -204,8 +209,12 @@ def _plan_battery(
     params: BatteryParams,
     start_soc_pct: float,
     forced_charge: frozenset[int],
+    sell_slots: frozenset[int] | None = None,
 ) -> PlanResult:
-    """Solve the plan, optionally charging at maximum power in selected slots."""
+    """Solve the plan, optionally charging at maximum power in selected slots.
+
+    With ``sell_slots`` only those slots may sell.
+    """
     count = len(slots)
     if not count:
         return PlanResult([], [], 0.0)
@@ -277,17 +286,21 @@ def _plan_battery(
         )
         for hours, load in zip(durations, loads)
     ]
-    # A sell must take out more than the load, so that something is exported.
+    # A sell must take out at least one whole step more than a discharge that
+    # covers the load, so that the rounding remainder of a discharge is never
+    # published as a sell.
     sell_min_steps = [
-        math.floor(load / (step * eta) + LIMIT_EPSILON) + 1 for load in loads
+        math.ceil(load / (step * eta) - LIMIT_EPSILON) + 1 for load in loads
     ]
     sell_max_steps = [
         (
             min(states, math.floor(max_discharge_kw * hours / step + LIMIT_EPSILON))
-            if math.isfinite(credit) and credit > 0
+            if math.isfinite(credit)
+            and credit > 0
+            and (sell_slots is None or t in sell_slots)
             else 0
         )
-        for hours, credit in zip(durations, credits)
+        for t, (hours, credit) in enumerate(zip(durations, credits))
     ]
 
     # choices[t][s]: steps charged (> 0) or taken out of the battery (< 0) in

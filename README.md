@@ -445,7 +445,11 @@ How it decides:
   window or limited power may prevent a full charge. An ongoing charge period
   continues across replans and restarts unless its price increases. Discharging
   is limited by forecast household use; selling is limited by discharge power
-  and the reserve.
+  and the reserve. The extra energy of such a fill is a reserve, not stock for
+  export: only slots where the cost-optimized plan sells may sell.
+- A slot is only a `sell` when it exports at least one whole SoC step beyond
+  the household load. The small remainder of a discharge that covers the load
+  stays a `discharge`, so a `sell` never just covers the household.
 - The plan is made from now. The current slot is planned as a whole slot from
   the state of charge now, so its mode stays the same until the slot ends; its
   `target_soc` is the state of charge expected at the end of the slot. Slots
