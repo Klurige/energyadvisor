@@ -20,6 +20,7 @@ from custom_components.energyadvisor.const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_CHARGE_POWER_ENTITY,
     CONF_BATTERY_DEGRADATION_COST,
+    CONF_BATTERY_SELL_MARGIN,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
@@ -631,7 +632,9 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
         CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
         CONF_BATTERY_MIN_SOC_PCT,
         CONF_BATTERY_MAX_SOC_PCT,
+        CONF_BATTERY_SELL_MARGIN,
     }
+    assert validated[CONF_BATTERY_SELL_MARGIN] == 0.5
     assert validated[CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 48
     assert validated[CONF_BATTERY_MIN_SOC_PCT] == 5.0
     assert validated[CONF_BATTERY_MAX_SOC_PCT] == 100.0

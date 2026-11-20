@@ -719,6 +719,38 @@ def test_charge_to_max_never_sells_the_forced_top_up() -> None:
     assert result.modes == [MODE_CHARGE, MODE_DISCHARGE]
 
 
+def test_sell_margin_blocks_sales_that_gain_less_per_exported_kwh() -> None:
+    # Charged at 1.0 and sold at 1.3: a gain of about 0.2 per exported kWh.
+    slots = [PlanSlot(SLOT_H, 1.0, 0.0), PlanSlot(SLOT_H, 9.0, 0.0, 1.3)]
+
+    small = plan_battery(slots, _params(sell_margin_per_kwh=0.1), 0.0)
+    large = plan_battery(slots, _params(sell_margin_per_kwh=0.3), 0.0)
+
+    assert small.modes == [MODE_CHARGE, MODE_SELL]
+    assert large.modes == [MODE_STANDBY, MODE_STANDBY]
+
+
+def test_known_refill_keeps_energy_worth_a_guess_from_being_sold() -> None:
+    # A full battery, no load, and energy at the end worth 1.0 (a guess): the
+    # sale at 2.0 only pays against that guess.
+    params = _params(terminal_value_per_kwh=1.0)
+    slots = [PlanSlot(SLOT_H, 9.0, 0.0, 2.0)]
+
+    assert plan_battery(slots, params, 95.0).modes == [MODE_SELL]
+    guarded = dataclasses.replace(params, sell_needs_known_refill=True)
+    assert plan_battery(slots, guarded, 95.0).modes == [MODE_STANDBY]
+
+
+def test_known_refill_still_sells_a_peak_refilled_from_known_prices() -> None:
+    params = _params(terminal_value_per_kwh=1.0, sell_needs_known_refill=True)
+    slots = [PlanSlot(SLOT_H, 9.0, 0.0, 3.0), PlanSlot(SLOT_H, 1.0, 0.0)]
+
+    result = plan_battery(slots, params, 95.0)
+
+    assert result.modes == [MODE_SELL, MODE_CHARGE]
+    assert result.end_soc_pct[-1] == pytest.approx(95.0)
+
+
 def test_sell_is_limited_by_the_discharge_power_not_the_charge_power() -> None:
     # 2 kW for a quarter of an hour is 0.5 kWh out of the battery per slot.
     params = _params(max_discharge_power_kw=2.0, max_charge_power_kw=5.0)

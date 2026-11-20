@@ -110,6 +110,7 @@ Battery capacity and max charge power must be set together. Min SoC must be lowe
 | `battery_min_soc_pct`      | Lower SoC bound in % (form default 5) | `5` | In use (battery charge mode sensor) |
 | `battery_max_soc_pct`      | Upper SoC bound in % (form default 100) | `100` | In use (battery charge mode sensor) |
 | `battery_degradation_cost` | Wear cost: cost per kWh delivered by the battery, in the same unit as the price sensor's `cost` (import price with fees, taxes and VAT), not the raw spot price. A cycle must save more than this and the round-trip losses before the planner uses it; no default (unset counts as `0`). Before this planner it was a minimum price spread | `0.7` | In use (battery charge mode sensor) |
+| `battery_sell_margin` | Minimum sell margin: the least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's `cost`. Unset counts as `0.5`; `0` lets any profitable sale through | `0.5` | In use (battery charge mode sensor) |
 | `battery_soc_entity`       | Battery state-of-charge sensor (percent); the start of every plan | `sensor.home_battery_soc` | In use (battery charge mode sensor; the household forecast also records its history) |
 | `battery_charge_power_entity` | Battery charge power sensor | `sensor.home_battery_charge_power` | currently not in use (history is recorded but not used) |
 
@@ -428,7 +429,7 @@ How it decides:
   periods, so the extra energy may cost more than its forecast savings.
 - Selling is part of the same optimisation, with the slot's `credit` as the
   revenue for every exported kWh. The `credit` already includes all taxes and
-  fees of selling, so there is no sell margin to set. Only the battery limits
+  fees of selling. Only the battery limits
   the export: there is no export limit to the grid, so a `sell` slot can export
   at the max discharge power. Selling retains 30% of the usable capacity
   between configured min and max SoC; household discharge can use that reserve.
@@ -439,6 +440,14 @@ How it decides:
   cost`. Energy charged at 1.00 with a wear cost of 0.70 is therefore sold at a
   `credit` above 1.81. In a `sell` slot the battery covers the household load
   first, which saves the slot's `cost`, and exports the rest.
+- Every sale must also gain `battery_sell_margin` (default 0.5) per exported
+  kWh over keeping the energy, which covers forecast errors such as a colder
+  day with a higher household load than forecast.
+- A sale must pay off within the known prices: a plan that sells may never end
+  with less energy in the battery than the cheapest plan without sales. Every
+  sold kWh is therefore bought back, or saved, before the known prices end, and
+  the guessed worth of the energy left for tomorrow never pays for a sale. In
+  practice the battery sells only into a clear peak with cheaper slots after it.
 - Once the cost-optimized plan selects grid charging, the planner also uses
   immediately preceding standby slots at the same or a lower price and charges
   at the maximum available power, aiming for the configured max SoC. A short

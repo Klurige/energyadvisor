@@ -28,6 +28,16 @@ and stages the integration manifest version to one patch above the nearest
 reachable numeric release tag. Fetch tags first with `git fetch --tags` if
 they are missing from the clone.
 
+The tracked `.githooks/pre-push` hook checks pushes targeting `master`, matching
+the automatic release condition in `workflows/push.yml`. It validates the
+manifests in the commit being pushed and queries the destination remote for
+its version tag. If that tag points to another commit, the push is blocked:
+fetch release tags, bump the manifest version, and commit before retrying.
+Uncommitted manifest edits do not count. Other branches, tag pushes, and branch
+deletions are not checked. Remote lookup failures block release-branch pushes.
+The workflow still checks for collisions because a tag can appear after the
+hook runs.
+
 ## Releases
 
 `workflows/release.yml` is started manually with **Actions → Release → Run

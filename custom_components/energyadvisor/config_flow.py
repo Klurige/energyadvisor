@@ -21,6 +21,7 @@ from .const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_CHARGE_POWER_ENTITY,
     CONF_BATTERY_DEGRADATION_COST,
+    CONF_BATTERY_SELL_MARGIN,
     CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
@@ -766,6 +767,9 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
                         ),
                         CONF_BATTERY_DEGRADATION_COST: self.data.get(
                             CONF_BATTERY_DEGRADATION_COST
+                        ),
+                        CONF_BATTERY_SELL_MARGIN: self.data.get(
+                            CONF_BATTERY_SELL_MARGIN
                         ),
                         **{
                             key: self.data.get(key) for key in ALL_OPTIMIZER_ENTITY_KEYS

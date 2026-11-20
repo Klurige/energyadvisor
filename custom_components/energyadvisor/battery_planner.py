@@ -30,9 +30,14 @@ Model:
 - ``standby`` leaves the battery alone; the grid delivers any load not covered
   by solar.
 - Each kWh the battery delivers (to the household and to the grid) adds
-  ``wear_cost_per_kwh``. A kWh bought at price ``c`` and sold again therefore
+  ``wear_cost_per_kwh``, and each kWh exported by a ``sell`` adds
+  ``sell_margin_per_kwh``. A kWh bought at price ``c`` and sold again therefore
   only pays when ``export_credit > c / round_trip_efficiency +
-  wear_cost_per_kwh``.
+  wear_cost_per_kwh + sell_margin_per_kwh`` (the margin per exported kWh).
+- With ``sell_needs_known_refill`` a plan that sells must end with at least as
+  much energy as the cheapest plan that never sells. A sale then has to pay off
+  within the known prices; it can never be paid for with energy that would
+  otherwise be left after the last slot, whose worth is only a guess.
 - Energy left in the battery after the last slot (the end of the known prices)
   is worth ``terminal_value_per_kwh`` per stored kWh. With the default of zero
   the battery is used up by the end; callers that re-plan regularly (rolling
@@ -78,6 +83,10 @@ class BatteryParams:
     standby slots at no higher price and charges at full available power.
     ``sell_reserve_fraction`` protects that fraction of the usable SoC window
     from export; household discharge can still use it.
+    ``sell_margin_per_kwh`` is the least a sale must gain per exported kWh over
+    keeping the energy; it is counted as a cost of every exported kWh.
+    ``sell_needs_known_refill`` forbids sales that leave less energy after the
+    last slot than the cheapest plan without sales.
     """
 
     capacity_kwh: float
@@ -90,6 +99,8 @@ class BatteryParams:
     terminal_value_per_kwh: float = 0.0
     charge_to_max: bool = False
     sell_reserve_fraction: float = 0.0
+    sell_margin_per_kwh: float = 0.0
+    sell_needs_known_refill: bool = False
 
 
 @dataclass(frozen=True)
@@ -115,9 +126,9 @@ class PlanSlot:
 class PlanResult:
     """The plan: one mode and one planned end-of-slot SoC (%) per slot.
 
-    ``total_cost`` is the grid cost plus wear minus the revenue of the exported
-    energy over all slots, minus the terminal value of the energy left in the
-    battery at the end. ``allow_solar_charging`` identifies household-discharge
+    ``total_cost`` is the grid cost plus wear and sell margin minus the revenue
+    of the exported energy over all slots, minus the terminal value of the
+    energy left in the battery at the end. ``allow_solar_charging`` identifies household-discharge
     slots where storing an extra solar energy step at the planned end SoC is
     worth at least its discounted export credit, using the remaining plan.
     """
@@ -156,8 +167,9 @@ def plan_battery(
     window every slot is ``standby`` and the SoC stays where it is. With
     ``charge_to_max``, the cheapest plan identifies charging periods, then a
     second plan fills the battery in those periods when power and time allow.
+    A negative or non-finite sell margin counts as zero.
     """
-    result = _plan_battery(slots, params, start_soc_pct, frozenset())
+    result = _solve(slots, params, start_soc_pct, frozenset())
     if not params.charge_to_max:
         return result
 
@@ -201,7 +213,30 @@ def plan_battery(
     sell_slots = frozenset(
         i for i, mode in enumerate(result.modes) if mode == MODE_SELL
     )
-    return _plan_battery(slots, params, start_soc_pct, frozenset(forced), sell_slots)
+    return _solve(slots, params, start_soc_pct, frozenset(forced), sell_slots)
+
+
+def _solve(
+    slots: Sequence[PlanSlot],
+    params: BatteryParams,
+    start_soc_pct: float,
+    forced_charge: frozenset[int],
+    sell_slots: frozenset[int] | None = None,
+) -> PlanResult:
+    """Plan, keeping sales from eating energy left after the last slot."""
+    result = _plan_battery(slots, params, start_soc_pct, forced_charge, sell_slots)
+    if not params.sell_needs_known_refill or MODE_SELL not in result.modes:
+        return result
+    no_sell = _plan_battery(slots, params, start_soc_pct, forced_charge, frozenset())
+    result = _plan_battery(
+        slots,
+        params,
+        start_soc_pct,
+        forced_charge,
+        sell_slots,
+        no_sell.end_soc_pct[-1],
+    )
+    return result if MODE_SELL in result.modes else no_sell
 
 
 def _plan_battery(
@@ -210,10 +245,12 @@ def _plan_battery(
     start_soc_pct: float,
     forced_charge: frozenset[int],
     sell_slots: frozenset[int] | None = None,
+    min_end_soc_pct: float | None = None,
 ) -> PlanResult:
     """Solve the plan, optionally charging at maximum power in selected slots.
 
-    With ``sell_slots`` only those slots may sell.
+    With ``sell_slots`` only those slots may sell. With ``min_end_soc_pct`` the
+    plan must end at that SoC or above.
     """
     count = len(slots)
     if not count:
@@ -256,6 +293,7 @@ def _plan_battery(
     pct_per_state = (high - low) / states
     eta = math.sqrt(min(max(_finite(params.round_trip_efficiency, 0.9), 0.01), 1.0))
     wear = max(_finite(params.wear_cost_per_kwh, 0.0), 0.0)
+    sell_margin = max(_finite(params.sell_margin_per_kwh, 0.0), 0.0)
     terminal_value = max(_finite(params.terminal_value_per_kwh, 0.0), 0.0)
     max_charge_kw = max(_finite(params.max_charge_power_kw, 0.0), 0.0)
     max_discharge_kw = max(_finite(params.max_discharge_power_kw, 0.0), 0.0)
@@ -310,6 +348,9 @@ def _plan_battery(
     pv_charged: list[list[bool]] = [[]] * count
     solar_charging: list[list[bool]] = [[]] * count
     next_value = [0.0 - terminal_value * s * step for s in range(states + 1)]
+    if min_end_soc_pct is not None:
+        min_end_state = round((min_end_soc_pct - low) / pct_per_state)
+        next_value[:min_end_state] = [math.inf] * min(min_end_state, states + 1)
     for t in range(count - 1, -1, -1):
         price = prices[t]
         load = loads[t]
@@ -369,7 +410,11 @@ def _plan_battery(
             sell_min_steps[t], 1 if t in forced_charge else sell_max_steps[t] + 1
         ):
             out = k * step * eta
-            cost = wear * out - credit * (out - load) - export_credit * surplus
+            cost = (
+                wear * out
+                - (credit - sell_margin) * (out - load)
+                - export_credit * surplus
+            )
             for s in range(k + sell_reserve, states + 1):
                 total = cost + next_value[s - k]
                 if total + TIE_EPSILON < value[s]:
@@ -389,6 +434,7 @@ def _plan_battery(
             storage_value = (
                 eta * (next_value[end_state] - next_value[end_state + 1]) / step
                 if end_state < states
+                and math.isfinite(next_value[end_state] - next_value[end_state + 1])
                 else 0.0
             )
             allowed[s] = (

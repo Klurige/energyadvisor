@@ -24,6 +24,7 @@ from custom_components.energyadvisor.battery_planner import BatteryParams
 from custom_components.energyadvisor.const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_DEGRADATION_COST,
+    CONF_BATTERY_SELL_MARGIN,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MAX_SOC_PCT,
@@ -871,6 +872,8 @@ def test_battery_params_use_defaults_and_convert_watts(hass) -> None:
         wear_cost_per_kwh=0.7,
         charge_to_max=True,
         sell_reserve_fraction=0.3,
+        sell_margin_per_kwh=0.5,
+        sell_needs_known_refill=True,
     )
 
 
@@ -881,6 +884,7 @@ def test_battery_params_read_every_option(hass) -> None:
         CONF_BATTERY_MIN_SOC_PCT: 10,
         CONF_BATTERY_MAX_SOC_PCT: 90,
         CONF_BATTERY_DEGRADATION_COST: 0.25,
+        CONF_BATTERY_SELL_MARGIN: 0.2,
     }
 
     params = _make_sensor(hass, [], options=options)._battery_params()
@@ -895,6 +899,8 @@ def test_battery_params_read_every_option(hass) -> None:
         0.25,
         charge_to_max=True,
         sell_reserve_fraction=0.3,
+        sell_margin_per_kwh=0.2,
+        sell_needs_known_refill=True,
     )
 
 
@@ -1925,19 +1931,23 @@ def _inputs_from(sensor: BatteryChargeModeSensor, soc: float) -> ScheduleInputs:
 
 
 async def test_state_and_icon_are_sell_in_a_sell_slot(make_sensor, hass) -> None:
-    hass.states.async_set(SOC_ENTITY, "60")
+    hass.states.async_set(SOC_ENTITY, "95")
     now = BASE + datetime.timedelta(minutes=15 * 18 + 1)
-    sensor = make_sensor(_credit_spike_rates(), options=SOC_OPTIONS, now=now)
+    # Two spike slots, so the later flat slots can refill what is sold.
+    rates = _rates([1.0] * 24)
+    for rate in rates[18:20]:
+        rate["credit"] = 4.0
+    sensor = make_sensor(rates, options=SOC_OPTIONS, now=now)
 
     await sensor.async_added_to_hass()
     await _settle(sensor)
 
-    assert _modes(sensor)[18:22] == ["sell"] * 4
+    assert _modes(sensor)[18:20] == ["sell"] * 2
     assert sensor.state == "sell"
     assert sensor.icon == "mdi:transmission-tower-export"
     attributes = sensor.extra_state_attributes
     assert attributes["target_soc"] == attributes["modes"][18]["target_soc"]
-    assert attributes["target_soc"] < 60
+    assert attributes["target_soc"] < 95
 
 
 @pytest.mark.parametrize(
@@ -1999,7 +2009,12 @@ def test_the_battery_is_not_sold_off_when_the_known_prices_end(hass) -> None:
     inputs = sensor._build_inputs(BASE)
     dumped = dataclasses.replace(
         inputs,
-        params=dataclasses.replace(inputs.params, terminal_value_per_kwh=0.0),
+        params=dataclasses.replace(
+            inputs.params,
+            terminal_value_per_kwh=0.0,
+            sell_margin_per_kwh=0.0,
+            sell_needs_known_refill=False,
+        ),
     )
 
     kept = build_schedule(inputs)
