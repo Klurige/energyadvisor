@@ -92,11 +92,6 @@
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
           "battery_max_discharge_power_w": "Battery max discharge power",
-          "battery_optimization_horizon_hours": "Optimization horizon",
-          "battery_min_soc_pct": "Minimum SoC",
-          "battery_max_soc_pct": "Maximum SoC",
-          "battery_degradation_cost": "Battery wear cost",
-          "battery_sell_margin": "Minimum sell margin",
           "battery_soc_entity": "Battery state of charge sensor",
           "battery_charge_power_entity": "Battery charge power sensor"
         },
@@ -104,13 +99,28 @@
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
           "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
           "battery_max_discharge_power_w": "Maximum battery discharge power. If left empty, defaults to the configured charge power.",
+          "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
+          "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
+        }
+      },
+      "battery_optimization": {
+        "title": "Battery optimization",
+        "description": "Configure how the optimizer plans charging and discharging within the allowed battery range.",
+        "data": {
+          "battery_optimization_horizon_hours": "Optimization horizon",
+          "battery_min_soc_pct": "Minimum SoC",
+          "battery_max_soc_pct": "Maximum SoC",
+          "battery_degradation_cost": "Battery wear cost",
+          "battery_sell_margin": "Minimum sell margin",
+          "battery_sell_reserve_pct": "Export reserve"
+        },
+        "data_description": {
           "battery_optimization_horizon_hours": "Currently not in use: the optimizer plans over all known price slots.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
           "battery_degradation_cost": "Wear cost per kWh delivered by the battery, in the same unit as the price sensor's cost (fees, taxes and VAT included), not the raw spot price. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0.",
           "battery_sell_margin": "Least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's cost. Leave empty for 0.5.",
-          "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
-          "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
+          "battery_sell_reserve_pct": "Share of the usable SoC range protected from grid export. Household discharge may still use this energy. Defaults to 30%."
         }
       },
       "grid_metering": {
@@ -143,6 +153,22 @@
           "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning.",
           "weather_entity": "Weather entity whose hourly forecast drives the heating forecast. Its current temperature and wind are also recorded to calibrate the forecast against the local sensors.",
           "wind_speed_entity": "Local wind speed sensor with long-term statistics. Wind increases heat loss; without it, the weather entity's wind is recorded and learned over time."
+        }
+      },
+      "household_activity": {
+        "title": "Household activity filters",
+        "description": "Link sensors that help estimate household usage.",
+        "data": {
+          "water_heater_active_entity": "Water heater active sensor",
+          "central_heating_active_entity": "Central heating active sensor",
+          "central_heating_power_entity": "Central heating power sensor",
+          "central_heating_power_w": "Central heating rated power"
+        },
+        "data_description": {
+          "water_heater_active_entity": "Binary sensor that is on when the water heater is actively heating. Used to filter out non-quiet nights from Load forecast learning.",
+          "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning.",
+          "central_heating_power_entity": "Sensor reporting current central-heating power.",
+          "central_heating_power_w": "Approximate full-power draw of the central heating in watts."
         }
       },
       "hot_water": {
@@ -190,6 +216,46 @@
   "options": {
     "step": {
       "init": {
+        "title": "Energy Advisor settings",
+        "description": "Choose a settings category to edit. Changes are saved when you select Done.",
+        "menu_options": {
+          "price_settings": "Prices and tariffs",
+          "battery_settings": "Battery",
+          "forecast_settings": "Forecasts and household",
+          "grid_metering": "Grid metering",
+          "done": "Done"
+        }
+      },
+      "price_settings": {
+        "title": "Prices and tariffs",
+        "menu_options": {
+          "price_source": "Price source and thresholds",
+          "supplier_fees_and_credits": "Supplier fees and credits",
+          "grid_fees_and_credits": "Grid fees and credits",
+          "taxes_and_vat": "Taxes and VAT",
+          "init": "Back"
+        }
+      },
+      "battery_settings": {
+        "title": "Battery",
+        "menu_options": {
+          "battery": "Battery hardware",
+          "battery_optimization": "Battery optimization",
+          "init": "Back"
+        }
+      },
+      "forecast_settings": {
+        "title": "Forecasts and household",
+        "menu_options": {
+          "solar_forecast": "Solar forecast",
+          "household": "Household load",
+          "household_activity": "Heating and activity sensors",
+          "hot_water": "Water heater",
+          "flexible_loads": "Flexible loads",
+          "init": "Back"
+        }
+      },
+      "price_source": {
         "title": "Price source and thresholds",
         "description": "Update the Nord Pool price source and price-level thresholds.",
         "data": {
@@ -273,6 +339,7 @@
         "data": {
           "battery_capacity_kwh": "Battery capacity",
           "battery_max_charge_power_w": "Battery max charge power",
+          "battery_max_discharge_power_w": "Battery max discharge power",
           "battery_degradation_cost": "Battery wear cost",
           "battery_sell_margin": "Minimum sell margin",
           "battery_soc_entity": "Battery state of charge sensor",
@@ -281,10 +348,32 @@
         "data_description": {
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
           "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
+          "battery_max_discharge_power_w": "Maximum battery discharge power. If left empty, defaults to the configured charge power.",
+          "battery_max_discharge_power_w": "Maximum battery discharge power. If left empty, defaults to the configured charge power.",
           "battery_degradation_cost": "Wear cost per kWh delivered by the battery, in the same unit as the price sensor's cost (fees, taxes and VAT included), not the raw spot price. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0.",
           "battery_sell_margin": "Least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's cost. Leave empty for 0.5.",
           "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
           "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
+        }
+      },
+      "battery_optimization": {
+        "title": "Battery optimization",
+        "description": "Configure how the optimizer plans charging and discharging within the allowed battery range.",
+        "data": {
+          "battery_optimization_horizon_hours": "Optimization horizon",
+          "battery_min_soc_pct": "Minimum SoC",
+          "battery_max_soc_pct": "Maximum SoC",
+          "battery_degradation_cost": "Battery wear cost",
+          "battery_sell_margin": "Minimum sell margin",
+          "battery_sell_reserve_pct": "Export reserve"
+        },
+        "data_description": {
+          "battery_optimization_horizon_hours": "Currently not in use: the optimizer plans over all known price slots.",
+          "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
+          "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
+          "battery_degradation_cost": "Wear cost per kWh delivered by the battery, in the same unit as the price sensor's cost (fees, taxes and VAT included), not the raw spot price. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0.",
+          "battery_sell_margin": "Least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's cost. Leave empty for 0.5.",
+          "battery_sell_reserve_pct": "Share of the usable SoC range protected from grid export. Household discharge may still use this energy. Defaults to 30%."
         }
       },
       "grid_metering": {
@@ -317,6 +406,22 @@
           "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning.",
           "weather_entity": "Weather entity whose hourly forecast drives the heating forecast. Its current temperature and wind are also recorded to calibrate the forecast against the local sensors.",
           "wind_speed_entity": "Local wind speed sensor with long-term statistics. Wind increases heat loss; without it, the weather entity's wind is recorded and learned over time."
+        }
+      },
+      "household_activity": {
+        "title": "Household activity filters",
+        "description": "Link sensors that help estimate household usage.",
+        "data": {
+          "water_heater_active_entity": "Water heater active sensor",
+          "central_heating_active_entity": "Central heating active sensor",
+          "central_heating_power_entity": "Central heating power sensor",
+          "central_heating_power_w": "Central heating rated power"
+        },
+        "data_description": {
+          "water_heater_active_entity": "Binary sensor that is on when the water heater is actively heating. Used to filter out non-quiet nights from Load forecast learning.",
+          "central_heating_active_entity": "Binary sensor that is on when the central heating is running. Used to filter out non-quiet nights from Load forecast learning.",
+          "central_heating_power_entity": "Sensor reporting current central-heating power.",
+          "central_heating_power_w": "Approximate full-power draw of the central heating in watts."
         }
       },
       "hot_water": {

@@ -101,6 +101,10 @@ See [docs/solarforecast.md](docs/solarforecast.md) for details.
 
 Battery capacity and max charge power must be set together. Min SoC must be lower than max SoC. The battery charge mode sensor plans with these options (see [Planner](#planner)); without a capacity and a max charge power it keeps every slot on `standby`. Selling battery energy to the grid is part of the planning whenever a battery is configured; it needs no option of its own.
 
+After setup, the integration's options are grouped into menus for prices and
+tariffs, battery settings, forecasts and household inputs, and grid metering.
+You can edit one category at a time; select **Done** from the main menu to save.
+
 | Key                        | Description                  | Example Value | Status |
 |----------------------------|------------------------------|---------------|--------|
 | `battery_capacity_kwh`     | Usable battery capacity; set together with max charge power | `10.0` | In use (battery charge mode sensor) |
@@ -109,6 +113,7 @@ Battery capacity and max charge power must be set together. Min SoC must be lowe
 | `battery_optimization_horizon_hours` | Look-ahead horizon in hours (1-48, form default 48); the form field and the stored value are kept | `48` | currently not in use (the planner plans every known price slot) |
 | `battery_min_soc_pct`      | Lower SoC bound in % (form default 5) | `5` | In use (battery charge mode sensor) |
 | `battery_max_soc_pct`      | Upper SoC bound in % (form default 100) | `100` | In use (battery charge mode sensor) |
+| `battery_sell_reserve_pct` | Share of usable SoC range protected from grid export; household discharge can still use it (default 30%) | `30` | In use (battery charge mode sensor) |
 | `battery_degradation_cost` | Wear cost: cost per kWh delivered by the battery, in the same unit as the price sensor's `cost` (import price with fees, taxes and VAT), not the raw spot price. A cycle must save more than this and the round-trip losses before the planner uses it; no default (unset counts as `0`). Before this planner it was a minimum price spread | `0.7` | In use (battery charge mode sensor) |
 | `battery_sell_margin` | Minimum sell margin: the least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's `cost`. Unset counts as `0.5`; `0` lets any profitable sale through | `0.5` | In use (battery charge mode sensor) |
 | `battery_soc_entity`       | Battery state-of-charge sensor (percent); the start of every plan | `sensor.home_battery_soc` | In use (battery charge mode sensor; the household forecast also records its history) |
@@ -431,8 +436,9 @@ How it decides:
   revenue for every exported kWh. The `credit` already includes all taxes and
   fees of selling. Only the battery limits
   the export: there is no export limit to the grid, so a `sell` slot can export
-  at the max discharge power. Selling retains 30% of the usable capacity
-  between configured min and max SoC; household discharge can use that reserve.
+  at the max discharge power. Selling retains the configured
+  `battery_sell_reserve_pct` (default 30%) of the usable capacity between
+  configured min and max SoC; household discharge can use that reserve.
   A slot whose `credit` is unknown, `0` or negative never sells.
 - A kWh is worth selling when the `credit` is higher than the cost it was
   charged at, adjusted for the round-trip losses, plus the wear cost. With the

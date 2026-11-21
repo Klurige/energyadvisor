@@ -111,14 +111,16 @@
           "battery_min_soc_pct": "Minsta SoC",
           "battery_max_soc_pct": "Högsta SoC",
           "battery_degradation_cost": "Slitagekostnad för batteriet",
-          "battery_sell_margin": "Minsta försäljningsmarginal"
+          "battery_sell_margin": "Minsta försäljningsmarginal",
+          "battery_sell_reserve_pct": "Exportreserv"
         },
         "data_description": {
           "battery_optimization_horizon_hours": "Används för närvarande inte: optimeraren planerar över alla kända prisperioder.",
           "battery_min_soc_pct": "Nedre SoC-gräns som används av optimeraren.",
           "battery_max_soc_pct": "Övre SoC-gräns som används av optimeraren.",
           "battery_degradation_cost": "Slitagekostnad per kWh som batteriet levererar, i samma enhet som prissensorns kostnad (inklusive avgifter, skatter och moms), inte spotpriset. Planeraren cyklar bara batteriet när prisskillnaden också täcker denna kostnad och förlusterna vid laddning och urladdning. Lämna tomt för 0.",
-          "battery_sell_margin": "Minsta vinst per exporterad kWh som en försäljning måste ge jämfört med att behålla energin, i samma enhet som prissensorns kostnad. Lämna tomt för 0,5."
+          "battery_sell_margin": "Minsta vinst per exporterad kWh som en försäljning måste ge jämfört med att behålla energin, i samma enhet som prissensorns kostnad. Lämna tomt för 0,5.",
+          "battery_sell_reserve_pct": "Andelen av det användbara SoC-intervallet som skyddas från export till elnätet. Hushållets förbrukning kan fortfarande använda denna energi. Standard är 30 %."
         }
       },
       "grid_metering": {
@@ -210,6 +212,46 @@
   "options": {
     "step": {
       "init": {
+        "title": "Energy Advisor-inställningar",
+        "description": "Välj en kategori att ändra. Ändringar sparas när du väljer Klar.",
+        "menu_options": {
+          "price_settings": "Priser och avgifter",
+          "battery_settings": "Batteri",
+          "forecast_settings": "Prognoser och hushåll",
+          "grid_metering": "Elnätsmätning",
+          "done": "Klar"
+        }
+      },
+      "price_settings": {
+        "title": "Priser och avgifter",
+        "menu_options": {
+          "price_source": "Priskälla och gränsvärden",
+          "supplier_fees_and_credits": "Elhandelsavgifter och intäkter",
+          "grid_fees_and_credits": "Elnätsavgifter och intäkter",
+          "taxes_and_vat": "Skatter och moms",
+          "init": "Tillbaka"
+        }
+      },
+      "battery_settings": {
+        "title": "Batteri",
+        "menu_options": {
+          "battery": "Batterihårdvara",
+          "battery_optimization": "Batterioptimering",
+          "init": "Tillbaka"
+        }
+      },
+      "forecast_settings": {
+        "title": "Prognoser och hushåll",
+        "menu_options": {
+          "solar_forecast": "Solprognos",
+          "household": "Hushållsförbrukning",
+          "household_activity": "Uppvärmning och aktivitetssensorer",
+          "hot_water": "Varmvattenberedare",
+          "flexible_loads": "Flexibla laster",
+          "init": "Tillbaka"
+        }
+      },
+      "price_source": {
         "title": "Priskälla och gränsvärden",
         "description": "Uppdatera Nord Pool-priskällan och prisnivågränsvärdena.",
         "data": {
@@ -313,14 +355,16 @@
           "battery_min_soc_pct": "Minsta SoC",
           "battery_max_soc_pct": "Högsta SoC",
           "battery_degradation_cost": "Slitagekostnad för batteriet",
-          "battery_sell_margin": "Minsta försäljningsmarginal"
+          "battery_sell_margin": "Minsta försäljningsmarginal",
+          "battery_sell_reserve_pct": "Exportreserv"
         },
         "data_description": {
           "battery_optimization_horizon_hours": "Används för närvarande inte: optimeraren planerar över alla kända prisperioder.",
           "battery_min_soc_pct": "Nedre SoC-gräns som används av optimeraren.",
           "battery_max_soc_pct": "Övre SoC-gräns som används av optimeraren.",
           "battery_degradation_cost": "Slitagekostnad per kWh som batteriet levererar, i samma enhet som prissensorns kostnad (inklusive avgifter, skatter och moms), inte spotpriset. Planeraren cyklar bara batteriet när prisskillnaden också täcker denna kostnad och förlusterna vid laddning och urladdning. Lämna tomt för 0.",
-          "battery_sell_margin": "Minsta vinst per exporterad kWh som en försäljning måste ge jämfört med att behålla energin, i samma enhet som prissensorns kostnad. Lämna tomt för 0,5."
+          "battery_sell_margin": "Minsta vinst per exporterad kWh som en försäljning måste ge jämfört med att behålla energin, i samma enhet som prissensorns kostnad. Lämna tomt för 0,5.",
+          "battery_sell_reserve_pct": "Andelen av det användbara SoC-intervallet som skyddas från export till elnätet. Hushållets förbrukning kan fortfarande använda denna energi. Standard är 30 %."
         }
       },
       "grid_metering": {

@@ -22,6 +22,7 @@ from .const import (
     CONF_BATTERY_CHARGE_POWER_ENTITY,
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_SELL_MARGIN,
+    CONF_BATTERY_SELL_RESERVE_PCT,
     CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
@@ -771,6 +772,9 @@ class EnergyAdvisorFlowHandler(ConfigFlow, domain=DOMAIN):
                         CONF_BATTERY_SELL_MARGIN: self.data.get(
                             CONF_BATTERY_SELL_MARGIN
                         ),
+                        CONF_BATTERY_SELL_RESERVE_PCT: self.data.get(
+                            CONF_BATTERY_SELL_RESERVE_PCT
+                        ),
                         **{
                             key: self.data.get(key) for key in ALL_OPTIMIZER_ENTITY_KEYS
                         },
@@ -800,6 +804,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
     def __init__(self) -> None:
         self.current_options: dict[str, Any] = {}
         self.unit_of_measurement = ""
+        self._initialized = False
 
     def _update_price_sensor_attributes(
         self, sensor_attributes: dict[str, Any] | None
@@ -820,9 +825,78 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        errors = {}
-        if not self.current_options:
+        if not self._initialized:
             self.current_options = dict(self.config_entry.options)
+            self._initialized = True
+            _, attributes = await _validate_nordpool_prices_sensor(
+                self.hass,
+                self.current_options.get(CONF_NORDPOOL_PRICES_SENSOR, ""),
+            )
+            self.unit_of_measurement = (
+                attributes.get("unit_of_measurement", "") if attributes else ""
+            )
+            self._update_price_sensor_attributes(attributes)
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=[
+                "price_settings",
+                "battery_settings",
+                "forecast_settings",
+                "grid_metering",
+                "done",
+            ],
+        )
+
+    async def async_step_done(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Save changed settings and close the options flow."""
+        return self.async_create_entry(title="", data=self.current_options)
+
+    async def async_step_price_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the price and tariff configuration menu."""
+        return self.async_show_menu(
+            step_id="price_settings",
+            menu_options=[
+                "price_source",
+                "supplier_fees_and_credits",
+                "grid_fees_and_credits",
+                "taxes_and_vat",
+                "init",
+            ],
+        )
+
+    async def async_step_battery_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the battery configuration menu."""
+        return self.async_show_menu(
+            step_id="battery_settings",
+            menu_options=["battery", "battery_optimization", "init"],
+        )
+
+    async def async_step_forecast_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the forecast and household configuration menu."""
+        return self.async_show_menu(
+            step_id="forecast_settings",
+            menu_options=[
+                "solar_forecast",
+                "household",
+                "household_activity",
+                "hot_water",
+                "flexible_loads",
+                "init",
+            ],
+        )
+
+    async def async_step_price_source(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors = {}
 
         current_prices_sensor = self.current_options.get(
             CONF_NORDPOOL_PRICES_SENSOR, ""
@@ -867,10 +941,10 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
                         user_input.get(CONF_DEBUG, False)
                     )
                     self._update_price_sensor_attributes(sensor_attributes)
-                    return await self.async_step_supplier_fees_and_credits()
+                    return await self.async_step_price_settings()
 
         return self.async_show_form(
-            step_id="init",
+            step_id="price_source",
             data_schema=vol.Schema(
                 {
                     vol.Required(
@@ -914,7 +988,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
         errors = {}
         if user_input is not None:
             self.current_options.update(user_input)
-            return await self.async_step_grid_fees_and_credits()
+            return await self.async_step_price_settings()
 
         return self.async_show_form(
             step_id="supplier_fees_and_credits",
@@ -965,7 +1039,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
         errors = {}
         if user_input is not None:
             self.current_options.update(user_input)
-            return await self.async_step_taxes_and_vat()
+            return await self.async_step_price_settings()
 
         return self.async_show_form(
             step_id="grid_fees_and_credits",
@@ -1016,7 +1090,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
         errors = {}
         if user_input is not None:
             self.current_options.update(user_input)
-            return await self.async_step_solar_forecast()
+            return await self.async_step_price_settings()
 
         return self.async_show_form(
             step_id="taxes_and_vat",
@@ -1056,7 +1130,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
             )
             if not errors:
                 self.current_options.update(user_input)
-                return await self.async_step_battery()
+                return await self.async_step_forecast_settings()
 
         form_values = {
             key: _form_value(self.current_options, key)
@@ -1092,7 +1166,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
                 )
             if not errors:
                 self.current_options.update(user_input)
-                return await self.async_step_battery_optimization()
+                return await self.async_step_battery_settings()
 
         form_values = {
             key: _form_value(self.current_options, key)
@@ -1122,7 +1196,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
             )
             if not errors:
                 self.current_options.update(user_input)
-                return await self.async_step_grid_metering()
+                return await self.async_step_battery_settings()
 
         form_values = {
             key: _form_value(self.current_options, key)
@@ -1150,7 +1224,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
             if not errors:
                 self.current_options.update(user_input)
                 self.current_options.pop("battery_optimization_enabled", None)
-                return await self.async_step_household()
+                return await self.async_step_init()
 
         form_values = {
             key: _form_value(self.current_options, key)
@@ -1175,7 +1249,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
             )
             if not errors:
                 self.current_options.update(user_input)
-                return await self.async_step_household_activity()
+                return await self.async_step_forecast_settings()
 
         form_values = {
             key: _form_value(self.current_options, key)
@@ -1202,7 +1276,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
                 self.current_options.update(user_input)
                 for key in HOUSEHOLD_NUMERIC_KEYS:
                     self.current_options[key] = user_input.get(key)
-                return await self.async_step_hot_water()
+                return await self.async_step_forecast_settings()
 
         form_values = {
             key: _form_value(self.current_options, key)
@@ -1227,7 +1301,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
             )
             if not errors:
                 self.current_options.update(user_input)
-                return await self.async_step_flexible_loads()
+                return await self.async_step_forecast_settings()
 
         form_values = {
             key: _form_value(self.current_options, key)
@@ -1252,24 +1326,7 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
             )
             if not errors:
                 self.current_options.update(user_input)
-                for key in (
-                    CONF_FORECAST_ENTITY,
-                    CONF_POWER_ENTITY,
-                    CONF_FORECAST_TOMORROW_ENTITY,
-                    *ALL_OPTIMIZER_ENTITY_KEYS,
-                    *HEATING_FORECAST_ENTITY_KEYS,
-                ):
-                    self.current_options[key] = self.current_options.get(key) or None
-                for key in (
-                    *BATTERY_STEP_NUMERIC_KEYS,
-                    *ALL_OPTIMIZER_NUMERIC_KEYS,
-                ):
-                    self.current_options[key] = (
-                        self.current_options[key]
-                        if key in self.current_options
-                        else None
-                    )
-                return self.async_create_entry(title="", data=self.current_options)
+                return await self.async_step_forecast_settings()
 
         form_values = {
             key: _form_value(self.current_options, key)

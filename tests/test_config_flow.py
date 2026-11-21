@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import voluptuous as vol
 import voluptuous_serialize
 from homeassistant.helpers import config_validation as cv
 
@@ -21,6 +22,7 @@ from custom_components.energyadvisor.const import (
     CONF_BATTERY_CHARGE_POWER_ENTITY,
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_SELL_MARGIN,
+    CONF_BATTERY_SELL_RESERVE_PCT,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
@@ -97,6 +99,8 @@ COMMON_TRANSLATED_STEPS = {
         CONF_BATTERY_MIN_SOC_PCT,
         CONF_BATTERY_MAX_SOC_PCT,
         CONF_BATTERY_DEGRADATION_COST,
+        CONF_BATTERY_SELL_MARGIN,
+        CONF_BATTERY_SELL_RESERVE_PCT,
     ],
     "grid_metering": [CONF_GRID_IMPORT_ENTITY, CONF_GRID_EXPORT_ENTITY],
     "household": [CONF_POWER_METER_CONSUMPTION, CONF_OUTDOOR_TEMPERATURE_ENTITY],
@@ -186,7 +190,7 @@ def test_config_and_options_flow_fields_have_translations(language: str) -> None
             **COMMON_TRANSLATED_STEPS,
         },
         "options": {
-            "init": [
+            "price_source": [
                 CONF_NORDPOOL_PRICES_SENSOR,
                 CONF_LOW_THRESHOLD,
                 CONF_HIGH_THRESHOLD,
@@ -291,7 +295,7 @@ async def test_validate_nordpool_prices_sensor_defaults():
 
 @pytest.mark.asyncio
 async def test_options_flow_init_step_contains_price_and_threshold_fields() -> None:
-    """Test options flow init step only contains price source and threshold fields."""
+    """Test options flow has a hierarchical settings menu."""
     config_entry = MagicMock()
     config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
 
@@ -302,15 +306,21 @@ async def test_options_flow_init_step_contains_price_and_threshold_fields() -> N
     handler.hass = hass
 
     result = await handler.async_step_init()
-    schema = result["data_schema"].schema
-    schema_keys = [getattr(k, "schema", k) for k in schema]
+    assert result["type"] == "menu"
+    assert result["step_id"] == "init"
+    assert set(result["menu_options"]) == {
+        "price_settings",
+        "battery_settings",
+        "forecast_settings",
+        "grid_metering",
+        "done",
+    }
 
-    assert CONF_NORDPOOL_PRICES_SENSOR in schema_keys
-    assert CONF_LOW_THRESHOLD in schema_keys
-    assert CONF_HIGH_THRESHOLD in schema_keys
-    # Battery and solar fields belong to later steps, not init.
-    assert CONF_FORECAST_ENTITY not in schema_keys
-    assert CONF_BATTERY_CAPACITY_KWH not in schema_keys
+    result = await handler.async_step_price_settings(None)
+    assert result["type"] == "menu"
+    assert "price_source" in result["menu_options"]
+    assert (await handler.async_step_battery_settings(None))["type"] == "menu"
+    assert (await handler.async_step_forecast_settings(None))["type"] == "menu"
 
 
 @pytest.mark.asyncio
@@ -361,7 +371,8 @@ async def test_options_flow_init_step_offers_debug_flag_defaulting_to_off() -> N
         hass.states.get.return_value = None
         handler.hass = hass
 
-        result = await handler.async_step_init()
+        await handler.async_step_init()
+        result = await handler.async_step_price_source()
         debug_key = next(
             key
             for key in result["data_schema"].schema
@@ -388,12 +399,13 @@ async def test_options_flow_init_step_clears_debug_flag_when_omitted() -> None:
     hass.states.get.return_value = state
     handler.hass = hass
 
-    await handler.async_step_init(
+    await handler.async_step_init()
+    await handler.async_step_price_source(
         {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
     )
     assert handler.current_options[CONF_DEBUG] is False
 
-    await handler.async_step_init(
+    await handler.async_step_price_source(
         {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices", CONF_DEBUG: True}
     )
     assert handler.current_options[CONF_DEBUG] is True
@@ -417,7 +429,8 @@ async def test_options_flow_threshold_validation_error() -> None:
     hass.states.get.return_value = state
     handler.hass = hass
 
-    result = await handler.async_step_init(
+    await handler.async_step_init()
+    result = await handler.async_step_price_source(
         {
             CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
             CONF_LOW_THRESHOLD: 2.0,
@@ -633,11 +646,15 @@ async def test_main_flow_battery_prefills_dev_default_optimizer_inputs(
         CONF_BATTERY_MIN_SOC_PCT,
         CONF_BATTERY_MAX_SOC_PCT,
         CONF_BATTERY_SELL_MARGIN,
+        CONF_BATTERY_SELL_RESERVE_PCT,
     }
     assert validated[CONF_BATTERY_SELL_MARGIN] == 0.5
     assert validated[CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 48
     assert validated[CONF_BATTERY_MIN_SOC_PCT] == 5.0
     assert validated[CONF_BATTERY_MAX_SOC_PCT] == 100.0
+    assert validated[CONF_BATTERY_SELL_RESERVE_PCT] == 30.0
+    with pytest.raises(vol.Invalid):
+        result["data_schema"]({CONF_BATTERY_SELL_RESERVE_PCT: 101})
     assert any(field["name"] == CONF_BATTERY_DEGRADATION_COST for field in serialized)
     assert not any(field["type"] == "boolean" for field in serialized)
 
@@ -961,54 +978,24 @@ async def test_options_flow_rejects_missing_optimizer_entity() -> None:
 
 @pytest.mark.asyncio
 async def test_options_flow_preserves_zero_battery_margin() -> None:
-    """Test options flow keeps a zero degradation margin instead of clearing it."""
+    """Test a single battery settings page can be saved without clearing other options."""
     config_entry = MagicMock()
-    config_entry.options = {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
+    config_entry.options = {
+        CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices",
+        CONF_BATTERY_CAPACITY_KWH: 10.0,
+        CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
+        CONF_BATTERY_SELL_MARGIN: 0.0,
+    }
 
     handler = EnergyAdvisorOptionFlowHandler()
     handler._config_entry = config_entry
+    handler.hass = MagicMock()
+    handler.hass.states.get.return_value = None
 
-    hass = MagicMock()
-    hass.states.get.side_effect = lambda entity_id: {
-        "sensor.nordpool_prices": _make_state(
-            attributes={
-                "unit_of_measurement": "EUR/kWh",
-                "currency": "EUR",
-            }
-        ),
-        "sensor.outdoor_temperature": _make_state("12"),
-        "sensor.central_heating_power": _make_state("0"),
-        "sensor.water_heater_power": _make_state("0"),
-        "sensor.bathroom_humidity": _make_state("60"),
-    }.get(entity_id)
-    handler.hass = hass
-
-    # Step through the full options flow to reach create_entry.
-    result = await handler.async_step_init(
-        {CONF_NORDPOOL_PRICES_SENSOR: "sensor.nordpool_prices"}
-    )
-    assert result["step_id"] == "supplier_fees_and_credits"
-
-    result = await handler.async_step_supplier_fees_and_credits({})
-    assert result["step_id"] == "grid_fees_and_credits"
-
-    result = await handler.async_step_grid_fees_and_credits({})
-    assert result["step_id"] == "taxes_and_vat"
-
-    result = await handler.async_step_taxes_and_vat({})
-    assert result["step_id"] == "solar_forecast"
-
-    result = await handler.async_step_solar_forecast({})
-    assert result["step_id"] == "battery"
-
-    result = await handler.async_step_battery(
-        {
-            CONF_BATTERY_CAPACITY_KWH: 10.0,
-            CONF_BATTERY_MAX_CHARGE_POWER_W: 5000.0,
-            CONF_BATTERY_MAX_DISCHARGE_POWER_W: 4500.0,
-        }
-    )
-    assert result["step_id"] == "battery_optimization"
+    result = await handler.async_step_init()
+    assert result["type"] == "menu"
+    result = await handler.async_step_battery_settings(None)
+    assert result["type"] == "menu"
 
     result = await handler.async_step_battery_optimization(
         {
@@ -1016,55 +1003,17 @@ async def test_options_flow_preserves_zero_battery_margin() -> None:
             CONF_BATTERY_MIN_SOC_PCT: 10.0,
             CONF_BATTERY_MAX_SOC_PCT: 90.0,
             CONF_BATTERY_DEGRADATION_COST: 0.0,
+            CONF_BATTERY_SELL_RESERVE_PCT: 20.0,
         }
     )
-    assert result["step_id"] == "grid_metering"
+    assert result["step_id"] == "battery_settings"
 
-    result = await handler.async_step_grid_metering({})
-    assert result["step_id"] == "household"
-
-    result = await handler.async_step_household(
-        {
-            CONF_OUTDOOR_TEMPERATURE_ENTITY: "sensor.outdoor_temperature",
-        }
-    )
-    assert result["step_id"] == "household_activity"
-
-    result = await handler.async_step_household_activity(
-        {
-            CONF_CENTRAL_HEATING_POWER_ENTITY: "sensor.central_heating_power",
-            CONF_CENTRAL_HEATING_POWER_W: 2200.0,
-        }
-    )
-    assert result["step_id"] == "hot_water"
-
-    result = await handler.async_step_hot_water(
-        {
-            CONF_WATER_HEATER_POWER_ENTITY: "sensor.water_heater_power",
-            CONF_WATER_HEATER_POWER_W: 3500.0,
-            CONF_WATER_HEATER_MAX_HOURS: 4.0,
-            CONF_BATHROOM_HUMIDITY_ENTITY: "sensor.bathroom_humidity",
-        }
-    )
-    assert result["step_id"] == "flexible_loads"
-
-    result = await handler.async_step_flexible_loads({})
+    await handler.async_step_init()
+    result = await handler.async_step_done(None)
     assert result["type"] == "create_entry"
-    assert result["data"][CONF_BATTERY_DEGRADATION_COST] == 0.0
-    assert result["data"][CONF_BATTERY_MAX_DISCHARGE_POWER_W] == 4500.0
-    assert "battery_optimization_enabled" not in result["data"]
+    assert result["data"][CONF_BATTERY_CAPACITY_KWH] == 10.0
+    assert result["data"][CONF_BATTERY_SELL_MARGIN] == 0.0
+    assert result["data"][CONF_BATTERY_SELL_RESERVE_PCT] == 20.0
     assert result["data"][CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS] == 36.0
     assert result["data"][CONF_BATTERY_MIN_SOC_PCT] == 10.0
     assert result["data"][CONF_BATTERY_MAX_SOC_PCT] == 90.0
-    assert (
-        result["data"][CONF_OUTDOOR_TEMPERATURE_ENTITY] == "sensor.outdoor_temperature"
-    )
-    assert (
-        result["data"][CONF_CENTRAL_HEATING_POWER_ENTITY]
-        == "sensor.central_heating_power"
-    )
-    assert result["data"][CONF_CENTRAL_HEATING_POWER_W] == 2200.0
-    assert result["data"][CONF_WATER_HEATER_POWER_ENTITY] == "sensor.water_heater_power"
-    assert result["data"][CONF_WATER_HEATER_POWER_W] == 3500.0
-    assert result["data"][CONF_WATER_HEATER_MAX_HOURS] == 4.0
-    assert result["data"][CONF_BATHROOM_HUMIDITY_ENTITY] == "sensor.bathroom_humidity"

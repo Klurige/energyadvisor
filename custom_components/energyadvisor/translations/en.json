@@ -111,14 +111,16 @@
           "battery_min_soc_pct": "Minimum SoC",
           "battery_max_soc_pct": "Maximum SoC",
           "battery_degradation_cost": "Battery wear cost",
-          "battery_sell_margin": "Minimum sell margin"
+          "battery_sell_margin": "Minimum sell margin",
+          "battery_sell_reserve_pct": "Export reserve"
         },
         "data_description": {
           "battery_optimization_horizon_hours": "Currently not in use: the optimizer plans over all known price slots.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
           "battery_degradation_cost": "Wear cost per kWh delivered by the battery, in the same unit as the price sensor's cost (fees, taxes and VAT included), not the raw spot price. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0.",
-          "battery_sell_margin": "Least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's cost. Leave empty for 0.5."
+          "battery_sell_margin": "Least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's cost. Leave empty for 0.5.",
+          "battery_sell_reserve_pct": "Share of the usable SoC range protected from grid export. Household discharge may still use this energy. Defaults to 30%."
         }
       },
       "grid_metering": {
@@ -210,6 +212,46 @@
   "options": {
     "step": {
       "init": {
+        "title": "Energy Advisor settings",
+        "description": "Choose a settings category to edit. Changes are saved when you select Done.",
+        "menu_options": {
+          "price_settings": "Prices and tariffs",
+          "battery_settings": "Battery",
+          "forecast_settings": "Forecasts and household",
+          "grid_metering": "Grid metering",
+          "done": "Done"
+        }
+      },
+      "price_settings": {
+        "title": "Prices and tariffs",
+        "menu_options": {
+          "price_source": "Price source and thresholds",
+          "supplier_fees_and_credits": "Supplier fees and credits",
+          "grid_fees_and_credits": "Grid fees and credits",
+          "taxes_and_vat": "Taxes and VAT",
+          "init": "Back"
+        }
+      },
+      "battery_settings": {
+        "title": "Battery",
+        "menu_options": {
+          "battery": "Battery hardware",
+          "battery_optimization": "Battery optimization",
+          "init": "Back"
+        }
+      },
+      "forecast_settings": {
+        "title": "Forecasts and household",
+        "menu_options": {
+          "solar_forecast": "Solar forecast",
+          "household": "Household load",
+          "household_activity": "Heating and activity sensors",
+          "hot_water": "Water heater",
+          "flexible_loads": "Flexible loads",
+          "init": "Back"
+        }
+      },
+      "price_source": {
         "title": "Price source and thresholds",
         "description": "Update the Nord Pool price source and price-level thresholds.",
         "data": {
@@ -313,14 +355,16 @@
           "battery_min_soc_pct": "Minimum SoC",
           "battery_max_soc_pct": "Maximum SoC",
           "battery_degradation_cost": "Battery wear cost",
-          "battery_sell_margin": "Minimum sell margin"
+          "battery_sell_margin": "Minimum sell margin",
+          "battery_sell_reserve_pct": "Export reserve"
         },
         "data_description": {
           "battery_optimization_horizon_hours": "Currently not in use: the optimizer plans over all known price slots.",
           "battery_min_soc_pct": "Lower SoC bound used by the optimizer.",
           "battery_max_soc_pct": "Upper SoC bound used by the optimizer.",
           "battery_degradation_cost": "Wear cost per kWh delivered by the battery, in the same unit as the price sensor's cost (fees, taxes and VAT included), not the raw spot price. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0.",
-          "battery_sell_margin": "Least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's cost. Leave empty for 0.5."
+          "battery_sell_margin": "Least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's cost. Leave empty for 0.5.",
+          "battery_sell_reserve_pct": "Share of the usable SoC range protected from grid export. Household discharge may still use this energy. Defaults to 30%."
         }
       },
       "grid_metering": {

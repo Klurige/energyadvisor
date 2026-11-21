@@ -29,11 +29,11 @@ solar at least as highly as its discounted export credit. Otherwise it stays
 ``discharge``, leaving surplus solar available for export. A ``sell`` is never
 turned into ``maxuse``, which would stop the export. Solar production is not
 modelled beyond the solar forecast's load offset and surplus.
-Grid-charge periods aim to fill the battery, and 30% of its usable capacity is
-reserved from selling (but remains available for household discharge). A sale
-must gain the configured sell margin per exported kWh, and may never leave less
-energy at the end of the known prices than the best plan without sales, so the
-guessed worth of tomorrow's energy never pays for it.
+Grid-charge periods aim to fill the battery, and the configured share of its
+usable capacity is reserved from selling (but remains available for household
+discharge). A sale must gain the configured sell margin per exported kWh, and
+may never leave less energy at the end of the known prices than the best plan
+without sales, so the guessed worth of tomorrow's energy never pays for it.
 
 Costs are the price sensor's ``cost`` and credits its ``credit`` (fees, taxes
 and VAT included), not the raw spot price, and the battery's wear cost is in the
@@ -96,6 +96,8 @@ from ..const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_SELL_MARGIN,
+    CONF_BATTERY_SELL_RESERVE_PCT,
+    DEFAULT_BATTERY_SELL_RESERVE_PCT,
     DEFAULT_BATTERY_SELL_MARGIN,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
@@ -125,7 +127,6 @@ DEFAULT_TARGET_SOC_PCT = 50
 DEFAULT_LOAD_KW = 1.0
 DEFAULT_MIN_SOC_PCT = 5.0
 DEFAULT_MAX_SOC_PCT = 100.0
-SELL_RESERVE_FRACTION = 0.3
 # The SoC entity only triggers a new plan when it moved this far since the
 # last plan; smaller changes are picked up at the next quarter hour.
 SOC_REPLAN_DELTA_PCT = 2.0
@@ -828,6 +829,10 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
         sell_margin = self._option_float(CONF_BATTERY_SELL_MARGIN)
         if sell_margin is None:
             sell_margin = DEFAULT_BATTERY_SELL_MARGIN
+        sell_reserve_pct = self._option_float(CONF_BATTERY_SELL_RESERVE_PCT)
+        if sell_reserve_pct is None:
+            sell_reserve_pct = DEFAULT_BATTERY_SELL_RESERVE_PCT
+        sell_reserve_fraction = min(max(sell_reserve_pct, 0.0), 100.0) / 100
         return BatteryParams(
             capacity_kwh=capacity,
             min_soc_pct=min_soc,
@@ -836,7 +841,7 @@ class BatteryChargeModeSensor(RestoreEntity, SensorEntity):
             max_discharge_power_kw=discharge_w / 1000,
             wear_cost_per_kwh=max(wear or 0.0, 0.0),
             charge_to_max=True,
-            sell_reserve_fraction=SELL_RESERVE_FRACTION,
+            sell_reserve_fraction=sell_reserve_fraction,
             sell_margin_per_kwh=max(sell_margin, 0.0),
             sell_needs_known_refill=True,
         )

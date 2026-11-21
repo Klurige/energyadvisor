@@ -25,6 +25,7 @@ from custom_components.energyadvisor.const import (
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_SELL_MARGIN,
+    CONF_BATTERY_SELL_RESERVE_PCT,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MAX_SOC_PCT,
@@ -885,6 +886,7 @@ def test_battery_params_read_every_option(hass) -> None:
         CONF_BATTERY_MAX_SOC_PCT: 90,
         CONF_BATTERY_DEGRADATION_COST: 0.25,
         CONF_BATTERY_SELL_MARGIN: 0.2,
+        CONF_BATTERY_SELL_RESERVE_PCT: 20.0,
     }
 
     params = _make_sensor(hass, [], options=options)._battery_params()
@@ -898,7 +900,7 @@ def test_battery_params_read_every_option(hass) -> None:
         0.9,
         0.25,
         charge_to_max=True,
-        sell_reserve_fraction=0.3,
+        sell_reserve_fraction=0.2,
         sell_margin_per_kwh=0.2,
         sell_needs_known_refill=True,
     )

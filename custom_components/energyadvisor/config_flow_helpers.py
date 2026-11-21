@@ -17,8 +17,10 @@ from .const import (
     CONF_BATTERY_CHARGE_POWER_ENTITY,
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_SELL_MARGIN,
+    CONF_BATTERY_SELL_RESERVE_PCT,
     CONF_BATTERY_MAX_SOC_PCT,
     DEFAULT_BATTERY_SELL_MARGIN,
+    DEFAULT_BATTERY_SELL_RESERVE_PCT,
     CONF_BATTERY_MAX_CHARGE_POWER_W,
     CONF_BATTERY_MAX_DISCHARGE_POWER_W,
     CONF_BATTERY_MIN_SOC_PCT,
@@ -89,6 +91,7 @@ BATTERY_OPTIMIZATION_NUMERIC_KEYS: tuple[str, ...] = (
     CONF_BATTERY_MAX_SOC_PCT,
     CONF_BATTERY_DEGRADATION_COST,
     CONF_BATTERY_SELL_MARGIN,
+    CONF_BATTERY_SELL_RESERVE_PCT,
 )
 BATTERY_STEP_NUMERIC_KEYS: tuple[str, ...] = (
     *BATTERY_HARDWARE_NUMERIC_KEYS,
@@ -286,6 +289,7 @@ def _build_battery_optimization_schema(
     battery_min_soc_pct = values.get(CONF_BATTERY_MIN_SOC_PCT)
     battery_max_soc_pct = values.get(CONF_BATTERY_MAX_SOC_PCT)
     battery_sell_margin = values.get(CONF_BATTERY_SELL_MARGIN)
+    battery_sell_reserve_pct = values.get(CONF_BATTERY_SELL_RESERVE_PCT)
     return {
         vol.Optional(
             CONF_BATTERY_OPTIMIZATION_HORIZON_HOURS,
@@ -324,6 +328,15 @@ def _build_battery_optimization_schema(
             ),
             description={"suffix": unit_of_measurement},
         ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        vol.Optional(
+            CONF_BATTERY_SELL_RESERVE_PCT,
+            default=_schema_default(
+                battery_sell_reserve_pct
+                if battery_sell_reserve_pct is not None
+                else DEFAULT_BATTERY_SELL_RESERVE_PCT
+            ),
+            description={"suffix": "%"},
+        ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
     }
 
 
