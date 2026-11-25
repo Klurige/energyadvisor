@@ -36,7 +36,7 @@ def _resolve_resale(hass: HomeAssistant, entry_id: str | None) -> GridResaleCoor
     ]
     if len(matches) != 1:
         raise ServiceValidationError(
-            "Select an entry_id with grid resale enabled; specify entry_id if multiple entries are enabled."
+            "Select an entry_id with a loaded tax ledger; specify entry_id if multiple entries are loaded."
         )
     return matches[0]
 

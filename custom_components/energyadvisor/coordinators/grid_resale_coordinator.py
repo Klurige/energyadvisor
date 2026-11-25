@@ -18,14 +18,17 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from ..grid_resale import (
-    MAX_SAMPLE_AGE,
+    CONF_RESALE_SOURCES_NEED_REVIEW,
+    MAX_CAPTURE_GAP,
     POWER_KEYS,
     ResaleLedger,
     STOCKHOLM,
     power_kw,
+    resale_sources_configured,
 )
 
 _LOGGER = logging.getLogger(__name__)
+CAPTURE_VERSION = 2
 
 
 class GridResaleCoordinator(DataUpdateCoordinator[dict]):
@@ -36,7 +39,10 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
             hass, _LOGGER, name="Grid resale", update_interval=timedelta(seconds=30)
         )
         self.entry = entry
-        self.entities = {role: entry.options[key] for role, key in POWER_KEYS.items()}
+        self.entities = {
+            role: entry.options.get(key) for role, key in POWER_KEYS.items()
+        }
+        self.sources_configured = resale_sources_configured(dict(entry.options))
         self.ledger = ResaleLedger(
             Path(
                 hass.config.path(
@@ -52,12 +58,22 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
         self._unsubscribe_year_reset = None
         self._stopped = False
         self.quality = "starting"
+        if not self.sources_configured:
+            self.quality = (
+                "sources_need_review"
+                if entry.options.get(CONF_RESALE_SOURCES_NEED_REVIEW)
+                else "sources_not_configured"
+            )
 
     async def async_setup(self) -> None:
         await self.hass.async_add_executor_job(self.ledger.initialize)
         self._configuration_id = await self.hass.async_add_executor_job(
             self.ledger.configuration,
-            {"entities": self.entities, "positive_charge": True},
+            {
+                "entities": self.entities,
+                "positive_charge": True,
+                "capture_version": CAPTURE_VERSION,
+            },
         )
         now = dt_util.utcnow()
         last_end = await self.hass.async_add_executor_job(self.ledger.latest_end)
@@ -77,9 +93,11 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
                 self._async_capture_event(event.time_fired, snapshot)
             )
 
-        self._unsubscribe = async_track_state_change_event(
-            self.hass, list(self.entities.values()), changed
-        )
+        entities = [entity for entity in self.entities.values() if entity]
+        if entities:
+            self._unsubscribe = async_track_state_change_event(
+                self.hass, entities, changed
+            )
         self._schedule_year_reset(now)
 
     def _schedule_year_reset(self, now: datetime) -> None:
@@ -111,7 +129,7 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
 
     def _snapshot(self) -> dict:
         return {
-            role: self._state_evidence(self.hass.states.get(entity))
+            role: self._state_evidence(self.hass.states.get(entity) if entity else None)
             for role, entity in self.entities.items()
         }
 
@@ -130,21 +148,13 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
             "reported_utc": reported.isoformat(),
         }
 
-    def _values(
-        self, snapshot: dict, end: datetime, check_age: bool = True
-    ) -> dict | None:
+    def _values(self, snapshot: dict) -> dict | None:
+        if not self.sources_configured or set(snapshot) != set(POWER_KEYS):
+            return None
         values = {}
         for role, reading in snapshot.items():
             value = power_kw(reading["state"], reading["unit"])
             if value is None or (role != "battery" and value < 0):
-                return None
-            reported = reading.get("reported_utc")
-            if check_age and (
-                not reported
-                or not 0
-                <= (end - datetime.fromisoformat(reported)).total_seconds()
-                <= MAX_SAMPLE_AGE
-            ):
                 return None
             values[role] = value
         return values
@@ -166,12 +176,16 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
         async with self._lock:
             if self._stopped:
                 return self.data or {}
-            if self._previous is not None:
+            if self._previous is not None and self.sources_configured:
                 start, previous = self._previous
                 if now <= start:
                     _LOGGER.warning("Ignoring out-of-order resale sample at %s", now)
                     return self.data or {}
-                values = self._values(previous, now)
+                values = (
+                    self._values(previous)
+                    if (now - start).total_seconds() <= MAX_CAPTURE_GAP
+                    else None
+                )
                 self.quality = "measured" if values is not None else "missing_or_stale"
                 await self.hass.async_add_executor_job(
                     self.ledger.record,
@@ -186,6 +200,8 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
             self._previous = now, snapshot
             summary = await self.hass.async_add_executor_job(self.ledger.summary, now)
             summary["quality_status"] = self.quality
+            summary["source_entities"] = dict(self.entities)
+            summary["capture_version"] = CAPTURE_VERSION
             self.async_set_updated_data(summary)
             return summary
 
@@ -203,7 +219,12 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
     async def async_import_history(
         self, start: datetime, end: datetime, source: str
     ) -> dict:
-        """Import bounded chunks; never replace retained live evidence."""
+        """Import bounded chunks, preserving evidence of any recovered gaps."""
+        if not self.sources_configured:
+            raise ValueError(
+                "Verify the four shared grid, signed battery and solar power sources "
+                "and save Done before importing grid resale history"
+            )
         if start.tzinfo is None or end.tzinfo is None or start >= end:
             raise ValueError("History requires increasing timezone-aware timestamps")
         if end > dt_util.utcnow():
@@ -303,11 +324,7 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
             (
                 begin,
                 begin + timedelta(hours=1),
-                (
-                    self._values(evidence, begin, False)
-                    if set(evidence) == set(POWER_KEYS)
-                    else None
-                ),
+                self._values(evidence),
                 evidence,
                 "hourly_estimate",
             )
@@ -345,7 +362,11 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
             if stamp >= end:
                 break
             if stamp > cursor and set(snapshot) == set(POWER_KEYS):
-                values = self._values(snapshot, stamp)
+                values = (
+                    self._values(snapshot)
+                    if (stamp - cursor).total_seconds() <= MAX_CAPTURE_GAP
+                    else None
+                )
                 if values is not None:
                     rows.append(
                         (cursor, stamp, values, dict(snapshot), "raw_reconstruction")
@@ -353,7 +374,11 @@ class GridResaleCoordinator(DataUpdateCoordinator[dict]):
             snapshot[role] = reading
             cursor = stamp
         if cursor < end and set(snapshot) == set(POWER_KEYS):
-            values = self._values(snapshot, end)
+            values = (
+                self._values(snapshot)
+                if (end - cursor).total_seconds() <= MAX_CAPTURE_GAP
+                else None
+            )
             if values is not None:
                 rows.append((cursor, end, values, snapshot, "raw_reconstruction"))
         return rows

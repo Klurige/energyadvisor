@@ -22,7 +22,7 @@ from .const import (
 
 STOCKHOLM = ZoneInfo("Europe/Stockholm")
 RULE_VERSION = 1
-CONF_RESALE_ENABLED = "grid_resale_enabled"
+CONF_RESALE_SOURCES_NEED_REVIEW = "grid_resale_sources_need_review"
 POWER_KEYS = {
     "grid_import": CONF_GRID_IMPORT_ENTITY,
     "grid_export": CONF_GRID_EXPORT_ENTITY,
@@ -35,12 +35,13 @@ _LEGACY_POWER_KEYS = {
     "battery": "resale_battery_power_entity",
     "solar": "resale_solar_power_entity",
 }
-MAX_SAMPLE_AGE = 120
+MAX_CAPTURE_GAP = 120
 
 
 def migrate_resale_options(options: dict) -> tuple[dict, bool]:
     """Reuse shared inputs without silently replacing another feature's sources."""
     migrated = dict(options)
+    migrated.pop("grid_resale_enabled", None)
     conflict = False
     for role, legacy_key in _LEGACY_POWER_KEYS.items():
         entity = migrated.pop(legacy_key, None)
@@ -53,10 +54,19 @@ def migrate_resale_options(options: dict) -> tuple[dict, bool]:
             conflict = True
     if migrated.pop("grid_resale_positive_charge", True) is False:
         conflict = True
-    needs_review = conflict and bool(migrated.get(CONF_RESALE_ENABLED))
-    if needs_review:
-        migrated[CONF_RESALE_ENABLED] = False
-    return migrated, needs_review
+    if conflict:
+        migrated[CONF_RESALE_SOURCES_NEED_REVIEW] = True
+    return migrated, bool(migrated.get(CONF_RESALE_SOURCES_NEED_REVIEW))
+
+
+def resale_sources_configured(options: dict) -> bool:
+    """Require distinct shared inputs and acknowledgement of legacy conflicts."""
+    selected = [options.get(key) for key in POWER_KEYS.values()]
+    return (
+        not options.get(CONF_RESALE_SOURCES_NEED_REVIEW)
+        and all(isinstance(entity, str) and entity for entity in selected)
+        and len(set(selected)) == len(POWER_KEYS)
+    )
 
 
 def power_kw(value: object, unit: str | None) -> float | None:
@@ -114,7 +124,7 @@ class ResaleLedger:
         self.path.touch(mode=0o600, exist_ok=True)
         with closing(self._connect()) as conn, conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError(f"Unsupported grid resale database version: {version}")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript("""
@@ -156,6 +166,20 @@ class ResaleLedger:
                 CREATE INDEX IF NOT EXISTS resale_year
                     ON intervals(tax_year, start_utc);
                 CREATE INDEX IF NOT EXISTS resale_end ON intervals(end_utc);
+                CREATE TABLE IF NOT EXISTS interval_revisions (
+                    id INTEGER PRIMARY KEY,
+                    superseded_utc TEXT NOT NULL,
+                    replacement_sample_id INTEGER NOT NULL REFERENCES samples(id),
+                    start_utc TEXT NOT NULL,
+                    end_utc TEXT NOT NULL,
+                    tax_year INTEGER NOT NULL,
+                    sample_id INTEGER NOT NULL REFERENCES samples(id),
+                    quality TEXT NOT NULL,
+                    grid_charge_kwh REAL NOT NULL,
+                    battery_export_kwh REAL NOT NULL,
+                    eligible_kwh REAL NOT NULL,
+                    allowance_kwh REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS imports (
                     id INTEGER PRIMARY KEY,
                     created_utc TEXT NOT NULL,
@@ -165,7 +189,7 @@ class ResaleLedger:
                     inserted INTEGER NOT NULL,
                     skipped INTEGER NOT NULL
                 );
-                PRAGMA user_version=1;
+                PRAGMA user_version=2;
                 """)
 
     def configuration(self, options: dict) -> int:
@@ -277,11 +301,26 @@ class ResaleLedger:
             (start.isoformat(), source, configuration_id, payload),
         ).fetchone()[0]
         for year, begin, stop in year_segments(start, end):
-            if conn.execute(
-                "SELECT 1 FROM intervals WHERE start_utc < ? AND end_utc > ? LIMIT 1",
+            overlaps = conn.execute(
+                "SELECT * FROM intervals WHERE start_utc < ? AND end_utc > ?",
                 (stop.isoformat(), begin.isoformat()),
-            ).fetchone():
-                continue
+            ).fetchall()
+            if overlaps:
+                if (
+                    source != "history_raw"
+                    or quality != "raw_reconstruction"
+                    or values is None
+                    or any(
+                        row["quality"] != "missing_or_stale"
+                        or row["grid_charge_kwh"] != 0
+                        or row["battery_export_kwh"] != 0
+                        or row["eligible_kwh"] != 0
+                        for row in overlaps
+                    )
+                ):
+                    continue
+                self._archive_invalid_intervals(conn, overlaps, begin, stop, sample_id)
+                replay_years.add(year)
             charged, exported = (
                 flows(values, (stop - begin).total_seconds() / 3600)
                 if values is not None
@@ -334,22 +373,60 @@ class ResaleLedger:
         return inserted, replay_years
 
     @staticmethod
+    def _archive_invalid_intervals(
+        conn: sqlite3.Connection,
+        overlaps: list[sqlite3.Row],
+        start: datetime,
+        end: datetime,
+        replacement_sample_id: int,
+    ) -> None:
+        """Keep rejected calculations and evidence when raw history repairs them."""
+        for row in overlaps:
+            conn.execute(
+                "INSERT INTO interval_revisions "
+                "(superseded_utc, replacement_sample_id, start_utc, end_utc, tax_year, "
+                "sample_id, quality, grid_charge_kwh, battery_export_kwh, eligible_kwh, allowance_kwh) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    replacement_sample_id,
+                    *tuple(row),
+                ),
+            )
+            conn.execute("DELETE FROM intervals WHERE start_utc=?", (row["start_utc"],))
+            for begin, stop in (
+                (datetime.fromisoformat(row["start_utc"]), start),
+                (end, datetime.fromisoformat(row["end_utc"])),
+            ):
+                if begin < stop:
+                    conn.execute(
+                        "INSERT INTO intervals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (begin.isoformat(), stop.isoformat(), *tuple(row)[2:]),
+                    )
+
+    @staticmethod
     def _replay(conn: sqlite3.Connection, year: int) -> None:
-        allowance = 0.0
-        for row in conn.execute(
+        allowance = charged = exported = 0.0
+        estimated = flagged = 0
+        rows = conn.execute(
             "SELECT * FROM intervals WHERE tax_year=? ORDER BY start_utc", (year,)
-        ).fetchall():
+        ).fetchall()
+        for row in rows:
             eligible = min(allowance, row["battery_export_kwh"])
             allowance += row["grid_charge_kwh"] - eligible
+            charged += row["grid_charge_kwh"]
+            exported += eligible
+            estimated += row["quality"] == "hourly_estimate"
+            flagged += row["quality"] != "measured"
             conn.execute(
                 "UPDATE intervals SET eligible_kwh=?, allowance_kwh=? WHERE start_utc=?",
                 (eligible, allowance, row["start_utc"]),
             )
         conn.execute(
-            "UPDATE year_totals SET "
-            "eligible_export_kwh=(SELECT COALESCE(SUM(eligible_kwh), 0) FROM intervals WHERE tax_year=?), "
-            "allowance_kwh=? WHERE tax_year=?",
-            (year, allowance, year),
+            "UPDATE year_totals SET grid_charged_kwh=?, eligible_export_kwh=?, "
+            "allowance_kwh=?, estimated_interval_count=?, interval_count=?, "
+            "flagged_intervals=? WHERE tax_year=?",
+            (charged, exported, allowance, estimated, len(rows), flagged, year),
         )
 
     def summary(self, now: datetime) -> dict:
@@ -384,6 +461,9 @@ class ResaleLedger:
                 "last_recorded_utc": coverage[1],
                 "rule_version": RULE_VERSION,
                 "recorded_restart_gaps": gaps,
+                "history_import_count": conn.execute(
+                    "SELECT COUNT(*) FROM imports"
+                ).fetchone()[0],
             }
 
     def latest_end(self) -> datetime | None:
@@ -412,7 +492,14 @@ class ResaleLedger:
         """Export every table from one read transaction to a private CSV file."""
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = directory / f"{uuid4().hex}.csv"
-        tables = ("configurations", "samples", "intervals", "year_totals", "imports")
+        tables = (
+            "configurations",
+            "samples",
+            "intervals",
+            "interval_revisions",
+            "year_totals",
+            "imports",
+        )
         try:
             with closing(self._connect()) as conn, open(
                 path,

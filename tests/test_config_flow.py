@@ -313,7 +313,6 @@ async def test_options_flow_init_step_contains_price_and_threshold_fields() -> N
         "battery_settings",
         "forecast_settings",
         "grid_metering",
-        "grid_resale",
         "done",
     }
 

@@ -201,7 +201,6 @@
       }
     },
     "error": {
-      "resale_sources_invalid": "Konfigurera fyra olika effektsensorer (W eller kW): import/export under Elnätsmätning, batterieffekt med tecken under Batterihårdvara och verklig soleffekt under Solprognos. Aktivera sedan återexport.",
       "invalid_sensor": "Den valda sensorn är inte tillgänglig eller giltig.",
       "low_threshold_higher_than_high_threshold": "Det nedre gränsvärdet måste vara lägre än det övre gränsvärdet.",
       "entity_not_found": "Enheten hittades inte – kontrollera enhets-ID och försök igen.",
@@ -220,15 +219,7 @@
           "battery_settings": "Batteri",
           "forecast_settings": "Prognoser och hushåll",
           "grid_metering": "Elnätsmätning",
-          "grid_resale": "Skatteunderlag för återexport",
           "done": "Klar"
-        }
-      },
-      "grid_resale": {
-        "title": "Skatteunderlag för återexport",
-        "description": "Återanvänd sensorerna under Elnätsmätning, Batterihårdvara och Solprognos. Batterieffekten ska vara positiv vid laddning och negativ vid urladdning; soleffekten får inte inkludera batteriurladdning. Bokför nätenergi som laddats till batteriet och senare exporterats under samma svenska kalenderår. Hushållsförbrukning minskar inte saldot. Historik importeras med en separat åtgärd.",
-        "data": {
-          "grid_resale_enabled": "Aktivera beständig bokföring av återexport"
         }
       },
       "price_settings": {
@@ -457,7 +448,7 @@
   "issues": {
     "grid_resale_shared_sources": {
       "title": "Kontrollera delade sensorer för återexport",
-      "description": "Återexport inaktiverades eftersom tidigare sensorer eller batteriets teckenkonvention skiljer sig från de delade inställningarna. Befintlig bokföring finns kvar. Kontrollera Elnätsmätning, verklig soleffekt under Solprognos och Batterihårdvara. Batterieffekten ska vara positiv vid laddning och negativ vid urladdning. Aktivera sedan Skatteunderlag för återexport igen."
+      "description": "Skatteunderlaget är alltid aktiverat, men kan inte tillgodoräkna energi förrän fyra olika delade effektsensorer har konfigurerats och eventuella tidigare sensorkonflikter har granskats. Befintlig bokföring finns kvar. Kontrollera import/export under Elnätsmätning, verklig soleffekt utan batteriurladdning under Solprognos och batterieffekt med tecken under Batterihårdvara. Batterieffekten ska vara positiv vid laddning och negativ vid urladdning. Välj Klar för att spara."
     }
   },
   "entity": {

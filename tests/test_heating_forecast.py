@@ -412,6 +412,10 @@ async def test_sensor_platform_creates_heating_sensor_when_configured(options, c
         ),
         patch("custom_components.energyadvisor.sensor.NordpoolDataCoordinator"),
         patch(
+            "custom_components.energyadvisor.sensor.GridResaleCoordinator",
+            autospec=True,
+        ),
+        patch(
             "custom_components.energyadvisor.sensor.HeatingForecastCoordinator",
             return_value=coordinator,
         ),

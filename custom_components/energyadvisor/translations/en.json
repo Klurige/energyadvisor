@@ -201,7 +201,6 @@
       }
     },
     "error": {
-      "resale_sources_invalid": "Configure four distinct actual-power sensors (W or kW): import/export under Grid metering, signed battery power under Battery hardware, and actual solar power under Solar forecast. Then enable grid resale.",
       "invalid_sensor": "The selected sensor is not available or not valid.",
       "low_threshold_higher_than_high_threshold": "The lower threshold must be less than the upper threshold.",
       "entity_not_found": "Entity not found – check the entity ID and try again.",
@@ -220,15 +219,7 @@
           "battery_settings": "Battery",
           "forecast_settings": "Forecasts and household",
           "grid_metering": "Grid metering",
-          "grid_resale": "Grid resale tax ledger",
           "done": "Done"
-        }
-      },
-      "grid_resale": {
-        "title": "Grid resale tax ledger",
-        "description": "Reuse the sensors configured under Grid metering, Battery hardware and Solar forecast. Battery power must be positive for charging and negative for discharging; solar power must exclude battery discharge. Track grid energy charged to the battery and later exported in the same Swedish calendar year. Household use does not consume the allowance. Historical import is a separate action.",
-        "data": {
-          "grid_resale_enabled": "Enable persistent grid resale accounting"
         }
       },
       "price_settings": {
@@ -457,7 +448,7 @@
   "issues": {
     "grid_resale_shared_sources": {
       "title": "Review shared grid resale inputs",
-      "description": "Grid resale was disabled because its previous sources or battery polarity conflict with the shared settings. The existing ledger is retained. Verify Grid metering, Solar forecast actual power and Battery hardware. Battery power must be positive for charging and negative for discharging. Then enable Grid resale tax ledger again."
+      "description": "The tax ledger is always enabled, but cannot credit energy until four distinct shared power sensors are configured and any previous source conflicts are reviewed. The existing ledger is retained. Verify import/export under Grid metering, PV-only actual power under Solar forecast and signed battery power under Battery hardware. Battery power must be positive for charging and negative for discharging. Select Done to save."
     }
   },
   "entity": {

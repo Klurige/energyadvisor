@@ -19,7 +19,7 @@ from custom_components.energyadvisor.coordinators.grid_resale_coordinator import
     GridResaleCoordinator,
 )
 from custom_components.energyadvisor.grid_resale import (
-    CONF_RESALE_ENABLED,
+    CONF_RESALE_SOURCES_NEED_REVIEW,
     POWER_KEYS,
     ResaleLedger,
     STOCKHOLM,
@@ -174,6 +174,165 @@ def test_partial_overlap_never_double_counts_live_intervals(ledger):
     assert ledger.summary(BASE)["grid_charged_kwh"] == 1
 
 
+def test_raw_history_recovers_rejected_intervals_with_exportable_audit_trail(
+    ledger, tmp_path
+):
+    add(ledger, 0, None, quality="missing_or_stale")
+    add(ledger, 1, None, quality="missing_or_stale")
+    add(ledger, 2, values(battery=-1, exported=1))
+    corrected = ledger.configuration({"entities": {"battery": "sensor.signed"}})
+    rows = [
+        (
+            BASE,
+            BASE + HOUR,
+            values(battery=2, imported=2),
+            {"raw": "charging"},
+            "raw_reconstruction",
+        ),
+        (
+            BASE + HOUR,
+            BASE + HOUR * 2,
+            values(battery=-1, exported=1),
+            {"raw": "discharging"},
+            "raw_reconstruction",
+        ),
+    ]
+    assert ledger.record_many(rows, corrected, "history_raw") == (2, 0)
+    summary = ledger.summary(BASE)
+    assert summary["grid_charged_kwh"] == 2
+    assert summary["eligible_export_kwh"] == 2
+    assert summary["allowance_kwh"] == 0
+    assert summary["interval_count"] == 3
+    assert ledger.record_many(rows, corrected, "history_raw") == (0, 2)
+    ledger.initialize()
+    assert ledger.summary(BASE) == summary
+    with ledger.export_csv(tmp_path / "exports").open(
+        encoding="utf-8-sig", newline=""
+    ) as stream:
+        exported = list(csv.DictReader(stream))
+    revisions = [r for r in exported if r["record_type"] == "interval_revisions"]
+    assert len(revisions) == 2
+    samples = {r["id"]: r for r in exported if r["record_type"] == "samples"}
+    for row in revisions:
+        assert row["quality"] == "missing_or_stale"
+        assert samples[row["sample_id"]]["configuration_id"] == "1"
+        assert samples[row["replacement_sample_id"]]["configuration_id"] == str(
+            corrected
+        )
+
+
+def test_raw_recovery_splits_rejected_boundaries_and_rebuilds_totals(ledger):
+    add(ledger, 0, None, quality="missing_or_stale")
+    rows = [
+        (
+            BASE + HOUR / 4,
+            BASE + HOUR * 3 / 4,
+            values(battery=2, imported=2),
+            {},
+            "raw_reconstruction",
+        )
+    ]
+    assert ledger.record_many(rows, 1, "history_raw") == (1, 0)
+    summary = ledger.summary(BASE)
+    assert summary["grid_charged_kwh"] == 1
+    assert summary["allowance_kwh"] == 1
+    assert summary["interval_count"] == 3
+    assert summary["flagged_intervals"] == 3
+    with sqlite3.connect(ledger.path) as conn:
+        intervals = conn.execute(
+            "SELECT start_utc, end_utc, quality, allowance_kwh "
+            "FROM intervals ORDER BY start_utc"
+        ).fetchall()
+    assert intervals == [
+        (
+            BASE.isoformat(),
+            (BASE + HOUR / 4).isoformat(),
+            "missing_or_stale",
+            0,
+        ),
+        (
+            (BASE + HOUR / 4).isoformat(),
+            (BASE + HOUR * 3 / 4).isoformat(),
+            "raw_reconstruction",
+            1,
+        ),
+        (
+            (BASE + HOUR * 3 / 4).isoformat(),
+            (BASE + HOUR).isoformat(),
+            "missing_or_stale",
+            1,
+        ),
+    ]
+    assert ledger.record_many(rows, 1, "history_raw") == (0, 1)
+
+
+@pytest.mark.parametrize(
+    "old_quality,old_values,source,quality",
+    [
+        ("measured", values(), "history_raw", "raw_reconstruction"),
+        ("hourly_estimate", values(), "history_raw", "raw_reconstruction"),
+        ("missing_or_stale", None, "history_hourly_estimate", "hourly_estimate"),
+        ("missing_or_stale", None, "history_raw", "hourly_estimate"),
+        (
+            "missing_or_stale",
+            values(battery=1, imported=1),
+            "history_raw",
+            "raw_reconstruction",
+        ),
+    ],
+)
+def test_recovery_never_replaces_valid_or_credited_data_or_uses_estimates(
+    ledger, old_quality, old_values, source, quality
+):
+    add(ledger, 0, old_values, quality=old_quality)
+    before = ledger.summary(BASE)
+    rows = [(BASE, BASE + HOUR, values(battery=2, imported=2), {}, quality)]
+    assert ledger.record_many(rows, 1, source) == (0, 1)
+    assert ledger.summary(BASE) == before
+    with sqlite3.connect(ledger.path) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM interval_revisions").fetchone()[0] == 0
+        )
+
+
+def test_recovery_rolls_back_revisions_and_replacements_on_failure(ledger):
+    add(ledger, 0, None, quality="missing_or_stale")
+    rows = [
+        (BASE, BASE + HOUR, values(battery=1, imported=1), {}, "raw_reconstruction"),
+        (
+            BASE + HOUR,
+            BASE + HOUR * 2,
+            values(imported=float("nan")),
+            {},
+            "raw_reconstruction",
+        ),
+    ]
+    with pytest.raises(ValueError):
+        ledger.record_many(rows, 1, "history_raw")
+    assert ledger.summary(BASE)["grid_charged_kwh"] == 0
+    with sqlite3.connect(ledger.path) as conn:
+        assert (
+            conn.execute("SELECT quality FROM intervals").fetchone()[0]
+            == "missing_or_stale"
+        )
+        assert (
+            conn.execute("SELECT COUNT(*) FROM interval_revisions").fetchone()[0] == 0
+        )
+
+
+def test_version_one_ledger_upgrades_without_losing_evidence(ledger):
+    add(ledger, 0, values(battery=1, imported=1))
+    before = ledger.summary(BASE)
+    with sqlite3.connect(ledger.path) as conn:
+        conn.execute("DROP TABLE interval_revisions")
+        conn.execute("PRAGMA user_version=1")
+    ledger.initialize()
+    assert ledger.summary(BASE) == before
+    with sqlite3.connect(ledger.path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 1
+
+
 def test_invalid_readings_and_downtime_never_create_energy(ledger):
     add(ledger, 0, None, quality="missing_or_stale")
     ledger.note_gap(BASE + HOUR, BASE + HOUR * 2, 1)
@@ -241,7 +400,6 @@ def make_coordinator(hass, tmp_path):
     entry = MockConfigEntry(
         domain=DOMAIN,
         options={
-            CONF_RESALE_ENABLED: True,
             **{key: f"sensor.resale_{role}" for role, key in POWER_KEYS.items()},
         },
     )
@@ -256,7 +414,7 @@ def snapshot(at, readings):
     }
 
 
-async def test_live_capture_uses_signed_shared_power_and_rejects_stale_readings(
+async def test_live_capture_uses_signed_shared_power_and_rejects_capture_gaps(
     hass, tmp_path
 ):
     entry, coordinator = make_coordinator(hass, tmp_path)
@@ -287,6 +445,35 @@ async def test_live_capture_uses_signed_shared_power_and_rejects_stale_readings(
     sensor = GridResaleSensor(entry, {}, coordinator)
     assert sensor.native_value == pytest.approx(1 / 60)
     assert sensor.last_reset == datetime(2025, 1, 1, tzinfo=STOCKHOLM)
+    await coordinator.async_shutdown()
+
+
+async def test_live_capture_holds_unchanged_sources_but_rejects_unavailable(
+    hass, tmp_path
+):
+    _, coordinator = make_coordinator(hass, tmp_path)
+    await hass.async_add_executor_job(coordinator.ledger.initialize)
+    coordinator._configuration_id = await hass.async_add_executor_job(
+        coordinator.ledger.configuration, {}
+    )
+    old = BASE - HOUR * 12
+    await coordinator._async_capture(BASE, snapshot(old, values(battery=1, imported=1)))
+    await coordinator._async_capture(
+        BASE + timedelta(minutes=1),
+        snapshot(old, values(battery=-1, exported=1)),
+    )
+    unavailable = snapshot(old, values(battery=-1, exported=1))
+    unavailable["solar"]["state"] = "unavailable"
+    await coordinator._async_capture(BASE + timedelta(minutes=2), unavailable)
+    assert coordinator.data["grid_charged_kwh"] == pytest.approx(1 / 60)
+    assert coordinator.data["eligible_export_kwh"] == pytest.approx(1 / 60)
+    assert coordinator.data["quality_status"] == "measured"
+    await coordinator._async_capture(
+        BASE + timedelta(minutes=3), snapshot(old, values())
+    )
+    assert coordinator.data["quality_status"] == "missing_or_stale"
+    assert coordinator.data["eligible_export_kwh"] == pytest.approx(1 / 60)
+    assert coordinator.data["source_entities"] == coordinator.entities
     await coordinator.async_shutdown()
 
 
@@ -325,6 +512,53 @@ async def test_raw_history_uses_actual_power_and_does_not_bridge_missing_data(
         assert len(rows) == 1
         assert rows[0][2]["battery"] == 1
         assert coordinator._load_raw(BASE, BASE + HOUR) == []
+
+
+async def test_raw_history_holds_unchanged_sources_and_respects_unavailability(
+    hass, tmp_path
+):
+    _, coordinator = make_coordinator(hass, tmp_path)
+
+    def state(role, value, at):
+        return State(
+            coordinator.entities[role],
+            str(value),
+            {"unit_of_measurement": "kW"},
+            last_changed=at,
+            last_updated=at,
+        )
+
+    history = {
+        entity: [state(role, reading, BASE - HOUR)]
+        for role, entity in coordinator.entities.items()
+        for reading in [values(battery=1, imported=1)[role]]
+    }
+    history[coordinator.entities["grid_import"]].extend(
+        state("grid_import", 1, BASE + timedelta(minutes=minute))
+        for minute in (1, 2, 3)
+    )
+    with patch(
+        "homeassistant.components.recorder.history.get_significant_states",
+        return_value=history,
+    ):
+        rows = coordinator._load_raw(BASE, BASE + timedelta(minutes=4))
+        assert sum(
+            flows(readings, (end - start).total_seconds() / 3600)[0]
+            for start, end, readings, _, _ in rows
+        ) == pytest.approx(4 / 60)
+        history[coordinator.entities["solar"]].extend(
+            [
+                state("solar", "unavailable", BASE + timedelta(minutes=2)),
+                state("solar", 0, BASE + timedelta(minutes=3)),
+            ]
+        )
+        rows = coordinator._load_raw(BASE, BASE + timedelta(minutes=4))
+        assert sum(
+            flows(readings, (end - start).total_seconds() / 3600)[0]
+            for start, end, readings, _, _ in rows
+        ) == pytest.approx(3 / 60)
+        rows = coordinator._load_raw(BASE, BASE + HOUR)
+        assert all(end <= BASE + timedelta(minutes=2) for _, end, *_ in rows)
 
 
 async def test_hourly_import_validates_units_and_preserves_estimate_provenance(
@@ -473,72 +707,69 @@ async def test_setup_restart_and_new_year_keep_database_but_expire_allowance(
     assert data["allowance_kwh"] == 1
 
 
-async def test_resale_options_only_enable_and_validate_existing_shared_sources(hass):
+async def test_options_save_without_resale_switch_or_required_sources(hass):
     handler = EnergyAdvisorOptionFlowHandler()
     handler.hass = hass
     handler._initialized = True
+    handler.current_options = {"grid_resale_enabled": False}
+    result = await handler.async_step_init()
+    assert "grid_resale" not in result["menu_options"]
+    result = await handler.async_step_done()
+    assert result["type"] == "create_entry"
+    assert "grid_resale_enabled" not in result["data"]
+
+
+async def test_saving_valid_shared_sources_acknowledges_legacy_conflict(hass):
+    handler = EnergyAdvisorOptionFlowHandler()
+    handler.hass = hass
+    handler._initialized = True
+    handler.current_options = {CONF_RESALE_SOURCES_NEED_REVIEW: True}
+    saved = await handler.async_step_done()
+    assert saved["data"][CONF_RESALE_SOURCES_NEED_REVIEW] is True
     selected = {key: f"sensor.resale_{role}" for role, key in POWER_KEYS.items()}
     for entity in selected.values():
         hass.states.async_set(entity, "0", {"unit_of_measurement": "W"})
-    result = await handler.async_step_grid_resale({CONF_RESALE_ENABLED: True})
-    assert result["errors"]["base"] == "resale_sources_invalid"
-    assert {field.schema for field in result["data_schema"].schema} == {
-        CONF_RESALE_ENABLED
-    }
     handler.current_options.update(selected)
     hass.states.async_set(
         selected[POWER_KEYS["solar"]], "0", {"unit_of_measurement": "kWh"}
     )
-    result = await handler.async_step_grid_resale({CONF_RESALE_ENABLED: True})
-    assert result["errors"]["base"] == "resale_sources_invalid"
+    saved = await handler.async_step_done()
+    assert saved["data"][CONF_RESALE_SOURCES_NEED_REVIEW] is True
     hass.states.async_set(
         selected[POWER_KEYS["solar"]], "0", {"unit_of_measurement": "W"}
     )
-    result = await handler.async_step_grid_resale({CONF_RESALE_ENABLED: True})
-    assert result["type"] == "menu"
-    assert handler.current_options[CONF_RESALE_ENABLED] is True
-    assert (
-        handler.current_options[POWER_KEYS["battery"]]
-        == selected[POWER_KEYS["battery"]]
-    )
     saved = await handler.async_step_done()
     assert saved["type"] == "create_entry"
-    hass.states.async_set(
-        selected[POWER_KEYS["solar"]], "0", {"unit_of_measurement": "kWh"}
-    )
-    assert (await handler.async_step_done())["errors"][
-        "base"
-    ] == "resale_sources_invalid"
-    await handler.async_step_grid_resale({CONF_RESALE_ENABLED: False})
-    assert all(
-        handler.current_options[key] == entity for key, entity in selected.items()
-    )
+    assert saved["data"] == selected
 
 
-def test_legacy_sources_migrate_without_changing_shared_configuration():
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_legacy_sources_migrate_without_changing_shared_configuration(enabled):
     legacy = {
         "resale_grid_import_entity": "sensor.import",
         "resale_grid_export_entity": "sensor.export",
         "resale_battery_power_entity": "sensor.batteries_charge_discharge_power",
         "resale_solar_power_entity": "sensor.pv",
         "grid_resale_positive_charge": True,
-        CONF_RESALE_ENABLED: True,
     }
+    if enabled is not None:
+        legacy["grid_resale_enabled"] = enabled
     migrated, review = migrate_resale_options(legacy)
     assert not review
     assert migrated[POWER_KEYS["battery"]] == "sensor.batteries_charge_discharge_power"
-    assert {key for key in migrated} == {*POWER_KEYS.values(), CONF_RESALE_ENABLED}
+    assert set(migrated) == set(POWER_KEYS.values())
     assert migrate_resale_options(migrated) == (migrated, False)
     legacy[POWER_KEYS["battery"]] = "sensor.shared_battery"
     migrated, review = migrate_resale_options(legacy)
     assert review
     assert migrated[POWER_KEYS["battery"]] == "sensor.shared_battery"
-    assert migrated[CONF_RESALE_ENABLED] is False
+    assert migrated[CONF_RESALE_SOURCES_NEED_REVIEW] is True
+    assert migrate_resale_options(migrated) == (migrated, True)
     legacy.pop(POWER_KEYS["battery"])
     legacy["grid_resale_positive_charge"] = False
     migrated, review = migrate_resale_options(legacy)
     assert review
-    assert migrated[CONF_RESALE_ENABLED] is False
+    assert migrated[CONF_RESALE_SOURCES_NEED_REVIEW] is True
 
 
 async def test_conflicting_legacy_sources_raise_repair_without_touching_ledger(hass):
@@ -548,12 +779,12 @@ async def test_conflicting_legacy_sources_raise_repair_without_touching_ledger(h
     entry = MockConfigEntry(
         domain=DOMAIN,
         options={
-            CONF_RESALE_ENABLED: True,
             POWER_KEYS["battery"]: "sensor.batteries_charge_discharge_power",
             "resale_battery_power_entity": "sensor.old_charge_only",
         },
     )
     entry.add_to_hass(hass)
+    hass.http = MagicMock()
     with (
         patch(
             "custom_components.energyadvisor._async_migrate_entity_registry",
@@ -564,7 +795,7 @@ async def test_conflicting_legacy_sources_raise_repair_without_touching_ledger(h
         ),
     ):
         assert await async_setup_entry(hass, entry)
-    assert not entry.options[CONF_RESALE_ENABLED]
+    assert entry.options[CONF_RESALE_SOURCES_NEED_REVIEW] is True
     assert (
         entry.options[POWER_KEYS["battery"]]
         == "sensor.batteries_charge_discharge_power"
@@ -575,6 +806,79 @@ async def test_conflicting_legacy_sources_raise_repair_without_touching_ledger(h
         )
         is not None
     )
+
+
+@pytest.mark.parametrize("configuration", ["missing", "partial", "duplicate", "review"])
+async def test_always_present_sensor_handles_incomplete_or_unreviewed_sources(
+    hass, tmp_path, configuration
+):
+    hass.config.config_dir = str(tmp_path)
+    options = {key: f"sensor.resale_{role}" for role, key in POWER_KEYS.items()}
+    if configuration == "missing":
+        options = {}
+    elif configuration == "partial":
+        options.pop(POWER_KEYS["solar"])
+    elif configuration == "duplicate":
+        options[POWER_KEYS["solar"]] = options[POWER_KEYS["battery"]]
+    else:
+        options[CONF_RESALE_SOURCES_NEED_REVIEW] = True
+    entry = MockConfigEntry(domain=DOMAIN, options=options)
+    entry.add_to_hass(hass)
+    coordinator = GridResaleCoordinator(hass, entry)
+    await coordinator.async_setup()
+    sensor = GridResaleSensor(entry, {}, coordinator)
+    assert not sensor.available
+    assert coordinator.data["quality_status"] == (
+        "sources_need_review" if configuration == "review" else "sources_not_configured"
+    )
+    await coordinator._async_capture(
+        BASE, snapshot(BASE, values(battery=1, imported=1))
+    )
+    await coordinator._async_capture(
+        BASE + HOUR, snapshot(BASE + HOUR, values(battery=1, imported=1))
+    )
+    assert coordinator.data["grid_charged_kwh"] == 0
+    assert coordinator.data["interval_count"] == 0
+    with pytest.raises(ValueError, match="shared"):
+        await coordinator.async_import_history(BASE, BASE + HOUR, "raw")
+    await coordinator.async_shutdown()
+
+
+@pytest.mark.parametrize("enabled", [None, False, True])
+async def test_platform_always_creates_resale_sensor(enabled):
+    from custom_components.energyadvisor.sensor import async_setup_entry
+    from tests.test_debug_mode import _entry, _hass
+
+    hass = _hass()
+    entry = _entry()
+    if enabled is not None:
+        entry.options["grid_resale_enabled"] = enabled
+    add_entities = MagicMock()
+    with (
+        patch(
+            "custom_components.energyadvisor.sensor.async_get_integration",
+            new=AsyncMock(return_value=MagicMock(version="1.0")),
+        ),
+        patch(
+            "custom_components.energyadvisor.sensor._resolve_nordpool_config_entry_id",
+            return_value="nordpool_entry",
+        ),
+        patch("custom_components.energyadvisor.sensor.NordpoolDataCoordinator"),
+        patch(
+            "custom_components.energyadvisor.sensor.GridResaleCoordinator",
+            autospec=True,
+        ) as coordinator,
+    ):
+        await async_setup_entry(hass, entry, add_entities)
+    coordinator.assert_called_once_with(hass, entry)
+    coordinator.return_value.async_setup.assert_awaited_once()
+    sensors = [
+        entity
+        for entity in add_entities.call_args.args[0]
+        if isinstance(entity, GridResaleSensor)
+    ]
+    assert len(sensors) == 1
+    assert entry.runtime_data.grid_resale_coordinator is coordinator.return_value
 
 
 async def test_actual_solar_source_can_be_configured_without_forecast(hass):

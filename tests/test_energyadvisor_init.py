@@ -241,6 +241,7 @@ async def test_async_setup_entry_stores_runtime_data_and_registers_reload_listen
 ):
     entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
     entry.add_to_hass(hass)
+    hass.http = MagicMock()
     unload_callbacks = []
     entry.async_on_unload = unload_callbacks.append
     entry.add_update_listener = MagicMock(return_value=lambda: None)
@@ -264,6 +265,7 @@ async def test_async_setup_entry_stores_runtime_data_and_registers_reload_listen
         assert await async_setup_entry(hass, entry) is True
 
     mock_services.assert_called_once_with(hass)
+    hass.http.register_view.assert_called_once()
     mock_migrate.assert_awaited_once_with(hass, entry)
     assert hass.config_entries.async_forward_entry_setups.await_args_list == [
         call(entry, [Platform.SENSOR]),

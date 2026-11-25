@@ -269,9 +269,8 @@ Configure the shared sources under **Energy Advisor > Configure**: import and
 export power in **Grid metering**, signed battery power in **Battery > Battery
 hardware**, and actual PV-only power in **Forecasts and household > Solar
 forecast**. The PV source can be configured without a forecast.
-Then enable **Grid resale tax ledger** and select **Done**. This page adds only
-an enable switch; there are no duplicate sensor selections.
-This optional feature creates
+Select **Done** to save. The tax ledger is always enabled, with no enable switch
+or separate source selectors. It creates
 `sensor.energy_advisor_grid_energy_reexported` (kWh, year to date).
 It does not control the battery or change existing forecasts.
 
@@ -296,18 +295,23 @@ verify their definitions and AC/DC boundaries for your installation.
 The existing option key `battery_charge_power_entity` is retained for compatibility,
 but its UI label now describes both charging and discharging. Existing resale-only
 selections migrate to unused shared settings. If they conflict with existing
-shared settings or used reversed polarity, accounting is disabled with a Repairs
-notification until you verify the shared sources and enable it again. Existing
-ledger data is never deleted by this migration.
+shared settings or used reversed polarity, crediting is paused with a Repairs
+notification until you verify the shared sources and save **Done**. The sensor
+remains present but unavailable while sources are missing, duplicated or awaiting
+review, and no energy is credited. Other settings can still be saved without
+configuring these sources. Existing ledger data is never deleted by this migration.
 
 Measurements are integrated using the preceding reading, on state changes and
 30-second checkpoints. Only positive battery charging beyond the measured PV
 power, capped by grid import, creates allowance. Battery export is bounded by
 battery discharge and grid export minus PV. Allocating ambiguous PV first is
 conservative and can undercount simultaneous flows. No guessed efficiency or
-loss compensation is added. Invalid, missing or more-than-120-second-old
-readings do not create credited energy. Restarts are recorded as gaps rather
-than integrating through downtime.
+loss compensation is added. HA holds each source's value until it changes or
+becomes unavailable; an unchanged zero (such as PV at night) is not stale simply
+because its timestamp is old. Invalid or unavailable readings do not earn credit.
+Capture gaps longer than 120 seconds are not integrated. Restarts are recorded
+as gaps rather than integrating through downtime. Sensor attributes show the
+selected `source_entities`, `quality_status` and `history_import_count`.
 
 The independent SQLite ledger is
 `/config/energyadvisor/grid_resale_<entry_id>.sqlite3` (relative to your HA
@@ -340,9 +344,16 @@ labelled in the ledger and counted in `estimated_interval_count`. An estimated
 charging allowance can also affect later live export totals, so review any year
 containing estimates before using it as tax evidence.
 Imports commit in bounded chunks, can be rerun without double-counting, and
-never overwrite existing intervals. An overlapping hour is skipped entirely,
-not partially added over detailed measurements. Uncovered raw-history periods
-and downtime may therefore remain unreconstructable. Earlier imports
+never overwrite valid intervals. Raw imports can recover rejected
+`missing_or_stale` intervals that credited no energy; their original calculations
+are retained in `interval_revisions` and their source evidence remains in
+`samples`, both included in CSV exports. Repeating an import never counts the
+same energy twice. Hourly estimates cannot replace these placeholders.
+Other overlapping intervals are skipped entirely, not partially added over
+detailed measurements. Raw reconstruction holds unchanged source values but
+requires recorder activity from the selected sources at least every 120 seconds;
+longer gaps remain uncredited. Uncovered raw-history periods and downtime may
+therefore remain unreconstructable. Earlier imports
 recalculate later eligibility in the same year, but never across a year boundary.
 Responses report inserted/overlapping intervals and chunks with no usable data.
 

@@ -31,6 +31,10 @@ class GridResaleSensor(CoordinatorEntity[GridResaleCoordinator], SensorEntity):
         self._attr_device_info = device_info
 
     @property
+    def available(self) -> bool:
+        return super().available and self.coordinator.sources_configured
+
+    @property
     def native_value(self) -> float | None:
         data = self.coordinator.data
         return data["eligible_export_kwh"] if data else None

@@ -99,8 +99,9 @@ from .config_flow_helpers import (
     _validate_solar_forecast_entities,
 )
 from .grid_resale import (
-    CONF_RESALE_ENABLED,
+    CONF_RESALE_SOURCES_NEED_REVIEW,
     POWER_KEYS,
+    migrate_resale_options,
 )
 
 
@@ -830,7 +831,9 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if not self._initialized:
-            self.current_options = dict(self.config_entry.options)
+            self.current_options, _ = migrate_resale_options(
+                dict(self.config_entry.options)
+            )
             self._initialized = True
             _, attributes = await _validate_nordpool_prices_sensor(
                 self.hass,
@@ -847,7 +850,6 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
                 "battery_settings",
                 "forecast_settings",
                 "grid_metering",
-                "grid_resale",
                 "done",
             ],
         )
@@ -857,10 +859,11 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
     ) -> ConfigFlowResult:
         """Save changed settings and close the options flow."""
         if (
-            self.current_options.get(CONF_RESALE_ENABLED)
-            and not self._resale_sources_valid()
+            self.current_options.get(CONF_RESALE_SOURCES_NEED_REVIEW)
+            and self._resale_sources_valid()
         ):
-            return await self.async_step_grid_resale({CONF_RESALE_ENABLED: True})
+            self.current_options.pop(CONF_RESALE_SOURCES_NEED_REVIEW)
+        self.current_options.pop("grid_resale_enabled", None)
         return self.async_create_entry(title="", data=self.current_options)
 
     def _resale_sources_valid(self) -> bool:
@@ -875,31 +878,6 @@ class EnergyAdvisorOptionFlowHandler(OptionsFlow):
             ):
                 return False
         return True
-
-    async def async_step_grid_resale(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Enable accounting using the already configured actual-power inputs."""
-        errors: dict[str, str] = {}
-        values = self.current_options if user_input is None else user_input
-        if user_input is not None:
-            if user_input.get(CONF_RESALE_ENABLED) and not self._resale_sources_valid():
-                errors["base"] = "resale_sources_invalid"
-            if not errors:
-                self.current_options[CONF_RESALE_ENABLED] = user_input.get(
-                    CONF_RESALE_ENABLED, False
-                )
-                return await self.async_step_init()
-        schema = {
-            vol.Optional(
-                CONF_RESALE_ENABLED, default=values.get(CONF_RESALE_ENABLED, False)
-            ): bool,
-        }
-        return self.async_show_form(
-            step_id="grid_resale",
-            data_schema=vol.Schema(schema),
-            errors=errors,
-        )
 
     async def async_step_price_settings(
         self, user_input: dict[str, Any] | None = None

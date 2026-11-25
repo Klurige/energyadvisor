@@ -264,6 +264,10 @@ async def test_sensor_setup_in_debug_mode_uses_debug_coordinator() -> None:
             "custom_components.energyadvisor.sensor.NordpoolDataCoordinator"
         ) as nordpool_coordinator,
         patch.object(ElprisDebugCoordinator, "start") as start,
+        patch(
+            "custom_components.energyadvisor.sensor.GridResaleCoordinator",
+            autospec=True,
+        ),
     ):
         await sensor_async_setup_entry(hass, entry, add_entities)
 
@@ -312,6 +316,10 @@ async def test_sensor_setup_without_debug_still_uses_nordpool() -> None:
         patch(
             "custom_components.energyadvisor.sensor.NordpoolDataCoordinator"
         ) as nordpool_coordinator,
+        patch(
+            "custom_components.energyadvisor.sensor.GridResaleCoordinator",
+            autospec=True,
+        ),
     ):
         await sensor_async_setup_entry(hass, entry, MagicMock())
 
@@ -361,6 +369,10 @@ async def test_sensor_registration_does_not_wait_for_household_history() -> None
             patch(
                 "custom_components.energyadvisor.sensor.NordpoolDataCoordinator"
             ) as nordpool,
+            patch(
+                "custom_components.energyadvisor.sensor.GridResaleCoordinator",
+                autospec=True,
+            ),
             patch(f"{module}.async_track_time_change", return_value=lambda: None),
             patch(f"{module}.async_track_time_interval", return_value=lambda: None),
             patch(
@@ -477,6 +489,7 @@ async def test_entry_setup_registers_debug_service_only_with_debug_coordinator(
         coordinator=MagicMock(),
         debug_coordinator=MagicMock(),
     )
+    hass.http = MagicMock()
 
     with patch(
         "custom_components.energyadvisor._async_migrate_entity_registry",

@@ -11,7 +11,7 @@ from homeassistant.helpers import issue_registry as ir
 from .const import DOMAIN, LOGGER, PREFERRED_SENSOR_ENTITY_IDS, build_sensor_unique_id
 from .models import EnergyAdvisorRuntimeData
 from .grid_resale_http import GridResaleExportView
-from .grid_resale import CONF_RESALE_ENABLED, migrate_resale_options
+from .grid_resale import migrate_resale_options, resale_sources_configured
 from .services import (
     async_remove_debug_services,
     async_setup_debug_services,
@@ -143,11 +143,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if options != dict(entry.options):
         hass.config_entries.async_update_entry(entry, options=options)
     issue_id = f"grid_resale_shared_sources_{entry.entry_id}"
-    if needs_review:
+    if needs_review or not resale_sources_configured(options):
         LOGGER.warning(
-            "Grid resale disabled for %s: previous resale sources or battery polarity "
-            "conflict with the shared inputs. Verify the signed battery, grid and solar "
-            "settings, then enable grid resale again. The ledger is retained.",
+            "Grid resale inputs need review for %s: shared sources are missing, "
+            "duplicated or conflict with previous settings. Verify the signed battery, "
+            "grid and solar settings, then save Done. The ledger is retained.",
             entry.entry_id,
         )
         ir.async_create_issue(
@@ -158,15 +158,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             severity=ir.IssueSeverity.WARNING,
             translation_key="grid_resale_shared_sources",
         )
-    elif options.get(CONF_RESALE_ENABLED):
+    else:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
     hass.data.setdefault(DOMAIN, {})
     async_setup_services(hass)
     async_setup_resale_services(hass)
-    if (
-        entry.options.get(CONF_RESALE_ENABLED)
-        and "energyadvisor_grid_resale_http" not in hass.data
-    ):
+    if "energyadvisor_grid_resale_http" not in hass.data:
         hass.http.register_view(GridResaleExportView(hass))
         hass.data["energyadvisor_grid_resale_http"] = True
     await _async_migrate_entity_registry(hass, entry)
