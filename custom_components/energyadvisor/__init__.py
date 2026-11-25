@@ -6,13 +6,17 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN, LOGGER, PREFERRED_SENSOR_ENTITY_IDS, build_sensor_unique_id
 from .models import EnergyAdvisorRuntimeData
+from .grid_resale_http import GridResaleExportView
+from .grid_resale import CONF_RESALE_ENABLED, migrate_resale_options
 from .services import (
     async_remove_debug_services,
     async_setup_debug_services,
     async_setup_services,
+    async_setup_resale_services,
 )
 
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
@@ -135,8 +139,36 @@ async def _async_migrate_entity_registry(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Energy Advisor from a config entry."""
+    options, needs_review = migrate_resale_options(dict(entry.options))
+    if options != dict(entry.options):
+        hass.config_entries.async_update_entry(entry, options=options)
+    issue_id = f"grid_resale_shared_sources_{entry.entry_id}"
+    if needs_review:
+        LOGGER.warning(
+            "Grid resale disabled for %s: previous resale sources or battery polarity "
+            "conflict with the shared inputs. Verify the signed battery, grid and solar "
+            "settings, then enable grid resale again. The ledger is retained.",
+            entry.entry_id,
+        )
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="grid_resale_shared_sources",
+        )
+    elif options.get(CONF_RESALE_ENABLED):
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
     hass.data.setdefault(DOMAIN, {})
     async_setup_services(hass)
+    async_setup_resale_services(hass)
+    if (
+        entry.options.get(CONF_RESALE_ENABLED)
+        and "energyadvisor_grid_resale_http" not in hass.data
+    ):
+        hass.http.register_view(GridResaleExportView(hass))
+        hass.data["energyadvisor_grid_resale_http"] = True
     await _async_migrate_entity_registry(hass, entry)
 
     # The binary schedule entity is created by the sensor platform and shared
@@ -163,9 +195,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Remove services when last entry is unloaded
     if result:
         runtime_data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        resale = getattr(runtime_data, "grid_resale_coordinator", None)
+        if resale is not None:
+            await resale.async_shutdown()
         remaining = hass.data.get(DOMAIN, {})
         if not remaining:
             hass.services.async_remove(DOMAIN, "get_levels")
+            hass.services.async_remove(DOMAIN, "export_grid_resale")
+            hass.services.async_remove(DOMAIN, "import_grid_resale_history")
         if getattr(runtime_data, "debug_coordinator", None) is not None and not any(
             getattr(data, "debug_coordinator", None) is not None
             for data in remaining.values()

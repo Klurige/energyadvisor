@@ -183,6 +183,7 @@ async def test_entity_registry_migration_uses_preferred_entity_ids(hass):
         "base_load": "sensor.energy_advisor_load_forecast_refined",
         "solarforecast": "sensor.energy_advisor_solar_forecast_refined",
         "heating_forecast": "sensor.energy_advisor_heating_forecast_2",
+        "grid_resale": "sensor.energy_advisor_grid_energy_reexported_2",
     }
 
     for sensor_key, current_entity_id in current_entity_ids.items():
@@ -287,4 +288,10 @@ async def test_async_unload_entry_removes_runtime_data_and_service():
         entry, PLATFORMS
     )
     assert entry.entry_id not in hass.data[DOMAIN]
-    hass.services.async_remove.assert_called_once_with(DOMAIN, "get_levels")
+    hass.services.async_remove.assert_has_calls(
+        [
+            call(DOMAIN, "get_levels"),
+            call(DOMAIN, "export_grid_resale"),
+            call(DOMAIN, "import_grid_resale_history"),
+        ]
+    )

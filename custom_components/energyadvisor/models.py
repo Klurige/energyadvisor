@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .coordinators.grid_resale_coordinator import GridResaleCoordinator
     from .sensor.compactlevels import CompactLevelsSensor
     from .sensor.price import PriceSensor
     from .coordinators.nordpool_coordinator import NordpoolDataCoordinator
@@ -38,3 +39,4 @@ class EnergyAdvisorRuntimeData:
     solar_coordinator: SolarForecastCoordinator | None = None
     debug_coordinator: ElprisDebugCoordinator | None = None
     water_heater_sensor: WaterHeaterScheduleSensor | None = None
+    grid_resale_coordinator: GridResaleCoordinator | None = None

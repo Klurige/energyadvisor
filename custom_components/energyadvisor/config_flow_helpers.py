@@ -485,11 +485,8 @@ def _validate_solar_forecast_entities(
     """Validate the optional solar forecast entity configuration."""
     errors: dict[str, str] = {}
 
-    if bool(forecast_entity) != bool(power_entity):
-        if not forecast_entity:
-            errors[CONF_FORECAST_ENTITY] = "solar_entity_required"
-        else:
-            errors[CONF_POWER_ENTITY] = "solar_entity_required"
+    if forecast_entity and not power_entity:
+        errors[CONF_POWER_ENTITY] = "solar_entity_required"
         return errors
 
     for key, entity_id in (

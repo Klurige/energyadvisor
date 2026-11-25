@@ -20,13 +20,13 @@ so far today.
 ### Configuration
 
 All three keys are stored in the config entry options and are optional in the
-UI, but `forecast_entity` and `power_entity` must be set together (or both left
-empty).
+UI. A forecast requires `power_entity`, but actual solar power can be configured
+on its own for the grid resale ledger without enabling solar forecasting.
 
 | Option (UI label) | Key | Required | Example |
 |---|---|---|---|
 | Solar forecast sensor (today) | `forecast_entity` | Yes, together with `power_entity` | `sensor.home_energy_production_today` |
-| Solar actual power sensor (W) | `power_entity` | Yes, together with `forecast_entity` | `sensor.solar_active_power` |
+| Solar actual power sensor (W) | `power_entity` | Required for forecasting; may also be used alone by grid resale | `sensor.solar_active_power` |
 | Solar forecast sensor (tomorrow) – optional | `forecast_tomorrow_entity` | No | `sensor.home_energy_production_tomorrow` |
 
 Configure via **Settings → Devices & Services → Energy Advisor → Configure**:
@@ -43,9 +43,8 @@ limited to the `sensor` domain.
 Validation in the config flow (`_validate_solar_forecast_entities` in
 `config_flow_helpers.py`):
 
-- Setting only one of `forecast_entity` / `power_entity` fails with
-  `solar_entity_required` ("Both forecast sensor and power sensor must be
-  provided together.").
+- Setting `forecast_entity` without `power_entity` fails with
+  `solar_entity_required`. A measured-power source alone is allowed.
 - Every entity that is set must exist, otherwise `entity_not_found`.
 - `forecast_entity` and `forecast_tomorrow_entity` must additionally be
   available (state not `unknown`/`unavailable`) and expose a non-empty `watts`,

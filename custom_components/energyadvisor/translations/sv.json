@@ -93,14 +93,14 @@
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt",
           "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt",
           "battery_soc_entity": "Sensor för batteriets laddningsnivå",
-          "battery_charge_power_entity": "Sensor för batteriets laddningseffekt"
+          "battery_charge_power_entity": "Sensor för batteriets laddnings-/urladdningseffekt"
         },
         "data_description": {
           "battery_capacity_kwh": "Användbar batterikapacitet. Ange tillsammans med maximal laddningseffekt för att ersätta standardantagandena.",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt. Ange tillsammans med batterikapaciteten.",
           "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt. Lämnas tomt används laddningseffekten som standardvärde.",
           "battery_soc_entity": "Sensor som rapporterar batteriets aktuella laddningsnivå i procent.",
-          "battery_charge_power_entity": "Sensor som rapporterar aktuell batteriladdningseffekt för verifiering och framtida inlärning."
+          "battery_charge_power_entity": "Batterieffekt med tecken: positiv vid laddning, negativ vid urladdning. Använd originalsensorn, inte separata mallar för laddning eller urladdning. Delas med bokföringen av återexport."
         }
       },
       "battery_optimization": {
@@ -201,10 +201,11 @@
       }
     },
     "error": {
+      "resale_sources_invalid": "Konfigurera fyra olika effektsensorer (W eller kW): import/export under Elnätsmätning, batterieffekt med tecken under Batterihårdvara och verklig soleffekt under Solprognos. Aktivera sedan återexport.",
       "invalid_sensor": "Den valda sensorn är inte tillgänglig eller giltig.",
       "low_threshold_higher_than_high_threshold": "Det nedre gränsvärdet måste vara lägre än det övre gränsvärdet.",
       "entity_not_found": "Enheten hittades inte – kontrollera enhets-ID och försök igen.",
-      "solar_entity_required": "Både prognosenhet och effektenhet måste anges tillsammans.",
+      "solar_entity_required": "En solprognos kräver en sensor för verklig soleffekt. Verklig effekt kan konfigureras utan prognos.",
       "battery_setting_required": "Batterikapacitet och maximal laddningseffekt måste anges tillsammans.",
       "battery_soc_bounds_invalid": "Det lägsta SoC-värdet måste vara lägre än det högsta."
     }
@@ -219,7 +220,15 @@
           "battery_settings": "Batteri",
           "forecast_settings": "Prognoser och hushåll",
           "grid_metering": "Elnätsmätning",
+          "grid_resale": "Skatteunderlag för återexport",
           "done": "Klar"
+        }
+      },
+      "grid_resale": {
+        "title": "Skatteunderlag för återexport",
+        "description": "Återanvänd sensorerna under Elnätsmätning, Batterihårdvara och Solprognos. Batterieffekten ska vara positiv vid laddning och negativ vid urladdning; soleffekten får inte inkludera batteriurladdning. Bokför nätenergi som laddats till batteriet och senare exporterats under samma svenska kalenderår. Hushållsförbrukning minskar inte saldot. Historik importeras med en separat åtgärd.",
+        "data": {
+          "grid_resale_enabled": "Aktivera beständig bokföring av återexport"
         }
       },
       "price_settings": {
@@ -337,14 +346,14 @@
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt",
           "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt",
           "battery_soc_entity": "Sensor för batteriets laddningsnivå",
-          "battery_charge_power_entity": "Sensor för batteriets laddningseffekt"
+          "battery_charge_power_entity": "Sensor för batteriets laddnings-/urladdningseffekt"
         },
         "data_description": {
           "battery_capacity_kwh": "Användbar batterikapacitet. Ange tillsammans med maximal laddningseffekt för att ersätta standardantagandena.",
           "battery_max_charge_power_w": "Batteriets maximala laddningseffekt. Ange tillsammans med batterikapaciteten.",
           "battery_max_discharge_power_w": "Batteriets maximala urladdningseffekt. Lämnas tomt används laddningseffekten som standardvärde.",
           "battery_soc_entity": "Sensor som rapporterar batteriets aktuella laddningsnivå i procent.",
-          "battery_charge_power_entity": "Sensor som rapporterar aktuell batteriladdningseffekt för verifiering och framtida inlärning."
+          "battery_charge_power_entity": "Batterieffekt med tecken: positiv vid laddning, negativ vid urladdning. Använd originalsensorn, inte separata mallar för laddning eller urladdning. Delas med bokföringen av återexport."
         }
       },
       "battery_optimization": {
@@ -445,8 +454,17 @@
       }
     }
   },
+  "issues": {
+    "grid_resale_shared_sources": {
+      "title": "Kontrollera delade sensorer för återexport",
+      "description": "Återexport inaktiverades eftersom tidigare sensorer eller batteriets teckenkonvention skiljer sig från de delade inställningarna. Befintlig bokföring finns kvar. Kontrollera Elnätsmätning, verklig soleffekt under Solprognos och Batterihårdvara. Batterieffekten ska vara positiv vid laddning och negativ vid urladdning. Aktivera sedan Skatteunderlag för återexport igen."
+    }
+  },
   "entity": {
     "sensor": {
+      "grid_resale": {
+        "name": "Återexporterad nätenergi"
+      },
       "price": {
         "name": "Pris"
       },

@@ -99,6 +99,7 @@ PREFERRED_SENSOR_ENTITY_IDS: dict[str, str] = {
     "load_forecast": "sensor.energy_advisor_load_forecast",
     "solarforecast": "sensor.energy_advisor_solar_forecast",
     "heating_forecast": "sensor.energy_advisor_heating_forecast",
+    "grid_resale": "sensor.energy_advisor_grid_energy_reexported",
 }
 
 

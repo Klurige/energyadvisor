@@ -77,7 +77,7 @@ forecast.
 | Weather entity | `weather_entity` | Household load | `weather.home` | Not read by the household forecast; used by the heating forecast |
 | Wind speed sensor | `wind_speed_entity` | Household load | `sensor.wind_speed` | Not read by the household forecast; used by the heating forecast |
 | Battery state of charge sensor | `battery_soc_entity` | Battery hardware | `sensor.battery_soc` | Used by the battery charge mode sensor as the start of each plan (history is also recorded) |
-| Battery charge power sensor | `battery_charge_power_entity` | Battery hardware | `sensor.battery_charge_power` | currently not in use (history is recorded but not used) |
+| Battery charge/discharge power sensor | `battery_charge_power_entity` | Battery hardware | `sensor.batteries_charge_discharge_power` | Signed history is captured but not used in the load model; the shared sensor is used by the grid resale ledger |
 | Grid import power sensor | `grid_import_entity` | Grid metering | `sensor.grid_import_power` | currently not in use (history is recorded but not used) |
 | Grid export power sensor | `grid_export_entity` | Grid metering | `sensor.grid_export_power` | currently not in use (history is recorded but not used) |
 

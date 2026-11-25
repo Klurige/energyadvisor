@@ -1,3 +1,37 @@
+export_grid_resale:
+    description: Export the complete grid resale database to a private CSV snapshot. Returns a path and an authenticated download URL.
+    fields:
+        entry_id:
+            description: Required if more than one entry has grid resale enabled.
+            selector:
+                text:
+import_grid_resale_history:
+    description: Import available recorder history without overwriting existing intervals. Hourly estimates are approximate and must be explicitly selected.
+    fields:
+        entry_id:
+            description: Required if more than one entry has grid resale enabled.
+            selector:
+                text:
+        start:
+            required: true
+            example: "2024-01-01T00:00:00+01:00"
+            description: Inclusive start timestamp with an explicit UTC offset.
+            selector:
+                text:
+        end:
+            required: true
+            example: "2026-01-01T00:00:00+01:00"
+            description: Exclusive end timestamp with an explicit UTC offset. Hourly estimates require whole-hour boundaries.
+            selector:
+                text:
+        source:
+            default: raw
+            description: Raw readings are preferred. Hourly estimates lose within-hour ordering and can undercount cycles.
+            selector:
+                select:
+                    options:
+                        - raw
+                        - hourly_estimate
 get_levels:
     description: Get electricity price levels for today and tomorrow.
     fields:

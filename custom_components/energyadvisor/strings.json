@@ -93,14 +93,14 @@
           "battery_max_charge_power_w": "Battery max charge power",
           "battery_max_discharge_power_w": "Battery max discharge power",
           "battery_soc_entity": "Battery state of charge sensor",
-          "battery_charge_power_entity": "Battery charge power sensor"
+          "battery_charge_power_entity": "Battery charge/discharge power sensor"
         },
         "data_description": {
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
           "battery_max_charge_power_w": "Maximum battery charge power. Set together with battery capacity.",
           "battery_max_discharge_power_w": "Maximum battery discharge power. If left empty, defaults to the configured charge power.",
           "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
-          "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
+          "battery_charge_power_entity": "Signed battery power: positive when charging, negative when discharging. Use the original sensor, not separate charge-only or discharge-only templates. Shared with grid resale accounting."
         }
       },
       "battery_optimization": {
@@ -205,10 +205,11 @@
       }
     },
     "error": {
+      "resale_sources_invalid": "Configure four distinct actual-power sensors (W or kW): import/export under Grid metering, signed battery power under Battery hardware, and actual solar power under Solar forecast. Then enable grid resale.",
       "invalid_sensor": "The selected sensor is not available or not valid.",
       "low_threshold_higher_than_high_threshold": "The lower threshold must be less than the upper threshold.",
       "entity_not_found": "Entity not found – check the entity ID and try again.",
-      "solar_entity_required": "Both forecast sensor and power sensor must be provided together.",
+      "solar_entity_required": "A solar forecast requires an actual solar power sensor. Actual power can be configured without a forecast.",
       "battery_setting_required": "Battery capacity and max charge power must be provided together.",
       "battery_soc_bounds_invalid": "The minimum SoC must be lower than the maximum SoC."
     }
@@ -223,7 +224,15 @@
           "battery_settings": "Battery",
           "forecast_settings": "Forecasts and household",
           "grid_metering": "Grid metering",
+          "grid_resale": "Grid resale tax ledger",
           "done": "Done"
+        }
+      },
+      "grid_resale": {
+        "title": "Grid resale tax ledger",
+        "description": "Reuse the sensors configured under Grid metering, Battery hardware and Solar forecast. Battery power must be positive for charging and negative for discharging; solar power must exclude battery discharge. Track grid energy charged to the battery and later exported in the same Swedish calendar year. Household use does not consume the allowance. Historical import is a separate action.",
+        "data": {
+          "grid_resale_enabled": "Enable persistent grid resale accounting"
         }
       },
       "price_settings": {
@@ -343,7 +352,7 @@
           "battery_degradation_cost": "Battery wear cost",
           "battery_sell_margin": "Minimum sell margin",
           "battery_soc_entity": "Battery state of charge sensor",
-          "battery_charge_power_entity": "Battery charge power sensor"
+          "battery_charge_power_entity": "Battery charge/discharge power sensor"
         },
         "data_description": {
           "battery_capacity_kwh": "Usable battery capacity. Set together with max charge power to override the default timing assumptions.",
@@ -353,7 +362,7 @@
           "battery_degradation_cost": "Wear cost per kWh delivered by the battery, in the same unit as the price sensor's cost (fees, taxes and VAT included), not the raw spot price. The planner only cycles the battery when the price difference also covers this cost and the round-trip losses. Leave empty for 0.",
           "battery_sell_margin": "Least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's cost. Leave empty for 0.5.",
           "battery_soc_entity": "Sensor reporting the current battery state of charge in percent.",
-          "battery_charge_power_entity": "Sensor reporting live battery charge power for validation and later learning."
+          "battery_charge_power_entity": "Signed battery power: positive when charging, negative when discharging. Use the original sensor, not separate charge-only or discharge-only templates. Shared with grid resale accounting."
         }
       },
       "battery_optimization": {
@@ -460,6 +469,9 @@
   },
   "entity": {
     "sensor": {
+      "grid_resale": {
+        "name": "Grid energy re-exported"
+      },
       "price": {
         "name": "Price"
       },
@@ -515,7 +527,21 @@
       }
     }
   },
+  "issues": {
+    "grid_resale_shared_sources": {
+      "title": "Review shared grid resale inputs",
+      "description": "Grid resale was disabled because its previous sources or battery polarity conflict with the shared settings. The existing ledger is retained. Verify Grid metering, Solar forecast actual power and Battery hardware. Battery power must be positive for charging and negative for discharging. Then enable Grid resale tax ledger again."
+    }
+  },
   "services": {
+    "export_grid_resale": {
+      "name": "Export grid resale ledger",
+      "description": "Export every database table to a private CSV snapshot with an authenticated download URL."
+    },
+    "import_grid_resale_history": {
+      "name": "Import grid resale history",
+      "description": "Reconstruct available history without replacing existing intervals. Hourly estimates require explicit selection."
+    },
     "get_levels": {
       "name": "Get price levels",
       "description": "Get the price levels for today and tomorrow as a string, one char per entry."

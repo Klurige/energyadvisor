@@ -27,6 +27,9 @@ from ..const import (
     DOMAIN,
 )
 from ..models import EnergyAdvisorRuntimeData
+from ..grid_resale import CONF_RESALE_ENABLED
+from ..coordinators.grid_resale_coordinator import GridResaleCoordinator
+from .gridresalesensor import GridResaleSensor
 from ..coordinators.heating_forecast_coordinator import HeatingForecastCoordinator
 from ..coordinators.household_forecast_coordinator import (
     HouseholdForecastCoordinator,
@@ -194,6 +197,12 @@ async def async_setup_entry(
             currency_from_config,
         )
 
+    grid_resale_coordinator: GridResaleCoordinator | None = None
+    if entry.options.get(CONF_RESALE_ENABLED, False):
+        grid_resale_coordinator = GridResaleCoordinator(hass, entry)
+        await grid_resale_coordinator.async_setup()
+        entities.append(GridResaleSensor(entry, device_info, grid_resale_coordinator))
+
     runtime_data = EnergyAdvisorRuntimeData(
         levels_sensor=levels_sensor,
         compact_sensor=compact_levels_sensor,
@@ -206,6 +215,7 @@ async def async_setup_entry(
         solar_sensor=solar_sensor,
         solar_coordinator=solar_coordinator,
         debug_coordinator=debug_coordinator,
+        grid_resale_coordinator=grid_resale_coordinator,
     )
     entry.runtime_data = runtime_data
 

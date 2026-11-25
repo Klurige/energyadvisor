@@ -9,6 +9,7 @@
   ],
   "config_flow": true,
   "dependencies": [
+    "http",
     "nordpool"
   ],
   "documentation": "https://github.com/Klurige/energyadvisor",
@@ -16,5 +17,5 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/Klurige/energyadvisor/issues",
   "requirements": [],
-  "version": "0.0.26"
+  "version": "0.0.27"
 }

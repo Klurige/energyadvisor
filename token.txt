@@ -1,0 +1,4 @@
+"""Local secrets for Remote Sensors. Keep this file out of git."""
+
+HA_URL = 'http://192.168.68.9:8123'
+HA_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI5YTIzNjA0NWIwZGQ0NzU1YThiYjI3MDg4YTk0YzAyYiIsImlhdCI6MTc3OTYwNzY2NSwiZXhwIjoyMDk0OTY3NjY1fQ.R2rgH7OdI9BVZH_je1dXK0Ya6_2N1QpUeBJKbtxjSQc'

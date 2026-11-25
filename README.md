@@ -92,7 +92,7 @@ All amounts are in the currency of the Nord Pool sensor, per kWh. Percentages ar
 | Key                        | Description                  | Example Value | Status |
 |----------------------------|------------------------------|---------------|--------|
 | `forecast_entity`          | Raw solar forecast sensor for today. Set together with `power_entity` | `sensor.home_energy_production_today` | In use |
-| `power_entity`             | Solar actual power sensor in watts. Set together with `forecast_entity` | `sensor.solar_active_power` | In use |
+| `power_entity`             | Actual PV-only power in watts; may be set without a forecast for the resale ledger | `sensor.solar_active_power` | In use |
 | `forecast_tomorrow_entity` | Raw solar forecast sensor for tomorrow; has no effect without the two keys above | `sensor.home_energy_production_tomorrow` | In use |
 
 See [docs/solarforecast.md](docs/solarforecast.md) for details.
@@ -117,7 +117,7 @@ You can edit one category at a time; select **Done** from the main menu to save.
 | `battery_degradation_cost` | Wear cost: cost per kWh delivered by the battery, in the same unit as the price sensor's `cost` (import price with fees, taxes and VAT), not the raw spot price. A cycle must save more than this and the round-trip losses before the planner uses it; no default (unset counts as `0`). Before this planner it was a minimum price spread | `0.7` | In use (battery charge mode sensor) |
 | `battery_sell_margin` | Minimum sell margin: the least a sale must gain per exported kWh over keeping the energy, in the same unit as the price sensor's `cost`. Unset counts as `0.5`; `0` lets any profitable sale through | `0.5` | In use (battery charge mode sensor) |
 | `battery_soc_entity`       | Battery state-of-charge sensor (percent); the start of every plan | `sensor.home_battery_soc` | In use (battery charge mode sensor; the household forecast also records its history) |
-| `battery_charge_power_entity` | Battery charge power sensor | `sensor.home_battery_charge_power` | currently not in use (history is recorded but not used) |
+| `battery_charge_power_entity` | Shared signed battery power: positive charging, negative discharging | `sensor.batteries_charge_discharge_power` | In use (grid resale; also captured by household forecast) |
 
 #### Grid metering and household inputs
 
@@ -262,6 +262,106 @@ format as the compact price levels sensor.
   changes, independently of price updates. Rapid updates are coalesced to the
   latest plan and identical compact values are not written again. A single
   rescheduled timer advances the window at slot boundaries.
+
+### Grid resale tax ledger
+
+Configure the shared sources under **Energy Advisor > Configure**: import and
+export power in **Grid metering**, signed battery power in **Battery > Battery
+hardware**, and actual PV-only power in **Forecasts and household > Solar
+forecast**. The PV source can be configured without a forecast.
+Then enable **Grid resale tax ledger** and select **Done**. This page adds only
+an enable switch; there are no duplicate sensor selections.
+This optional feature creates
+`sensor.energy_advisor_grid_energy_reexported` (kWh, year to date).
+It does not control the battery or change existing forecasts.
+
+The accounting rule is an annual allowance: grid energy actually charged into
+the battery creates an allowance; later battery-to-grid exports consume it.
+Household use does **not** consume the allowance, and solar can replenish the
+battery before an eligible export. Solar charging itself creates no allowance,
+and direct solar exports do not qualify. Unused allowance expires at
+**January 1, 00:00 Europe/Stockholm**; it never carries into another tax year.
+The sensor total resets too, but past years remain in the database.
+This implements the configured accounting rule, not certification of tax eligibility.
+
+Inputs must be in W or kW: separate grid import and export, signed battery
+charge/discharge power, and PV-only power. Battery power must be positive while
+charging and negative while discharging; do not use separate charge-only and
+discharge-only templates. Do not select inverter output containing battery discharge as PV.
+For example, suitable candidates on a Huawei installation are
+`sensor.elmatare_momentary_active_import`,
+`sensor.elmatare_momentary_active_export`,
+`sensor.batteries_charge_discharge_power` and `sensor.inverter_input_power`;
+verify their definitions and AC/DC boundaries for your installation.
+The existing option key `battery_charge_power_entity` is retained for compatibility,
+but its UI label now describes both charging and discharging. Existing resale-only
+selections migrate to unused shared settings. If they conflict with existing
+shared settings or used reversed polarity, accounting is disabled with a Repairs
+notification until you verify the shared sources and enable it again. Existing
+ledger data is never deleted by this migration.
+
+Measurements are integrated using the preceding reading, on state changes and
+30-second checkpoints. Only positive battery charging beyond the measured PV
+power, capped by grid import, creates allowance. Battery export is bounded by
+battery discharge and grid export minus PV. Allocating ambiguous PV first is
+conservative and can undercount simultaneous flows. No guessed efficiency or
+loss compensation is added. Invalid, missing or more-than-120-second-old
+readings do not create credited energy. Restarts are recorded as gaps rather
+than integrating through downtime.
+
+The independent SQLite ledger is
+`/config/energyadvisor/grid_resale_<entry_id>.sqlite3` (relative to your HA
+configuration directory). It retains original source evidence, configurations,
+interval calculations, annual totals and import records, with no automatic
+purge or deletion on disable/unload. Back up this directory using a
+SQLite-consistent backup or with HA stopped; copying an active database without
+its WAL can omit recent transactions. Exported CSVs are snapshots, not a
+replacement for a database backup.
+
+**Historical import:** use `energyadvisor.import_grid_resale_history` with
+explicit timezone-aware timestamps. Run `source: raw` first for retained
+detailed recorder history. There is no automatic backfill or assumption that
+old battery contents qualify.
+
+```yaml
+action: energyadvisor.import_grid_resale_history
+data:
+  start: "2024-01-01T00:00:00+01:00"
+  end: "2026-01-01T00:00:00+01:00"
+  source: raw
+```
+
+For older periods, explicitly select `source: hourly_estimate` to import
+available hourly mean-power statistics. Hourly imports require whole UTC-hour
+boundaries and mean-power statistics for all four configured sensors.
+They cannot recover within-hour ordering, bidirectional battery cycles or
+missing measurements; incomplete hours receive no credit. Estimates are
+labelled in the ledger and counted in `estimated_interval_count`. An estimated
+charging allowance can also affect later live export totals, so review any year
+containing estimates before using it as tax evidence.
+Imports commit in bounded chunks, can be rerun without double-counting, and
+never overwrite existing intervals. An overlapping hour is skipped entirely,
+not partially added over detailed measurements. Uncovered raw-history periods
+and downtime may therefore remain unreconstructable. Earlier imports
+recalculate later eligibility in the same year, but never across a year boundary.
+Responses report inserted/overlapping intervals and chunks with no usable data.
+
+**Complete CSV export:** call `energyadvisor.export_grid_resale` at any time.
+The response contains the private filesystem `path` and an authenticated
+`download_url`. Download using an HA-authenticated client with its bearer token.
+Files are not exposed through `/local/`. Every database table is included in
+one CSV, distinguished by `record_type`; source evidence and configuration
+mappings are JSON fields. Filter `record_type: intervals` for interval details
+or `record_type: year_totals` for annual totals. Collection continues while a
+consistent read-transaction snapshot is exported.
+Snapshots remain in `/config/energyadvisor/exports/` until manually removed.
+Both actions accept `entry_id`, required when multiple resale ledgers are enabled.
+
+Sensor attributes include `tax_year`, `grid_charged_kwh`, `allowance_kwh`,
+`coverage_start`, `last_recorded_utc`, current capture `quality_status`,
+`flagged_intervals`, `estimated_interval_count` and `recorded_restart_gaps`.
+Coverage endpoints do not imply continuous coverage. Recorder may still record
+the displayed sensor, but that history is not the accounting database.
 
 ### `sensor.energy_advisor_solar_forecast`
 - **Description:** Optional refined solar production forecast learned from the difference between your forecast source and the solar's measured output. Created when both `forecast_entity` and `power_entity` are configured.

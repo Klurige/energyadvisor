@@ -15,14 +15,80 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .coordinators.grid_resale_coordinator import GridResaleCoordinator
 from .coordinators.elpris_debug_coordinator import (
     ElprisDebugCoordinator,
     VALID_AREAS,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _resolve_resale(hass: HomeAssistant, entry_id: str | None) -> GridResaleCoordinator:
+    matches = [
+        coordinator
+        for key, data in hass.data.get(DOMAIN, {}).items()
+        if (entry_id is None or key == entry_id)
+        and (coordinator := getattr(data, "grid_resale_coordinator", None)) is not None
+    ]
+    if len(matches) != 1:
+        raise ServiceValidationError(
+            "Select an entry_id with grid resale enabled; specify entry_id if multiple entries are enabled."
+        )
+    return matches[0]
+
+
+@callback
+def async_setup_resale_services(hass: HomeAssistant) -> None:
+    """Register export and explicit, resumable history import actions."""
+    if hass.services.has_service(DOMAIN, "export_grid_resale"):
+        return
+
+    async def export_resale(call: ServiceCall) -> ServiceResponse:
+        return await _resolve_resale(hass, call.data.get("entry_id")).async_export()
+
+    async def import_history(call: ServiceCall) -> ServiceResponse:
+        coordinator = _resolve_resale(hass, call.data.get("entry_id"))
+        start = dt_util.parse_datetime(call.data["start"])
+        end = dt_util.parse_datetime(call.data["end"])
+        if start is None or end is None or start.tzinfo is None or end.tzinfo is None:
+            raise ServiceValidationError(
+                "Provide start and end with explicit UTC offsets."
+            )
+        try:
+            return await coordinator.async_import_history(
+                start, end, call.data["source"]
+            )
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    hass.services.async_register(
+        DOMAIN,
+        "export_grid_resale",
+        export_resale,
+        schema=vol.Schema({vol.Optional("entry_id"): cv.string}),
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "import_grid_resale_history",
+        import_history,
+        schema=vol.Schema(
+            {
+                vol.Optional("entry_id"): cv.string,
+                vol.Required("start"): cv.string,
+                vol.Required("end"): cv.string,
+                vol.Optional("source", default="raw"): vol.In(
+                    ["raw", "hourly_estimate"]
+                ),
+            }
+        ),
+        supports_response=SupportsResponse.ONLY,
+    )
+
 
 ATTR_ENTITY_ID = "entity_id"
 ATTR_LEVEL_LENGTH = "level_length"
